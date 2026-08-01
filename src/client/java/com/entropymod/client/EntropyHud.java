@@ -38,7 +38,7 @@ public final class EntropyHud implements HudElement {
 	private static int lastEntropy = 0;
 	private static int lastCap = 0;
 
-	/** Called from the OpenChoicePayload receiver (and /entropytest). */
+	/** Called from the OpenChoicePayload receiver (and /entropypreview). */
 	public static void update(EffectPhase phase, int entropy, int entropyCap) {
 		lastPhase = phase;
 		lastEntropy = entropy;

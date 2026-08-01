@@ -127,6 +127,30 @@ Facts that checking produced, three of which contradicted reasonable guesses:
   open GUI must check `Minecraft.getInstance().screen == null` itself.
 - `StreamCodec.composite` supports up to 12 component pairs here, so the
   old "arity limit" worry in the networking notes no longer applies.
+- **`source.hasPermission(2)` does not exist.** This is the idiom in every
+  server-command tutorial and it is gone in this version. `CommandSourceStack`
+  has no `hasPermission` method at all; permissions now go through
+  `PermissionSet` / `PermissionCheck`. The verified working form, taken from
+  vanilla `GameRuleCommand`'s own bytecode, is:
+
+  ```java
+  Commands.literal("mycommand")
+      .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+  ```
+
+  The levels are `Commands.LEVEL_ALL` / `LEVEL_MODERATORS` / `LEVEL_GAMEMASTERS`
+  (the old level 2) / `LEVEL_ADMINS` / `LEVEL_OWNERS`. `Commands.hasPermission`
+  is a static helper returning a `PermissionProviderCheck`, which implements
+  `Predicate`, which is what `.requires` wants. Note the two `hasPermission`s
+  are different things — the static one on `Commands` exists, the instance one
+  on the source does not.
+- Server commands register via
+  `CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> ...)`
+  — **three** parameters, from `net.fabricmc.fabric.api.command.v2`. The
+  client-side callback in `...client.command.v2` takes only two, so copying one
+  shape into the other fails as a lambda-arity error that doesn't name the
+  cause. `CommandSourceStack` is the server source type;
+  `FabricClientCommandSource` is the client one.
 
 If you hit a "cannot find symbol" error not covered by this table: check
 `docs.fabricmc.net/develop/...` for the specific system (networking, GUI,
@@ -254,15 +278,10 @@ off-screen at higher GUI scale"):
   code changes.
 
 **How to check it without waiting on the 3-minute timer:**
-`/entropytest`, `/entropytest <good|bad> <entropy>`,
-`/entropytest <good|bad> <entropy> <cap>`, or append `long` to force compact
+`/entropypreview`, `/entropypreview <good|bad> <entropy>`,
+`/entropypreview <good|bad> <entropy> <cap>`, or append `long` to force compact
 descriptions. This drives the HUD cache too, so it exercises both surfaces —
-but note it is a *client-only* path and does not prove the server serialises
-anything.
-
-`/entropyhistory` is the other test command, and unlike `/entropytest` it
-*does* hit the server: it sends a real `HistoryRequestPayload` and logs
-whatever comes back. Temporary — replace with a real screen.
+but see the warning below about what it is and isn't.
 The colour/layout/description maths live in dependency-free static nested
 classes (`EntropyPalette`, `PanelLayout`, `DescriptionStyle`) specifically so
 a plain `java -cp build/classes/java/client` harness can exercise the real
@@ -421,6 +440,53 @@ time) appended in `onChoiceMade`, exposed via `EntropyManager.getHistory()`.
   two payloads need it. Sent by name, not ordinal, so reordering the enum
   can't flip GOOD and BAD on the wire.
 
+### Debug commands — know which ones are REAL and which are FAKE
+This distinction has already cost one session. Read it before adding another
+test command.
+
+| Command | Side | Real pipeline? |
+|---|---|---|
+| `/entropyforcepick` | server | **YES** — the real path |
+| `/entropystatus` | server | **YES** — reads real manager state |
+| `/entropyhistory` | client → server | **YES** — real request/response |
+| `/entropypreview` | client only | **NO** — hardcoded fake data |
+
+**`/entropyforcepick` is the one that actually tests things.** It calls
+`EntropyManager.forcePick`, which delegates straight to the private
+`triggerPick` the tick loop uses — same entropy-cap check, same interval-scoped
+expiry, same phase alternation, same anti-stacking roll, same
+`OpenChoicePayload`. It bypasses the clock and *nothing else*. Its guards
+(`gameOver`, `waitingOnChoice`) are exactly the ones `tick()` applies before it
+would reach `triggerPick`, so a forced pick can't reach a state a real interval
+firing couldn't. It returns a `PickTrigger` so the command can say *why* nothing
+opened instead of failing silently.
+
+**If a future session makes this command roll its own choices or build its own
+payload, that is a bug**, not an optimisation — it would stop testing the thing
+it exists to test.
+
+Both server commands need permission level 2 (`LEVEL_GAMEMASTERS`), so **in
+singleplayer the world must have Allow Cheats: ON** or they won't appear.
+
+**Why `/entropypreview` got renamed (the trap, recorded so it isn't reset).**
+It used to be called `/entropytest`, and the name was actively misleading: it
+opens `ChoiceScreen` client-side with three hardcoded effect strings and never
+contacts the server. Clicking a card in it sends no `ChoiceMadePayload`, so it
+never reaches `onChoiceMade` — no history entry, no `ActiveEffect`, no
+anti-stacking, no `EffectBehavior` firing. On screen it is **indistinguishable
+from a real pick**, which is exactly what made it dangerous: the effect-behavior
+architecture session shipped with the reasonable-sounding belief that
+`/entropytest` could verify it, and it could not.
+
+It still exists, deliberately — instant colour/layout checks across the whole
+entropy range with no world state are genuinely useful, and that's worth a
+command. The fix was the name, not the feature.
+
+**The general rule: a debug shortcut that fabricates data must say so in its
+name.** If you add another, name it `preview`/`mock`/`fake`, and if it's meant
+to test real behavior, make it call the real entry point rather than
+reconstructing what the real entry point does.
+
 ### How to check the tracking logic without booting Minecraft
 `ActiveEffect`, `ActiveEffectTracker`, `PickRecord`, `EffectRegistry` and the
 whole data model are **free of Minecraft imports on purpose** — same discipline
@@ -444,7 +510,21 @@ fields were swapped in a way that cancelled out).
 What this *cannot* prove, and what still needs a real game session: that the
 chat messages actually appear, that expiry lands on the right wall-clock
 moment in a live server tick loop, and that the history request survives a real
-client↔server round trip.
+client↔server round trip. `/entropyforcepick` is what makes that session
+practical — without it you'd be waiting out a 3-minute interval per pick.
+
+One structural claim *is* checkable without the game, and worth re-checking if
+`forcePick` is ever edited: that it delegates rather than duplicates. Its
+bytecode should contain exactly one call, to `triggerPick`, and
+`EntropyCommands` should reference nothing but `EntropyManager` accessors:
+
+```bash
+javap -p -c -cp build/classes/java/main com.entropymod.entropy.EntropyManager
+javap -p -c -cp build/classes/java/main com.entropymod.command.EntropyCommands
+```
+
+Note `runServer` needs `run/eula.txt` with `eula=true`, which isn't in the repo
+— accepting Mojang's EULA is the repo owner's call, not a tool's.
 
 ### Config (interval length, entropy cap) — fields exist, no player-facing surface
 `EntropyManager.setIntervalTicks()` / `setEntropyCap()` exist and work, but
@@ -595,19 +675,25 @@ content). Remaining, in dependency order:
 
 1. Resolve Questions 1, 2, 7 — these still affect the *shape* of code written
    in every other step, so deciding late means rework.
-2. Give the 11 Tier 1 stubs real behavior. Suggested order, easiest first, so
+2. **First, actually play through a few `/entropyforcepick` picks in-game.**
+   The effect-behavior architecture is verified by compilation, bytecode, and
+   headless harnesses, but has never run inside a live server tick loop. Do
+   this before building on top of it. Needs a world with cheats on.
+3. Give the 11 Tier 1 stubs real behavior. Suggested order, easiest first, so
    the plumbing gets proven before the hard ones: `night_owl` (a plain
    `MobEffectInstance`) → `sure_footing` / `heavy_boots` (attribute modifiers,
    and they're inverses so build them together) → `field_repair` (the only
    duration-0 effect, proves that path) → `featherlight` → the rest.
    Each one is a single file; nothing else should need to change.
-3. Add win detection per Question 1.
-4. Port Tiers 2-4 into `EffectRegistry` (mechanical, low-risk, do anytime) —
+   Tip: temporarily `setIntervalTicks(200)` or pick a short-duration effect to
+   watch `remove()` fire without a 3-minute wait.
+4. Add win detection per Question 1.
+5. Port Tiers 2-4 into `EffectRegistry` (mechanical, low-risk, do anytime) —
    worth doing early anyway, since it's what stops the anti-stacking collision
    fallback from firing.
-5. Decide Question 6 for real, once step 4 shows how often it actually fires.
-6. Add persistence (Question 10) once the above is stable enough that it's
+6. Decide Question 6 for real, once step 5 shows how often it actually fires.
+7. Add persistence (Question 10) once the above is stable enough that it's
    worth surviving a restart.
-7. Config surface (Question 4) — can happen in parallel, low-risk to defer.
-8. A real pick-history screen to replace the `/entropyhistory` debug logging.
-9. Odd/signature effects, prioritized per Question 8.
+8. Config surface (Question 4) — can happen in parallel, low-risk to defer.
+9. A real pick-history screen to replace the `/entropyhistory` debug logging.
+10. Odd/signature effects, prioritized per Question 8.

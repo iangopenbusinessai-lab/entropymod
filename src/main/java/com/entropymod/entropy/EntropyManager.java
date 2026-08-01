@@ -80,14 +80,57 @@ public class EntropyManager {
 		}
 	}
 
-	private void triggerPick(MinecraftServer server) {
+	/**
+	 * Why a pick attempt did or didn't open. Returned so callers that aren't the
+	 * tick loop -- currently only {@code /entropyforcepick} -- can report the
+	 * reason instead of silently doing nothing. {@link #tick} ignores it.
+	 */
+	public enum PickTrigger {
+		/** Choices rolled and sent; the loop is now waiting on the player. */
+		OPENED,
+		/** The run had already ended before this attempt. */
+		RUN_ALREADY_OVER,
+		/** A pick is already open and unanswered. */
+		CHOICE_PENDING,
+		/** This attempt hit the entropy cap and ended the run. */
+		RUN_ENDED_NOW,
+		/** Nothing in the registry is eligible for this phase at this entropy. */
+		NO_ELIGIBLE_EFFECTS
+	}
+
+	/**
+	 * Opens a pick right now instead of waiting out the interval.
+	 *
+	 * <p>This is the <em>real</em> path, not a debug imitation of it: the entropy
+	 * cap check, interval-scoped expiry, phase alternation, anti-stacking roll and
+	 * payload broadcast all happen because this delegates straight to
+	 * {@link #triggerPick}. The only thing it bypasses is the clock.
+	 *
+	 * <p>The two guards below are exactly the ones {@link #tick} applies before it
+	 * would ever reach {@code triggerPick}, so forcing a pick cannot reach a state
+	 * a real interval firing couldn't.
+	 */
+	public PickTrigger forcePick(MinecraftServer server) {
+		if (gameOver) {
+			return PickTrigger.RUN_ALREADY_OVER;
+		}
+		if (waitingOnChoice) {
+			return PickTrigger.CHOICE_PENDING;
+		}
+		// Reset the countdown as a real firing does, so the natural interval doesn't
+		// arrive moments later on top of the forced one.
+		tickCounter = 0;
+		return triggerPick(server);
+	}
+
+	private PickTrigger triggerPick(MinecraftServer server) {
 		if (entropy >= entropyCap) {
 			gameOver = true;
 			server.getPlayerList().broadcastSystemMessage(
 					Component.literal(
 							"[Entropy] Entropy has reached " + entropy + ". The run is over -- did you beat the dragon in time?"),
 					false);
-			return;
+			return PickTrigger.RUN_ENDED_NOW;
 		}
 
 		// "Lasts until the next interval" (durationTicks == -1) means exactly this
@@ -113,7 +156,7 @@ public class EntropyManager {
 		List<EffectDefinition> choices = roll.choices();
 		if (choices.isEmpty()) {
 			EntropyMod.LOGGER.warn("No eligible {} effects found at entropy {} -- add more to EffectRegistry!", phase, entropy);
-			return;
+			return PickTrigger.NO_ELIGIBLE_EFFECTS;
 		}
 
 		waitingOnChoice = true;
@@ -127,7 +170,17 @@ public class EntropyManager {
 		for (var player : PlayerLookup.all(server)) {
 			ServerPlayNetworking.send(player, payload);
 		}
+		return PickTrigger.OPENED;
 	}
+
+	/** True while a pick is open and unanswered. */
+	public boolean isWaitingOnChoice() { return waitingOnChoice; }
+
+	/** True once the run has ended (entropy cap reached). */
+	public boolean isGameOver() { return gameOver; }
+
+	/** Ticks elapsed in the current interval. Reported by the debug command; not used by the loop. */
+	public int getTicksIntoInterval() { return tickCounter; }
 
 	/** Called by the server-side network receiver when a player submits their pick. */
 	public void onChoiceMade(MinecraftServer server, String chosenEffectId) {
@@ -162,8 +215,11 @@ public class EntropyManager {
 		waitingOnChoice = false;
 	}
 
-	/** Strict GOOD -> BAD alternation, derived from how many picks have been made. */
-	private EffectPhase currentPhase() {
+	/**
+	 * The phase the NEXT pick will use. Strict GOOD -&gt; BAD alternation, derived
+	 * from how many picks have been made.
+	 */
+	public EffectPhase currentPhase() {
 		return (pickCount % 2 == 0) ? EffectPhase.GOOD : EffectPhase.BAD;
 	}
 

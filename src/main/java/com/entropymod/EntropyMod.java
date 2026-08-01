@@ -1,5 +1,6 @@
 package com.entropymod;
 
+import com.entropymod.command.EntropyCommands;
 import com.entropymod.entropy.EffectBehaviors;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.network.ChoiceMadePayload;
@@ -58,6 +59,10 @@ public class EntropyMod implements ModInitializer {
 			LOGGER.info("History requested by {} -- {} pick(s).", context.player().getName().getString(), history.size());
 			ServerPlayNetworking.send(context.player(), HistoryResponsePayload.from(history));
 		});
+
+		// Server-side debug commands (/entropyforcepick, /entropystatus). These talk
+		// to the real EntropyManager, unlike the client-side /entropypreview.
+		EntropyCommands.register();
 
 		// Every server tick, let the EntropyManager check whether it's time
 		// for the next pick. This is the heartbeat of the whole mod.

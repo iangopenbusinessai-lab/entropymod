@@ -70,19 +70,26 @@ public class EntropyModClient implements ClientModInitializer {
 		// doesn't inherit the previous run's numbers.
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> EntropyHud.reset());
 
-		// Test-only command. Drives the same client-side state the real payload
-		// does, so the screen AND the HUD can be checked without the 3-min timer.
-		//   /entropytest
-		//   /entropytest <good|bad> <entropy>
-		//   /entropytest <good|bad> <entropy> <cap>
-		//   /entropytest <good|bad> <entropy> [cap] long
-		// Note this exercises the CLIENT rendering path only -- it does not
-		// prove the server serialises entropyCap. For that, see the codec
-		// round-trip check described in CLAUDE.md.
-		// Remove once the full loop is verified end-to-end.
+		// PREVIEW-ONLY command -- FAKE DATA, client-side, never touches the server.
+		//   /entropypreview
+		//   /entropypreview <good|bad> <entropy>
+		//   /entropypreview <good|bad> <entropy> <cap>
+		//   /entropypreview <good|bad> <entropy> [cap] long
+		//
+		// This opens ChoiceScreen with three hardcoded effect strings so colour,
+		// layout and description-wrapping can be checked instantly across the whole
+		// entropy range, without a server, a world state, or the 3-min timer. That
+		// is genuinely useful and is why it still exists.
+		//
+		// What it CANNOT do -- and this bit was previously easy to get wrong, since
+		// it was called /entropytest and looks identical on screen to a real pick:
+		// clicking a card here does NOT reach the server. No ChoiceMadePayload, no
+		// onChoiceMade, so no history entry, no ActiveEffect, no anti-stacking, no
+		// EffectBehavior. For any of that, use the server-side /entropyforcepick,
+		// which drives the real pipeline. See CLAUDE.md.
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
-			dispatcher.register(literal("entropytest")
-					.executes(ctx -> openTestScreen(ctx.getSource().getClient(),
+			dispatcher.register(literal("entropypreview")
+					.executes(ctx -> openPreviewScreen(ctx.getSource().getClient(),
 							EffectPhase.GOOD, 12, EntropyManager.DEFAULT_ENTROPY_CAP, false))
 					.then(argument("phase", StringArgumentType.word())
 							.then(argument("entropy", IntegerArgumentType.integer(0, 10000))
@@ -96,7 +103,7 @@ public class EntropyModClient implements ClientModInitializer {
 															IntegerArgumentType.getInteger(ctx, "cap"), true)))))));
 
 			// TEMPORARY: asks the server for the pick history; the receiver above
-			// logs it. Unlike /entropytest this DOES exercise the real server
+			// logs it. Unlike /entropypreview this DOES exercise the real server
 			// round-trip, so it proves the payload pair rather than only the client
 			// rendering path. Replace with a real history screen later.
 			dispatcher.register(literal("entropyhistory").executes(ctx -> {
@@ -112,7 +119,7 @@ public class EntropyModClient implements ClientModInitializer {
 	}
 
 	private static int run(CommandContext<FabricClientCommandSource> ctx, int cap, boolean longDescriptions) {
-		return openTestScreen(
+		return openPreviewScreen(
 				ctx.getSource().getClient(),
 				parsePhase(StringArgumentType.getString(ctx, "phase")),
 				IntegerArgumentType.getInteger(ctx, "entropy"),
@@ -127,9 +134,16 @@ public class EntropyModClient implements ClientModInitializer {
 		return good ? EffectPhase.GOOD : EffectPhase.BAD;
 	}
 
-	private static int openTestScreen(Minecraft client, EffectPhase phase, int entropy, int entropyCap,
-									   boolean longDescriptions) {
-		EntropyMod.LOGGER.info("/entropytest -- queueing ChoiceScreen phase={} entropy={}/{} long={}",
+	/**
+	 * Opens ChoiceScreen with fake, hardcoded choices. Preview only -- the ids
+	 * below are real registry ids so the screen looks right, but nothing is rolled
+	 * and clicking sends nothing anywhere.
+	 */
+	private static int openPreviewScreen(Minecraft client, EffectPhase phase, int entropy, int entropyCap,
+										  boolean longDescriptions) {
+		EntropyMod.LOGGER.info("/entropypreview -- FAKE DATA, client-only. Queueing ChoiceScreen "
+						+ "phase={} entropy={}/{} long={}. Clicking a card here does NOT reach the server; "
+						+ "use /entropyforcepick for the real pipeline.",
 				phase, entropy, entropyCap, longDescriptions);
 
 		// Feed the same cache the real payload does, so the HUD colour can be
