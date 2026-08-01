@@ -11,3 +11,14 @@
 /entropytest
 /entropyhistory
 /entropytest
+/help
+/entropystatus
+/entropyforcepick
+/entropystatus
+/entropyforcepick
+/entropystatus
+/entropyforcepick
+/entropystatus
+/entropyforcepick
+/entropystatus
+/entropyhistory

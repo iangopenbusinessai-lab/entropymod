@@ -3,7 +3,10 @@
 	"package": "com.entropymod.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"mixins": [
-		"EntropyModMixin"
+		"EntropyModMixin",
+		"LivingEntityDamageMixin",
+		"PlayerExhaustionMixin",
+		"PlayerExperienceMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1
