@@ -69,10 +69,50 @@ name is shared between old-Yarn-style code and current Mojang mappings.
 version**, not just renamed. Screens no longer override
 `render(DrawContext, mouseX, mouseY, delta)`. Instead they override
 `extractRenderState(GuiGraphicsExtractor graphics, mouseX, mouseY, delta)`
-(must call `super.extractRenderState(...)` first). This is confirmed from
-current docs, but is genuinely new/unfamiliar territory -- if `ChoiceScreen`
-doesn't compile, this is the first place to look, and `GuiGraphicsExtractor`'s
-exact package is the least-verified import in the whole project.
+(must call `super.extractRenderState(...)` first).
+
+**This is now VERIFIED, not guessed** (commit `422687d`). Every GUI symbol
+was checked with `javap` against the deobfuscated jar rather than inferred
+from docs. If you need to check something else, this is the command:
+
+```bash
+javap -p -cp ~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/\
+minecraft-clientonly-deobf/26.1.2/minecraft-clientonly-deobf-26.1.2.jar \
+  net.minecraft.client.gui.GuiGraphicsExtractor
+```
+
+Use `javap -p -c` for bytecode when argument *order* is what's in doubt.
+Prefer this over the docs site -- it is the actual shipped API.
+
+Facts that checking produced, three of which contradicted reasonable guesses:
+
+- `GuiGraphicsExtractor` **is** in `net.minecraft.client.gui`. The old note
+  called this the least-verified import in the project; it was right.
+- **`mouseClicked` changed signature**: it is now
+  `mouseClicked(MouseButtonEvent, boolean)`, *not*
+  `(double mouseX, double mouseY, int button)`. Get coordinates from
+  `event.x()` / `event.y()`. Any tutorial older than this version is wrong
+  here, and the mismatch fails as "method does not override" rather than
+  anything that points at the real cause.
+- **`fill(x1, y1, x2, y2, argb)` is corner-to-corner, not `(x, y, w, h)`.**
+  Its bytecode swaps each pair when out of order, so either winding works,
+  but passing a width where a right edge belongs silently draws garbage.
+- **`fill` colours need an explicit alpha byte.** `0x707070` has alpha 0 and
+  draws *nothing*. Use `0xFF707070`. Note this differs from text colours,
+  which `Font` promotes to opaque when the alpha bits are empty -- so
+  `0xFFFFFF` works for text but is invisible as a fill. This asymmetry is a
+  very easy way to lose an hour.
+- Useful `GuiGraphicsExtractor` methods beyond `text`: `fill`, `fillGradient`,
+  `outline`, `centeredText`, `textWithWordWrap`, `enableScissor` /
+  `disableScissor`, `pose()` (a JOML `Matrix3x2fStack` with
+  `pushMatrix`/`popMatrix`/`scale`/`translate` -- this is how you get
+  smaller text, since Minecraft has exactly one font size).
+- Custom widgets extend `AbstractWidget(x, y, w, h, Component)` and implement
+  `extractWidgetRenderState(...)` + `updateWidgetNarration(...)`.
+  `AbstractWidget.mouseClicked` hit-tests the full widget rect, plays the
+  click sound, then calls `onClick` -- so a panel-sized widget gets
+  whole-panel clicking for free. Prefer this over `Button` when the visual
+  is custom, and over manual hit-testing in `Screen`.
 
 If you hit a "cannot find symbol" error not covered by this table: check
 `docs.fabricmc.net/develop/...` for the specific system (networking, GUI,
@@ -147,22 +187,64 @@ system, MelodyBrain's layered build). Adding effect #47 later is just a new
   crash, etc.) — `waitingOnChoice` would stay `true` forever, freezing the
   loop. Needs at minimum a server-side timeout that auto-picks or skips.
 
-### GUI (`ChoiceScreen`) — functional MVP, deliberately minimal
-**What it does well:** mandatory pick (no escape-to-cancel) matches the
-"you must choose" design intent. Clean 3-button layout.
+### GUI (`ChoiceScreen`) — visual overhaul done, verified
+**Read `ChoiceScreen.java`'s class javadoc before editing it** — it records
+the verified-by-javap API facts that the file depends on.
 
-**Weaknesses / gaps:**
-- No visual distinction between Blessing/Curse screens beyond the title text
-  (no color theming, no icon per effect, no flavor art). Purely functional
-  right now — fine for testing, will need a pass before this feels like a
-  "real mod" rather than a prototype.
-- `shouldPause()` returns `true` — the world (and single-player game) freezes
-  while the GUI is open. This was a default choice, not a deliberate design
-  decision. Whether the world should keep ticking during a pick (mobs still
-  approaching, adding pressure to decide fast) is a real design question.
-  See Open Question 8.
-- No indication of *why* the phase is Good or Bad beyond the header text —
-  no entropy progress bar, no "X picks until next tier" indicator.
+**Resolved in commit `422687d`** (was: "no color theming", "buttons go
+off-screen at higher GUI scale"):
+
+- **GUI-scale responsiveness — RESOLVED.** Panel width is computed from
+  `this.width`, not a fixed constant: three columns while each panel can hold
+  `PANEL_MIN_WIDTH` (90), otherwise a vertical stack of three rows. Verified
+  non-clipping from 2560px logical width down to 80px. Minecraft's own floor
+  is 320x240 logical, which lands in the row-stack branch. This is a *hard*
+  requirement, not cosmetic: `shouldCloseOnEsc()` is `false`, so anything
+  that renders unusably traps the player with no way out.
+- **Entropy-driven card coloring — RESOLVED.** Border + title + header rule
+  interpolate in **HSL** (not RGB — RGB blending between these hue pairs goes
+  muddy grey partway) across two segments split at `t = 0.8`: lightness-only,
+  then a hue rotation to the endgame colour. Same colour on all three panels
+  — it signals run state, not per-choice difference. Panel fill stays neutral
+  grey and the header text stays pure white, both deliberately, so text
+  contrast never depends on entropy.
+  - **Do not "simplify" `EntropyPalette.lerpHue`.** It takes the shortest arc
+    around the wheel on purpose. A naive lerp from hue 0 to 355 travels 355°
+    the long way and cycles the curse ramp through the entire rainbow. This
+    bug was caught twice — once in the HTML mockup, once guarded against here.
+    The curse ramp should span ~80° total and never enter the green/cyan band.
+  - The six `(h,s,l)` keyframes and the `0.8` split are named constants in
+    `EntropyPalette`, expected to be tuned after seeing them in-game.
+- **Whole-panel click targets.** Panels are a custom `AbstractWidget`, not
+  `Button`, so the entire card is clickable.
+- **Per-effect art is stubbed, not wired.** Each panel reserves a square image
+  slot and draws a dashed placeholder via `ChoicePanel#drawEffectImage`. That
+  method is the single swap-in point: when `EffectDefinition` gains an
+  optional texture `Identifier`, blit it there and return early — no layout
+  code changes.
+
+**How to check it without waiting on the 3-minute timer:**
+`/entropytest`, `/entropytest <good|bad> <entropy>`, or
+`/entropytest <good|bad> <entropy> long` (forces compact descriptions).
+The colour/layout/description maths live in dependency-free static nested
+classes (`EntropyPalette`, `PanelLayout`, `DescriptionStyle`) specifically so
+a plain `java -cp build/classes/java/client` harness can exercise the real
+shipped code without booting Minecraft. Do that rather than testing a copy.
+
+**Remaining gaps:**
+- Description overflow is currently hard-clipped at 2 lines (compact) or 3
+  (normal). No ellipsis, no scroll, no tooltip. `DescriptionStyle
+  .resolveDescriptionStyle` is the one place to change if that strategy
+  should differ — it is isolated for exactly that reason.
+- The client has no way to learn the server's real entropy cap;
+  `OpenChoicePayload` carries phase + entropy only, so `ChoiceScreen` falls
+  back to `EntropyManager.DEFAULT_ENTROPY_CAP`. **If the cap ever becomes
+  configurable (Open Question 4), the colour ramp will be wrong until the cap
+  is added to the payload** — a 12-arg constructor already accepts it.
+- `isPauseScreen()` returns `true` — the world freezes while the GUI is open.
+  Still a default rather than a decision. See Open Question 7.
+- No entropy progress bar or "X picks until next tier" indicator; the header
+  shows a bare `Entropy: n / cap`.
 
 ### Mixins — placeholders only, correctly scaffolded
 Both mixin stubs are unused example code, kept only to prove the pattern is
