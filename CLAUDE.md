@@ -113,6 +113,20 @@ Facts that checking produced, three of which contradicted reasonable guesses:
   click sound, then calls `onClick` -- so a panel-sized widget gets
   whole-panel clicking for free. Prefer this over `Button` when the visual
   is custom, and over manual hit-testing in `Screen`.
+- **`HudRenderCallback` does not exist in this Fabric API version.** Nearly
+  every HUD tutorial online uses it. The current API is
+  `HudElementRegistry.addLast(Identifier, HudElement)` (also `addFirst` /
+  `attachElementBefore` / `attachElementAfter`, anchored on the ids in
+  `VanillaHudElements`), and `HudElement` is a single method:
+  `extractRenderState(GuiGraphicsExtractor, DeltaTracker)` -- the same
+  graphics type the screen pipeline uses.
+- **The HUD keeps rendering while a `Screen` is open.** Confirmed in
+  `GameRenderer`'s bytecode: the `Gui.extractRenderState` call is gated only
+  on a boolean parameter, while the `Screen` call is separately gated on
+  `minecraft.screen != null`. Any HUD element that shouldn't show behind an
+  open GUI must check `Minecraft.getInstance().screen == null` itself.
+- `StreamCodec.composite` supports up to 12 component pairs here, so the
+  old "arity limit" worry in the networking notes no longer applies.
 
 If you hit a "cannot find symbol" error not covered by this table: check
 `docs.fabricmc.net/develop/...` for the specific system (networking, GUI,
@@ -208,6 +222,12 @@ off-screen at higher GUI scale"):
   — it signals run state, not per-choice difference. Panel fill stays neutral
   grey and the header text stays pure white, both deliberately, so text
   contrast never depends on entropy.
+  - **`EntropyColors` is the single source of truth for this** (commit
+    `40dfb5f`). `ChoiceScreen` and the HUD both call
+    `EntropyColors.colorAt(entropy, entropyCap, phase)`. Anything else that
+    tints by run state should call it too rather than re-deriving the ramp —
+    that is the whole point of it being its own class. The six keyframes and
+    the `0.8` split live there and nowhere else.
   - **Do not "simplify" `EntropyPalette.lerpHue`.** It takes the shortest arc
     around the wheel on purpose. A naive lerp from hue 0 to 355 travels 355°
     the long way and cycles the curse ramp through the entire rainbow. This
@@ -224,8 +244,11 @@ off-screen at higher GUI scale"):
   code changes.
 
 **How to check it without waiting on the 3-minute timer:**
-`/entropytest`, `/entropytest <good|bad> <entropy>`, or
-`/entropytest <good|bad> <entropy> long` (forces compact descriptions).
+`/entropytest`, `/entropytest <good|bad> <entropy>`,
+`/entropytest <good|bad> <entropy> <cap>`, or append `long` to force compact
+descriptions. This drives the HUD cache too, so it exercises both surfaces —
+but note it is a *client-only* path and does not prove the server serialises
+anything.
 The colour/layout/description maths live in dependency-free static nested
 classes (`EntropyPalette`, `PanelLayout`, `DescriptionStyle`) specifically so
 a plain `java -cp build/classes/java/client` harness can exercise the real
@@ -236,15 +259,45 @@ shipped code without booting Minecraft. Do that rather than testing a copy.
   (normal). No ellipsis, no scroll, no tooltip. `DescriptionStyle
   .resolveDescriptionStyle` is the one place to change if that strategy
   should differ — it is isolated for exactly that reason.
-- The client has no way to learn the server's real entropy cap;
-  `OpenChoicePayload` carries phase + entropy only, so `ChoiceScreen` falls
-  back to `EntropyManager.DEFAULT_ENTROPY_CAP`. **If the cap ever becomes
-  configurable (Open Question 4), the colour ramp will be wrong until the cap
-  is added to the payload** — a 12-arg constructor already accepts it.
 - `isPauseScreen()` returns `true` — the world freezes while the GUI is open.
   Still a default rather than a decision. See Open Question 7.
 - No entropy progress bar or "X picks until next tier" indicator; the header
   shows a bare `Entropy: n / cap`.
+
+### Entropy cap on the wire — RESOLVED (commit `40dfb5f`)
+Previously listed as a known risk: the client could not learn the server's
+configured cap, so it assumed `DEFAULT_ENTROPY_CAP` and every colour would
+have been wrong under a non-default cap.
+
+`OpenChoicePayload` now carries `entropyCap` as a real record component with
+a matching codec component, and `EntropyManager` sends its configured cap.
+Verified by an encode/decode round-trip, not by inspection.
+
+**If you add a field to a payload record, add its codec line in the same
+edit.** For `StreamCodec.composite` the arity is type-checked against the
+constructor reference, so a *missing* line fails to compile — but a line
+pointing at the *wrong getter* compiles fine and silently sends the wrong
+value. Round-trip it with each field set to a distinct value.
+
+### Persistent entropy HUD (`EntropyHud`) — new in `40dfb5f`
+Top-right `Entropy: N/cap` readout, tinted via `EntropyColors`, registered
+with `HudElementRegistry.addLast`. Neutral grey until the first payload
+arrives rather than guessing a phase; cache clears on disconnect.
+
+Two things to know before changing it:
+- The `screen == null` guard is **required** — see the mapping note above;
+  the HUD really does render underneath open screens.
+- **The client only hears from the server when a pick opens.** There is no
+  entropy sync packet, so the HUD is a cache, not live state.
+  `noteChoiceSubmitted()` bumps the count locally on submit to avoid a
+  whole-interval stale readout, and the next payload re-syncs. If entropy
+  ever changes server-side for any reason *other* than a pick, the HUD will
+  be wrong until the next pick. A small periodic sync payload is the real
+  fix if that becomes true.
+- **Known overlap: vanilla draws status-effect icons in the top-right too.**
+  With active potion effects the readout and the icons will collide. Nudging
+  `y` down when `player.getActiveEffects()` is non-empty is the obvious fix;
+  it was left alone because the top-right position was specified.
 
 ### Mixins — placeholders only, correctly scaffolded
 Both mixin stubs are unused example code, kept only to prove the pattern is
