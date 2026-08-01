@@ -38,7 +38,7 @@ public class EntropyMod implements ModInitializer {
 		// and the (ServerLevel) cast appear there, just not combined this way).
 		ServerPlayNetworking.registerGlobalReceiver(ChoiceMadePayload.TYPE, (payload, context) -> {
 			MinecraftServer server = ((ServerLevel) context.player().level()).getServer();
-			EntropyManager.get(server).onChoiceMade(server, payload.chosenEffectId());
+			server.execute(() -> EntropyManager.get(server).onChoiceMade(server, payload.chosenEffectId()));
 		});
 
 		// Every server tick, let the EntropyManager check whether it's time

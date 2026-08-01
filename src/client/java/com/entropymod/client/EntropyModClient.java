@@ -27,12 +27,12 @@ public class EntropyModClient implements ClientModInitializer {
 		ClientPlayNetworking.registerGlobalReceiver(OpenChoicePayload.TYPE, (payload, context) -> {
 			EntropyMod.LOGGER.info("Received OpenChoicePayload: phase={} entropy={}",
 					payload.phase(), payload.entropy());
-			context.client().setScreen(new ChoiceScreen(
+			context.client().execute(() -> context.client().setScreen(new ChoiceScreen(
 					payload.phase(), payload.entropy(),
 					payload.choice1().id(), payload.choice1().name(), payload.choice1().description(),
 					payload.choice2().id(), payload.choice2().name(), payload.choice2().description(),
 					payload.choice3().id(), payload.choice3().name(), payload.choice3().description()
-			));
+			)));
 		});
 
 		// Test-only command: lets you open and click through the GUI locally

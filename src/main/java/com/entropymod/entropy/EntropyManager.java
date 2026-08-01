@@ -89,6 +89,7 @@ public class EntropyManager {
 		EffectDefinition chosen = EffectRegistry.byId(chosenEffectId);
 		if (chosen == null) {
 			EntropyMod.LOGGER.warn("Unknown effect id submitted: {}", chosenEffectId);
+			waitingOnChoice = false;
 			return;
 		}
 
