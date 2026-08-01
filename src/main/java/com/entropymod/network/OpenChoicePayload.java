@@ -23,6 +23,7 @@ import java.util.List;
 public record OpenChoicePayload(
 		EffectPhase phase,
 		int entropy,
+		int entropyCap,
 		Choice choice1,
 		Choice choice2,
 		Choice choice3
@@ -41,9 +42,15 @@ public record OpenChoicePayload(
 	private static final StreamCodec<ByteBuf, EffectPhase> PHASE_CODEC =
 			ByteBufCodecs.STRING_UTF8.map(EffectPhase::valueOf, EffectPhase::name);
 
+	// Every record component MUST have a matching line here -- composite drives
+	// encode and decode from the same list, so a field added to the record but
+	// not to this codec is silently dropped on the wire rather than failing to
+	// compile. entropyCap is what the client needs to colour its accent ramp;
+	// without it the client can only assume the default cap.
 	public static final StreamCodec<RegistryFriendlyByteBuf, OpenChoicePayload> CODEC = StreamCodec.composite(
 			PHASE_CODEC, OpenChoicePayload::phase,
 			ByteBufCodecs.VAR_INT, OpenChoicePayload::entropy,
+			ByteBufCodecs.VAR_INT, OpenChoicePayload::entropyCap,
 			Choice.CODEC, OpenChoicePayload::choice1,
 			Choice.CODEC, OpenChoicePayload::choice2,
 			Choice.CODEC, OpenChoicePayload::choice3,
@@ -60,12 +67,13 @@ public record OpenChoicePayload(
 		);
 	}
 
-	public static OpenChoicePayload fromChoices(EffectPhase phase, int entropy, List<EffectDefinition> choices) {
+	public static OpenChoicePayload fromChoices(EffectPhase phase, int entropy, int entropyCap,
+												List<EffectDefinition> choices) {
 		EffectDefinition a = choices.get(0);
 		EffectDefinition b = choices.size() > 1 ? choices.get(1) : choices.get(0);
 		EffectDefinition c = choices.size() > 2 ? choices.get(2) : choices.get(0);
 		return new OpenChoicePayload(
-				phase, entropy,
+				phase, entropy, entropyCap,
 				new Choice(a.id(), a.displayName(), a.description()),
 				new Choice(b.id(), b.displayName(), b.description()),
 				new Choice(c.id(), c.displayName(), c.description())

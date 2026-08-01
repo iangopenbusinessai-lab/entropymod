@@ -75,7 +75,10 @@ public class EntropyManager {
 		waitingOnChoice = true;
 		EntropyMod.LOGGER.info("Pick #{}: phase={} entropy={} choices={}", pickCount, phase, entropy, choices);
 
-		OpenChoicePayload payload = OpenChoicePayload.fromChoices(phase, entropy, choices);
+		// Send the configured cap, not a constant: the client tints its accent
+		// ramp by entropy/entropyCap, so a non-default cap here would otherwise
+		// make every colour on the client wrong.
+		OpenChoicePayload payload = OpenChoicePayload.fromChoices(phase, entropy, entropyCap, choices);
 		for (var player : PlayerLookup.all(server)) {
 			ServerPlayNetworking.send(player, payload);
 		}

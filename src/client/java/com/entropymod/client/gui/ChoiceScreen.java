@@ -1,5 +1,7 @@
 package com.entropymod.client.gui;
 
+import com.entropymod.client.EntropyColors;
+import com.entropymod.client.EntropyHud;
 import com.entropymod.entropy.EffectPhase;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.network.ChoiceMadePayload;
@@ -41,10 +43,10 @@ import java.util.List;
  *       plus the vanilla click sound for free.</li>
  * </ul>
  *
- * <p>Layout, colour and description-sizing maths live in dependency-free
- * static nested classes ({@link EntropyPalette}, {@link PanelLayout},
- * {@link #resolveDescriptionStyle}) so they can be exercised by a plain JVM
- * harness without booting Minecraft. See the commit that introduced this file.
+ * <p>Layout and description-sizing maths live in dependency-free static nested
+ * classes ({@link PanelLayout}, {@link DescriptionStyle}) so they can be
+ * exercised by a plain JVM harness without booting Minecraft. The accent
+ * colour ramp lives in {@link EntropyColors}, shared with the persistent HUD.
  */
 public class ChoiceScreen extends Screen {
 
@@ -148,7 +150,9 @@ public class ChoiceScreen extends Screen {
 
 	@Override
 	protected void init() {
-		this.accentColor = EntropyPalette.accent(phase == EffectPhase.GOOD, entropy, entropyCap);
+		// Colour maths lives in EntropyColors so the HUD and this screen cannot
+		// drift apart. See that class before retuning anything.
+		this.accentColor = EntropyColors.colorAt(entropy, entropyCap, phase);
 
 		PanelLayout layout = PanelLayout.resolve(this.width);
 		DescriptionStyle style = DescriptionStyle.resolveDescriptionStyle(
@@ -280,6 +284,10 @@ public class ChoiceScreen extends Screen {
 
 	private void onChoose(String effectId) {
 		ClientPlayNetworking.send(new ChoiceMadePayload(effectId));
+		// Keep the persistent HUD from sitting on a stale number for the whole
+		// interval -- the server sends nothing between picks. See
+		// EntropyHud#noteChoiceSubmitted for why this is safe to do locally.
+		EntropyHud.noteChoiceSubmitted();
 		this.onClose();
 	}
 
@@ -433,106 +441,6 @@ public class ChoiceScreen extends Screen {
 		@Override
 		protected void updateWidgetNarration(NarrationElementOutput output) {
 			defaultButtonNarrationText(output);
-		}
-	}
-
-	// ---------------------------------------------------------------------
-	// Entropy-driven accent colour
-	// ---------------------------------------------------------------------
-
-	/**
-	 * Maps (entropy, cap, phase) to the accent colour shared by all three
-	 * panels in a pick -- it signals overall run state, not per-choice
-	 * difference. Deliberately free of Minecraft imports so it can be verified
-	 * on a bare JVM.
-	 *
-	 * <p>Interpolation is in HSL, not RGB: RGB-blending green->blue or
-	 * red->purple passes through muddy desaturated grey partway.
-	 */
-	static final class EntropyPalette {
-		/** Boundary between the lightness-only ramp and the endgame hue shift. */
-		static final float SEGMENT_SPLIT_T = 0.8f;
-
-		// (hue, saturation%, lightness%) keyframes -- expected to be tuned in-game.
-		static final float[] GOOD_START = {130f, 55f, 58f}; // light green
-		static final float[] GOOD_MID   = {140f, 55f, 26f}; // dark green
-		static final float[] GOOD_END   = {222f, 55f, 26f}; // dark blue
-
-		static final float[] BAD_START = {0f,   65f, 60f};  // light red
-		static final float[] BAD_MID   = {355f, 55f, 30f};  // dark red
-		static final float[] BAD_END   = {280f, 45f, 32f};  // dark purple
-
-		private EntropyPalette() {}
-
-		static int accent(boolean blessing, int entropy, int entropyCap) {
-			float[] hsl = accentHsl(blessing, entropy, entropyCap);
-			return hslToArgb(hsl[0], hsl[1], hsl[2]);
-		}
-
-		static float[] accentHsl(boolean blessing, int entropy, int entropyCap) {
-			float t = entropyCap <= 0 ? 0f : (float) entropy / (float) entropyCap;
-			t = Math.max(0f, Math.min(1f, t));
-
-			float[] from;
-			float[] to;
-			float f;
-			if (t <= SEGMENT_SPLIT_T) {
-				from = blessing ? GOOD_START : BAD_START;
-				to = blessing ? GOOD_MID : BAD_MID;
-				f = t / SEGMENT_SPLIT_T;
-			} else {
-				from = blessing ? GOOD_MID : BAD_MID;
-				to = blessing ? GOOD_END : BAD_END;
-				f = (t - SEGMENT_SPLIT_T) / (1f - SEGMENT_SPLIT_T);
-			}
-			return new float[] {
-					lerpHue(from[0], to[0], f),
-					lerp(from[1], to[1], f),
-					lerp(from[2], to[2], f)
-			};
-		}
-
-		/**
-		 * Shortest-arc hue interpolation. This is NOT a naive lerp on purpose:
-		 * lerping 0 -> 355 linearly travels 355 degrees the long way round and
-		 * cycles the curse ramp through the entire rainbow. Taking the signed
-		 * arc keeps it a 5-degree step. Do not "simplify" this.
-		 */
-		static float lerpHue(float h1, float h2, float f) {
-			float diff = ((h2 - h1 + 540f) % 360f) - 180f;
-			return (h1 + diff * f + 360f) % 360f;
-		}
-
-		static float lerp(float a, float b, float f) {
-			return a + (b - a) * f;
-		}
-
-		static int hslToArgb(float h, float s, float l) {
-			float sN = s / 100f;
-			float lN = l / 100f;
-			float c = (1f - Math.abs(2f * lN - 1f)) * sN;
-			float hp = (((h % 360f) + 360f) % 360f) / 60f;
-			float x = c * (1f - Math.abs((hp % 2f) - 1f));
-
-			float r1;
-			float g1;
-			float b1;
-			if (hp < 1f)      { r1 = c;  g1 = x;  b1 = 0f; }
-			else if (hp < 2f) { r1 = x;  g1 = c;  b1 = 0f; }
-			else if (hp < 3f) { r1 = 0f; g1 = c;  b1 = x;  }
-			else if (hp < 4f) { r1 = 0f; g1 = x;  b1 = c;  }
-			else if (hp < 5f) { r1 = x;  g1 = 0f; b1 = c;  }
-			else              { r1 = c;  g1 = 0f; b1 = x;  }
-
-			float m = lN - c / 2f;
-			int r = clamp255(Math.round((r1 + m) * 255f));
-			int g = clamp255(Math.round((g1 + m) * 255f));
-			int b = clamp255(Math.round((b1 + m) * 255f));
-			return 0xFF000000 | (r << 16) | (g << 8) | b;
-		}
-
-		private static int clamp255(int v) {
-			return Math.max(0, Math.min(255, v));
 		}
 	}
 
