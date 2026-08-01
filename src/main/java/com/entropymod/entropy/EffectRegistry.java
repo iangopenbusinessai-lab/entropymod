@@ -3,6 +3,7 @@ package com.entropymod.entropy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -52,6 +53,11 @@ public final class EffectRegistry {
 				minEntropy, maxEntropy, counterplay, durationTicks));
 	}
 
+	/** Every registered effect, in registration order. Unmodifiable. */
+	public static List<EffectDefinition> all() {
+		return java.util.Collections.unmodifiableList(ALL);
+	}
+
 	/** All effects matching the given phase and eligible at the given entropy value. */
 	public static List<EffectDefinition> eligible(EffectPhase phase, int entropy) {
 		return ALL.stream()
@@ -59,11 +65,53 @@ public final class EffectRegistry {
 				.collect(Collectors.toList());
 	}
 
-	/** Picks 3 distinct random eligible effects for the given phase/entropy. */
+	/**
+	 * The outcome of a roll.
+	 *
+	 * @param choices          up to 3 effects; may be fewer if the pool is small,
+	 *                         and empty only if no effect of this phase is eligible at all
+	 * @param categoryFallback true if anti-stacking had to be abandoned to produce
+	 *                         any choices at all -- the caller should log this, since
+	 *                         it means the player is about to be offered an effect that
+	 *                         collides with one already running
+	 */
+	public record RollResult(List<EffectDefinition> choices, boolean categoryFallback) {}
+
+	/** Picks 3 distinct random eligible effects for the given phase/entropy, ignoring anti-stacking. */
 	public static List<EffectDefinition> rollThree(EffectPhase phase, int entropy, Random random) {
-		List<EffectDefinition> pool = new ArrayList<>(eligible(phase, entropy));
-		java.util.Collections.shuffle(pool, random);
-		return pool.stream().limit(3).collect(Collectors.toList());
+		return rollThree(phase, entropy, random, Set.of()).choices();
+	}
+
+	/**
+	 * Picks up to 3 distinct random eligible effects, excluding any whose category
+	 * already has an active effect (CLAUDE.md's anti-stacking rule, exclude-from-pool
+	 * form: a conflicting option never even appears in the three cards).
+	 *
+	 * <p>Partial results are fine and are NOT a fallback -- if only two effects
+	 * survive the filter, two is the honest answer and the player sees two cards.
+	 * The fallback fires only when the filter leaves <em>nothing</em>, in which case
+	 * the unfiltered pool is used and {@link RollResult#categoryFallback()} is set.
+	 *
+	 * <p>PLACEHOLDER POLICY. CLAUDE.md Open Question 6 ("what happens when the world
+	 * runs out of legal effects") is still open; allowing a collision is simply the
+	 * least-bad option that never strands the loop. The alternatives on the table --
+	 * extending the incumbent's duration, force-expiring the oldest active effect,
+	 * or skipping the interval entirely -- all remain live. This is a shape to
+	 * replace, not a decision.
+	 *
+	 * @param excludedCategories categories that already have an active effect
+	 */
+	public static RollResult rollThree(EffectPhase phase, int entropy, Random random,
+									   Set<EffectCategory> excludedCategories) {
+		List<EffectDefinition> pool = eligible(phase, entropy);
+		List<EffectDefinition> filtered = pool.stream()
+				.filter(e -> !excludedCategories.contains(e.category()))
+				.collect(Collectors.toList());
+
+		boolean fallback = filtered.isEmpty() && !pool.isEmpty();
+		List<EffectDefinition> source = new ArrayList<>(fallback ? pool : filtered);
+		java.util.Collections.shuffle(source, random);
+		return new RollResult(source.stream().limit(3).collect(Collectors.toList()), fallback);
 	}
 
 	public static EffectDefinition byId(String id) {

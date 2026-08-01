@@ -4,6 +4,8 @@ import com.entropymod.EntropyMod;
 import com.entropymod.client.gui.ChoiceScreen;
 import com.entropymod.entropy.EffectPhase;
 import com.entropymod.entropy.EntropyManager;
+import com.entropymod.network.HistoryRequestPayload;
+import com.entropymod.network.HistoryResponsePayload;
 import com.entropymod.network.OpenChoicePayload;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -43,6 +45,23 @@ public class EntropyModClient implements ClientModInitializer {
 			));
 		});
 
+		// TEMPORARY debug surface for the pick history. There is no screen or
+		// keybind for this yet -- the point of this receiver is to prove the
+		// request/response pair round-trips correctly. Trigger it with
+		// /entropyhistory and read the result in the log.
+		ClientPlayNetworking.registerGlobalReceiver(HistoryResponsePayload.TYPE, (payload, context) -> {
+			if (payload.entries().isEmpty()) {
+				EntropyMod.LOGGER.info("Pick history: (empty -- no picks made yet this run)");
+				return;
+			}
+			EntropyMod.LOGGER.info("Pick history -- {} entries:", payload.entries().size());
+			for (HistoryResponsePayload.Entry entry : payload.entries()) {
+				EntropyMod.LOGGER.info("  #{} [{}] entropy {} -> {} ({}) -- {}",
+						entry.pickNumber(), entry.phase(), entry.entropyAtPick(),
+						entry.effectName(), entry.effectId(), entry.effectDescription());
+			}
+		});
+
 		// Persistent top-right entropy readout. addLast so it draws above the
 		// other HUD elements rather than under them.
 		HudElementRegistry.addLast(EntropyMod.id("entropy_hud"), new EntropyHud());
@@ -75,6 +94,20 @@ public class EntropyModClient implements ClientModInitializer {
 											.then(literal("long")
 													.executes(ctx -> run(ctx,
 															IntegerArgumentType.getInteger(ctx, "cap"), true)))))));
+
+			// TEMPORARY: asks the server for the pick history; the receiver above
+			// logs it. Unlike /entropytest this DOES exercise the real server
+			// round-trip, so it proves the payload pair rather than only the client
+			// rendering path. Replace with a real history screen later.
+			dispatcher.register(literal("entropyhistory").executes(ctx -> {
+				if (!ClientPlayNetworking.canSend(HistoryRequestPayload.TYPE)) {
+					EntropyMod.LOGGER.warn("/entropyhistory -- server does not accept HistoryRequestPayload "
+							+ "(not an Entropy Mod server?)");
+					return 0;
+				}
+				ClientPlayNetworking.send(HistoryRequestPayload.INSTANCE);
+				return 1;
+			}));
 		});
 	}
 

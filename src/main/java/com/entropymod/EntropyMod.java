@@ -1,7 +1,10 @@
 package com.entropymod;
 
+import com.entropymod.entropy.EffectBehaviors;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.network.ChoiceMadePayload;
+import com.entropymod.network.HistoryRequestPayload;
+import com.entropymod.network.HistoryResponsePayload;
 import com.entropymod.network.OpenChoicePayload;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
@@ -29,6 +32,12 @@ public class EntropyMod implements ModInitializer {
 		// current docs.fabricmc.net/develop/networking.
 		PayloadTypeRegistry.clientboundPlay().register(OpenChoicePayload.TYPE, OpenChoicePayload.CODEC);
 		PayloadTypeRegistry.serverboundPlay().register(ChoiceMadePayload.TYPE, ChoiceMadePayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(HistoryRequestPayload.TYPE, HistoryRequestPayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(HistoryResponsePayload.TYPE, HistoryResponsePayload.CODEC);
+
+		// Effect ids are matched between EffectRegistry and EffectBehaviors by string,
+		// which the compiler cannot check. Report mismatches once, at startup.
+		EffectBehaviors.validate();
 
 		// When a player submits their pick, hand it to that player's EntropyManager.
 		// Per Fabric docs, this handler already runs on the server thread, so no
@@ -39,6 +48,15 @@ public class EntropyMod implements ModInitializer {
 		ServerPlayNetworking.registerGlobalReceiver(ChoiceMadePayload.TYPE, (payload, context) -> {
 			MinecraftServer server = ((ServerLevel) context.player().level()).getServer();
 			EntropyManager.get(server).onChoiceMade(server, payload.chosenEffectId());
+		});
+
+		// History is fetched on demand, and answered only to the player who asked --
+		// this is a read, so it never touches the loop's state.
+		ServerPlayNetworking.registerGlobalReceiver(HistoryRequestPayload.TYPE, (payload, context) -> {
+			MinecraftServer server = ((ServerLevel) context.player().level()).getServer();
+			var history = EntropyManager.get(server).getHistory();
+			LOGGER.info("History requested by {} -- {} pick(s).", context.player().getName().getString(), history.size());
+			ServerPlayNetworking.send(context.player(), HistoryResponsePayload.from(history));
 		});
 
 		// Every server tick, let the EntropyManager check whether it's time

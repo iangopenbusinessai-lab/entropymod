@@ -32,15 +32,10 @@ public record OpenChoicePayload(
 	public static final Identifier ID = EntropyMod.id("open_choice");
 	public static final CustomPacketPayload.Type<OpenChoicePayload> TYPE = new CustomPacketPayload.Type<>(ID);
 
-	// NOTE: .map() on a StreamCodec keeps the SAME buffer type (B) as the codec
-	// it's called on -- it doesn't widen it. ByteBufCodecs.STRING_UTF8 is
-	// StreamCodec<ByteBuf, String>, so mapping it stays StreamCodec<ByteBuf, ...>,
-	// not StreamCodec<RegistryFriendlyByteBuf, ...>. This is fine: composite()
-	// accepts component codecs of any buffer type that's a supertype of the
-	// composite's buffer type (ByteBuf is a supertype of RegistryFriendlyByteBuf),
-	// per Fabric/NeoForge docs: "Most methods... look for ? super B".
-	private static final StreamCodec<ByteBuf, EffectPhase> PHASE_CODEC =
-			ByteBufCodecs.STRING_UTF8.map(EffectPhase::valueOf, EffectPhase::name);
+	// The phase codec moved to EntropyCodecs once HistoryResponsePayload needed it
+	// too -- the wire format for EffectPhase is defined in exactly one place. The
+	// buffer-type note that used to live here is now in that class.
+	private static final StreamCodec<ByteBuf, EffectPhase> PHASE_CODEC = EntropyCodecs.PHASE;
 
 	// Every record component MUST have a matching line here -- composite drives
 	// encode and decode from the same list, so a field added to the record but
