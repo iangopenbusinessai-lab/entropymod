@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"id": "entropymod",
+	"version": "${version}",
+	"name": "Entropy",
+	"description": "Every interval, choose 1 of 3 blessings, then 1 of 3 curses. Entropy climbs with every pick -- beat the Ender Dragon before it maxes out.",
+	"authors": [
+		"Ian"
+	],
+	"contact": {
+		"homepage": "",
+		"sources": ""
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/entropymod/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.entropymod.EntropyMod"
+		],
+		"client": [
+			"com.entropymod.client.EntropyModClient"
+		]
+	},
+	"mixins": [
+		"entropymod.mixins.json",
+		{
+			"config": "entropymod.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.1.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

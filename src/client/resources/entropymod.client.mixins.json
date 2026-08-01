@@ -1,0 +1,14 @@
+{
+	"required": true,
+	"package": "com.entropymod.client.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"EntropyModClientMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}
