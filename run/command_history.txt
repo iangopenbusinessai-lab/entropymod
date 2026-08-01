@@ -1,3 +1,13 @@
 /entropytest
 /help
 /entropytest
+/entropytest bad 90 137
+/entropytest good 90 137
+/effect give @p minecraft:bad_omen infinite
+/effect give @p minecraft:haste infinite
+/effect give @p minecraft:conduit_power infinite
+/entropytest good 90 137
+/entropyhistory
+/entropytest
+/entropyhistory
+/entropytest
