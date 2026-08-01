@@ -1,6 +1,5 @@
 package com.entropymod.entropy;
 
-import com.entropymod.EntropyMod;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -9,72 +8,72 @@ import net.minecraft.server.level.ServerPlayer;
  * Everything an {@link EffectBehavior} needs to do its job, in one object.
  *
  * <p>This exists instead of passing a raw {@code MinecraftServer} so that later
- * additions (the {@code EntropyManager} itself, an RNG seeded per-run, the
- * remaining duration, a "why" reason for removal) can be added here <em>once</em>
- * rather than editing the signature of every effect class. Treat this as the
- * extension point: adding a field here is cheap, changing
- * {@code apply(EffectContext)} is not.
+ * additions can be added here <em>once</em> rather than editing the signature of
+ * every effect class. Treat this as the extension point: adding a field here is
+ * cheap, changing {@code apply(EffectContext)} is not.
  *
- * <p>Scoped to singleplayer per CLAUDE.md: {@link #player()} returns "the"
- * player. It is nullable rather than assumed-present because the server can
- * tick with nobody logged in (the integrated server does this briefly during
- * world load), and a real behavior that dereferences it blindly would crash
- * there. If this project ever goes multiplayer, {@link #players()} is the
- * honest accessor and {@code player()} is the one that has to go.
+ * <p>Unlike the first version, this now names a <b>specific target player</b>
+ * rather than "the" player. Re-application after a respawn happens for one
+ * player at a time, so a behavior must be told which one — guessing
+ * "first in the list" would silently buff the wrong player the moment a second
+ * one exists.
  */
 public final class EffectContext {
 
-	private final MinecraftServer server;
-	private final EffectDefinition effect;
+	/** Why {@link EffectBehavior#apply} is being called. */
+	public enum Reason {
+		/** The player just chose this effect. Happens once per effect, ever. */
+		PICKED,
+		/**
+		 * Re-establishing an effect the player already owns, after a respawn, a
+		 * rejoin, or a dimension change that rebuilt their attribute map. Happens an
+		 * unbounded number of times — behaviors must be idempotent under this.
+		 */
+		REAPPLIED
+	}
 
-	public EffectContext(MinecraftServer server, EffectDefinition effect) {
+	private final MinecraftServer server;
+	private final ServerPlayer target;
+	private final EffectDefinition effect;
+	private final Reason reason;
+
+	public EffectContext(MinecraftServer server, ServerPlayer target, EffectDefinition effect, Reason reason) {
 		this.server = server;
+		this.target = target;
 		this.effect = effect;
+		this.reason = reason;
 	}
 
 	public MinecraftServer server() {
 		return server;
 	}
 
-	/** The definition of the effect being applied/removed -- id, duration, category, description. */
+	/** The player this apply/remove is for. Never null. */
+	public ServerPlayer target() {
+		return target;
+	}
+
+	/** The definition being applied/removed -- id, category, description. */
 	public EffectDefinition effect() {
 		return effect;
 	}
 
-	/** All online players. The honest accessor; {@link #player()} is the singleplayer shorthand. */
-	public java.util.List<ServerPlayer> players() {
-		return server.getPlayerList().getPlayers();
+	public Reason reason() {
+		return reason;
 	}
 
-	/** The single player, or null if nobody is online. See the class javadoc on why this is nullable. */
-	public ServerPlayer player() {
-		java.util.List<ServerPlayer> players = players();
-		return players.isEmpty() ? null : players.get(0);
+	/** True on a fresh pick, false when re-establishing an effect after respawn/rejoin. */
+	public boolean isFreshPick() {
+		return reason == Reason.PICKED;
 	}
 
+	/** Message just the target player. */
+	public void tell(String message) {
+		target.sendSystemMessage(Component.literal(message));
+	}
+
+	/** Message everyone. Used for run-wide announcements, not per-effect chatter. */
 	public void broadcast(String message) {
 		server.getPlayerList().broadcastSystemMessage(Component.literal(message), false);
-	}
-
-	// ---------------------------------------------------------------------
-	// Stub plumbing.
-	//
-	// These two exist so the 11 placeholder behaviors don't each repeat the
-	// same log + broadcast boilerplate. They are SCAFFOLDING: as each effect
-	// grows a real implementation, that class stops calling these, and once
-	// none do, both methods should be deleted along with this comment.
-	// ---------------------------------------------------------------------
-
-	/** Stub announcement for apply: logs and tells the player the effect started. */
-	public void announceApply() {
-		EntropyMod.LOGGER.info("Applying effect: {} ({}, {} ticks)",
-				effect.displayName(), effect.category(), effect.durationTicks());
-		broadcast("[Entropy] Applying " + effect.displayName() + " -- " + effect.description());
-	}
-
-	/** Stub announcement for remove: logs and tells the player the effect ended. */
-	public void announceRemove() {
-		EntropyMod.LOGGER.info("Removing effect: {}", effect.displayName());
-		broadcast("[Entropy] " + effect.displayName() + " has worn off.");
 	}
 }

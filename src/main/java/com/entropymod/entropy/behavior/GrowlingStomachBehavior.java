@@ -1,24 +1,19 @@
 package com.entropymod.entropy.behavior;
 
-import com.entropymod.entropy.EffectBehavior;
-import com.entropymod.entropy.EffectContext;
+import com.entropymod.entropy.HookEffectBehavior;
 
 /**
- * Growling Stomach (BAD / SURVIVAL / 3600t) -- "Hunger drains 25% faster".
+ * Growling Stomach (BAD / SURVIVAL) -- hunger drains 25% faster.
  *
- * <p>STUB -- announces only, touches no game state. This class is the single
- * place the real implementation goes; nothing outside it needs to change.
- * Real version: shares whatever mechanism Iron Stomach lands on, with the multiplier inverted. Build them together.
+ * <p>Exact inverse of Iron Stomach, sharing the same mixin. Counterplay: carry more food.
+ *
+ * <p>apply()/remove() are empty by design -- see {@link HookEffectBehavior}.
+ * The multiplier below is read by the mixin via EffectHooks.
  */
-public final class GrowlingStomachBehavior implements EffectBehavior {
+public final class GrowlingStomachBehavior extends HookEffectBehavior {
 
-	@Override
-	public void apply(EffectContext ctx) {
-		ctx.announceApply();
-	}
+	public static final String ID = "growling_stomach";
 
-	@Override
-	public void remove(EffectContext ctx) {
-		ctx.announceRemove();
-	}
+	/** Exhaustion accumulates at 125% of normal, so hunger drains 25% faster. */
+	public static final float MULTIPLIER = 1.25f;
 }

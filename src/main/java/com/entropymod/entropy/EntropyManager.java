@@ -2,77 +2,129 @@ package com.entropymod.entropy;
 
 import com.entropymod.EntropyMod;
 import com.entropymod.network.OpenChoicePayload;
+import com.mojang.serialization.Codec;
+import com.mojang.serialization.codecs.RecordCodecBuilder;
 import net.fabricmc.fabric.api.networking.v1.PlayerLookup;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.datafix.DataFixTypes;
+import net.minecraft.world.level.saveddata.SavedData;
+import net.minecraft.world.level.saveddata.SavedDataType;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import java.util.WeakHashMap;
 
 /**
  * Runs the core game loop: every intervalTicks, alternate GOOD/BAD, roll 3
- * choices, and broadcast them to all players. One EntropyManager per server
- * (world). Currently in-memory only -- NOT saved across server restarts yet.
- * TODO (next milestone): back this with a PersistentState so entropy/pickCount
- * /history/active effects survive a save/reload, instead of resetting to 0 each
- * session.
+ * choices, and broadcast them. One EntropyManager per world.
  *
- * <p>Also owns the three pieces of tracking state built on top of that loop:
- * the {@link ActiveEffectTracker} (expiry + anti-stacking), the pick
- * {@link PickRecord} history, and the dispatch into {@link EffectBehaviors}.
- * It never contains per-effect logic itself -- that lives in the behavior
- * classes, one per effect.
+ * <p><b>This is now a {@link SavedData}</b>, replacing the old in-memory
+ * {@code WeakHashMap<MinecraftServer, EntropyManager>}. That mattered as soon as
+ * effects became permanent: in singleplayer, quitting to the title screen stops
+ * the integrated server, so without this every acquired effect, the entropy
+ * count, and the whole run vanished on the trip through the main menu. Effects
+ * surviving a rejoin is a stated requirement, and re-application alone cannot
+ * deliver it if the list of what to re-apply is gone.
+ *
+ * <p>Also owns the state built on top of the loop: {@link AcquiredEffects}
+ * (which doubles as the active set, the no-repeat set, and the anti-stacking
+ * source), the {@link PickRecord} history, and dispatch into
+ * {@link EffectBehaviors}. It never contains per-effect logic itself.
+ *
+ * <p><b>Every mutation must call {@link #setDirty()}</b> or the change is not
+ * written to disk. That is the one easy-to-miss rule in this file.
  */
-public class EntropyManager {
+public class EntropyManager extends SavedData {
 	// 20 ticks/sec * 60 sec * 3 min = 3600 ticks
 	public static final int DEFAULT_INTERVAL_TICKS = 3600;
 	public static final int DEFAULT_ENTROPY_CAP = 100;
 
-	private static final Map<MinecraftServer, EntropyManager> INSTANCES = new WeakHashMap<>();
+	/**
+	 * Public so a headless harness can round-trip it against the real class. A
+	 * broken codec here is not a subtle bug -- it makes the world fail to load --
+	 * so it gets the same encode/decode verification the network payloads do.
+	 *
+	 * <p>Every field is {@code optionalFieldOf} with a default. That is what lets a
+	 * save written by an older build load in a newer one that added a field, and it
+	 * is why adding a field here is a safe, backward-compatible change. Adding a
+	 * <em>required</em> field would make every existing save unloadable.
+	 */
+	public static final Codec<EntropyManager> CODEC = RecordCodecBuilder.create(instance -> instance.group(
+			Codec.INT.optionalFieldOf("entropy", 0).forGetter(m -> m.entropy),
+			Codec.INT.optionalFieldOf("pick_count", 0).forGetter(m -> m.pickCount),
+			Codec.BOOL.optionalFieldOf("game_over", false).forGetter(m -> m.gameOver),
+			Codec.INT.optionalFieldOf("entropy_cap", DEFAULT_ENTROPY_CAP).forGetter(m -> m.entropyCap),
+			Codec.INT.optionalFieldOf("interval_ticks", DEFAULT_INTERVAL_TICKS).forGetter(m -> m.intervalTicks),
+			Codec.STRING.listOf().optionalFieldOf("acquired", List.of())
+					.forGetter(m -> List.copyOf(m.acquired.ids())),
+			PickRecord.CODEC.listOf().optionalFieldOf("history", List.of()).forGetter(m -> m.history)
+	).apply(instance, EntropyManager::new));
 
+	private static final SavedDataType<EntropyManager> TYPE = new SavedDataType<>(
+			EntropyMod.id("entropy_run"),
+			EntropyManager::new,
+			CODEC,
+			DataFixTypes.LEVEL);
+
+	/**
+	 * Stored on the overworld's data storage -- the run is a property of the world,
+	 * not of a dimension, so it must not be looked up from whichever level the
+	 * caller happens to hold or the Nether would get its own separate run.
+	 */
 	public static EntropyManager get(MinecraftServer server) {
-		return INSTANCES.computeIfAbsent(server, s -> new EntropyManager());
+		return server.overworld().getDataStorage().computeIfAbsent(TYPE);
 	}
 
 	private final Random random = new Random();
-	private final ActiveEffectTracker activeEffects = new ActiveEffectTracker();
+	private final AcquiredEffects acquired = new AcquiredEffects();
 	private final List<PickRecord> history = new ArrayList<>();
 
 	private int entropy = 0;
 	private int pickCount = 0;
-	private int tickCounter = 0;
-	private boolean waitingOnChoice = false;
 	private boolean gameOver = false;
 
 	// Config, settable at world creation (wire up to a config screen later).
 	private int intervalTicks = DEFAULT_INTERVAL_TICKS;
 	private int entropyCap = DEFAULT_ENTROPY_CAP;
 
+	/**
+	 * Not persisted. Restarting the interval on load is deliberate: saving a
+	 * partial countdown would mean a player who reloads repeatedly could sit just
+	 * below the threshold forever, and losing at most one interval of progress on
+	 * load is a far better failure than that.
+	 */
+	private int tickCounter = 0;
+
+	/** Also not persisted -- a pending choice cannot survive the client that was answering it. */
+	private boolean waitingOnChoice = false;
+
+	public EntropyManager() {}
+
+	/** Codec constructor. */
+	private EntropyManager(int entropy, int pickCount, boolean gameOver, int entropyCap, int intervalTicks,
+						   List<String> acquiredIds, List<PickRecord> history) {
+		this.entropy = entropy;
+		this.pickCount = pickCount;
+		this.gameOver = gameOver;
+		this.entropyCap = entropyCap;
+		this.intervalTicks = intervalTicks;
+		acquiredIds.forEach(this.acquired::add);
+		this.history.addAll(history);
+	}
+
+	// ------------------------------------------------------------------
+	// Loop
+	// ------------------------------------------------------------------
+
 	public void tick(MinecraftServer server) {
-		if (gameOver) {
+		if (gameOver || waitingOnChoice) {
 			return;
 		}
-
-		// Expiry runs every tick and is deliberately NOT gated on waitingOnChoice.
-		// A duration is elapsed-time from when the effect was applied, not a count
-		// of "ticks the interval clock happened to be running" -- so an effect that
-		// would have ended during an open GUI ends, rather than being held alive by
-		// someone else's pending pick. (In singleplayer this is moot: the choice
-		// screen is a pause screen, so the server isn't ticking at all.)
-		for (ActiveEffect expired : activeEffects.tickAndCollectExpired()) {
-			fireRemove(server, expired, "duration elapsed");
-		}
-
-		if (waitingOnChoice) {
-			return; // interval clock is paused while a choice is pending
-		}
-
 		tickCounter++;
 		if (tickCounter >= intervalTicks) {
 			tickCounter = 0;
@@ -86,29 +138,16 @@ public class EntropyManager {
 	 * reason instead of silently doing nothing. {@link #tick} ignores it.
 	 */
 	public enum PickTrigger {
-		/** Choices rolled and sent; the loop is now waiting on the player. */
 		OPENED,
-		/** The run had already ended before this attempt. */
 		RUN_ALREADY_OVER,
-		/** A pick is already open and unanswered. */
 		CHOICE_PENDING,
-		/** This attempt hit the entropy cap and ended the run. */
 		RUN_ENDED_NOW,
-		/** Nothing in the registry is eligible for this phase at this entropy. */
 		NO_ELIGIBLE_EFFECTS
 	}
 
 	/**
-	 * Opens a pick right now instead of waiting out the interval.
-	 *
-	 * <p>This is the <em>real</em> path, not a debug imitation of it: the entropy
-	 * cap check, interval-scoped expiry, phase alternation, anti-stacking roll and
-	 * payload broadcast all happen because this delegates straight to
-	 * {@link #triggerPick}. The only thing it bypasses is the clock.
-	 *
-	 * <p>The two guards below are exactly the ones {@link #tick} applies before it
-	 * would ever reach {@code triggerPick}, so forcing a pick cannot reach a state
-	 * a real interval firing couldn't.
+	 * Opens a pick right now instead of waiting out the interval. The real path,
+	 * not a debug imitation of it -- see CLAUDE.md's debug-command table.
 	 */
 	public PickTrigger forcePick(MinecraftServer server) {
 		if (gameOver) {
@@ -117,8 +156,6 @@ public class EntropyManager {
 		if (waitingOnChoice) {
 			return PickTrigger.CHOICE_PENDING;
 		}
-		// Reset the countdown as a real firing does, so the natural interval doesn't
-		// arrive moments later on top of the forced one.
 		tickCounter = 0;
 		return triggerPick(server);
 	}
@@ -126,36 +163,37 @@ public class EntropyManager {
 	private PickTrigger triggerPick(MinecraftServer server) {
 		if (entropy >= entropyCap) {
 			gameOver = true;
+			setDirty();
 			server.getPlayerList().broadcastSystemMessage(
-					Component.literal(
-							"[Entropy] Entropy has reached " + entropy + ". The run is over -- did you beat the dragon in time?"),
+					Component.literal("[Entropy] Entropy has reached " + entropy
+							+ ". The run is over -- did you beat the dragon in time?"),
 					false);
 			return PickTrigger.RUN_ENDED_NOW;
 		}
 
-		// "Lasts until the next interval" (durationTicks == -1) means exactly this
-		// moment. Expiring them HERE rather than on a precomputed countdown is what
-		// keeps them correct when the interval length changes mid-run, and it also
-		// frees their categories before the roll below reads occupancy.
-		for (ActiveEffect expired : activeEffects.expireIntervalScoped()) {
-			fireRemove(server, expired, "interval elapsed");
-		}
-
 		EffectPhase phase = currentPhase();
-		Set<EffectCategory> occupied = activeEffects.occupiedCategories();
-		EffectRegistry.RollResult roll = EffectRegistry.rollThree(phase, entropy, random, occupied);
+		Set<EffectCategory> occupied = acquired.occupiedCategories();
+		EffectRegistry.RollResult roll =
+				EffectRegistry.roll(phase, entropy, random, acquired.ids(), occupied);
 
+		if (roll.repeatFallback()) {
+			EntropyMod.LOGGER.warn(
+					"[no-repeat] Every eligible {} effect at entropy {} has already been picked -- "
+							+ "falling back to re-offering one. PLACEHOLDER policy (CLAUDE.md Open Question 6); "
+							+ "the real fix is more content. Acquired: {}",
+					phase, entropy, acquired);
+		}
 		if (roll.categoryFallback()) {
 			EntropyMod.LOGGER.warn(
-					"[anti-stacking] Every eligible {} effect at entropy {} belongs to an already-occupied "
-							+ "category {} -- falling back to offering a colliding effect. This is a PLACEHOLDER "
-							+ "policy, not a decided rule (CLAUDE.md Open Question 6). Active: {}",
-					phase, entropy, occupied, activeEffects.active());
+					"[anti-stacking] Every remaining {} effect at entropy {} is in an already-occupied "
+							+ "category {} -- offering a colliding effect. PLACEHOLDER policy.",
+					phase, entropy, occupied);
 		}
 
 		List<EffectDefinition> choices = roll.choices();
 		if (choices.isEmpty()) {
-			EntropyMod.LOGGER.warn("No eligible {} effects found at entropy {} -- add more to EffectRegistry!", phase, entropy);
+			EntropyMod.LOGGER.warn("No eligible {} effects at entropy {} -- add more to EffectRegistry!",
+					phase, entropy);
 			return PickTrigger.NO_ELIGIBLE_EFFECTS;
 		}
 
@@ -163,24 +201,12 @@ public class EntropyManager {
 		EntropyMod.LOGGER.info("Pick #{}: phase={} entropy={} occupied={} choices={}",
 				pickCount + 1, phase, entropy, occupied, choices);
 
-		// Send the configured cap, not a constant: the client tints its accent
-		// ramp by entropy/entropyCap, so a non-default cap here would otherwise
-		// make every colour on the client wrong.
 		OpenChoicePayload payload = OpenChoicePayload.fromChoices(phase, entropy, entropyCap, choices);
-		for (var player : PlayerLookup.all(server)) {
+		for (ServerPlayer player : PlayerLookup.all(server)) {
 			ServerPlayNetworking.send(player, payload);
 		}
 		return PickTrigger.OPENED;
 	}
-
-	/** True while a pick is open and unanswered. */
-	public boolean isWaitingOnChoice() { return waitingOnChoice; }
-
-	/** True once the run has ended (entropy cap reached). */
-	public boolean isGameOver() { return gameOver; }
-
-	/** Ticks elapsed in the current interval. Reported by the debug command; not used by the loop. */
-	public int getTicksIntoInterval() { return tickCounter; }
 
 	/** Called by the server-side network receiver when a player submits their pick. */
 	public void onChoiceMade(MinecraftServer server, String chosenEffectId) {
@@ -198,43 +224,97 @@ public class EntropyManager {
 		history.add(new PickRecord(pickCount + 1, currentPhase(), chosen.id(),
 				chosen.displayName(), chosen.description(), entropy));
 
-		// All player-facing feedback now comes from the behavior's apply(), not from
-		// here -- this method must not know anything effect-specific.
-		EffectBehaviors.get(chosen.id()).apply(new EffectContext(server, chosen));
-
-		ActiveEffect tracked = activeEffects.add(chosen);
-		if (tracked == null) {
-			EntropyMod.LOGGER.info("{} is instantaneous (duration 0) -- not tracked, remove() will never fire.",
+		boolean isNew = acquired.add(chosen.id());
+		if (!isNew) {
+			EntropyMod.LOGGER.warn("'{}' was picked again -- only reachable via the repeat fallback.",
 					chosen.id());
-		} else {
-			EntropyMod.LOGGER.info("Now active: {} (active set: {})", tracked, activeEffects.active());
 		}
+
+		applyToAll(server, chosen, EffectContext.Reason.PICKED);
+
+		// The announcement lives here, not in the behaviors: it is a statement about
+		// the RUN ("you chose this"), and behaviors also run on every respawn, where
+		// announcing would be pure spam.
+		server.getPlayerList().broadcastSystemMessage(
+				Component.literal("[Entropy] " + chosen.displayName() + " -- " + chosen.description()),
+				false);
 
 		entropy++;
 		pickCount++;
 		waitingOnChoice = false;
+		setDirty();
+
+		EntropyMod.LOGGER.info("Acquired {} effect(s): {}", acquired.size(), acquired);
+	}
+
+	// ------------------------------------------------------------------
+	// Application / re-application
+	// ------------------------------------------------------------------
+
+	private void applyToAll(MinecraftServer server, EffectDefinition definition, EffectContext.Reason reason) {
+		for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+			applyTo(server, player, definition, reason);
+		}
+	}
+
+	private void applyTo(MinecraftServer server, ServerPlayer player, EffectDefinition definition,
+						 EffectContext.Reason reason) {
+		try {
+			EffectBehaviors.get(definition.id())
+					.apply(new EffectContext(server, player, definition, reason));
+		} catch (RuntimeException e) {
+			// One broken effect must not abort the loop or the join handler and leave
+			// the player with a half-applied set.
+			EntropyMod.LOGGER.error("Effect '{}' threw during apply({}) -- skipped.",
+					definition.id(), reason, e);
+		}
 	}
 
 	/**
-	 * The phase the NEXT pick will use. Strict GOOD -&gt; BAD alternation, derived
-	 * from how many picks have been made.
+	 * Re-establishes every acquired effect on one player. Call on join, on respawn,
+	 * and after any dimension change that rebuilds the player entity.
+	 *
+	 * <p>This is not a safety net, it is the <b>only</b> thing that puts effects
+	 * back. Attribute modifiers are applied transiently and are therefore never
+	 * saved in player NBT; on top of that, a death respawn constructs a brand-new
+	 * {@code ServerPlayer} and vanilla's {@code restoreFrom} only carries permanent
+	 * modifiers across -- and only when its boolean parameter is true, which it is
+	 * not for a death. Verified in bytecode, see CLAUDE.md.
+	 *
+	 * <p>Safe to call any number of times: every behavior's {@code apply} is
+	 * required to be idempotent, and the attribute ones achieve that by replacing a
+	 * modifier keyed on a stable per-effect Identifier rather than adding one.
 	 */
+	public void reapplyAll(MinecraftServer server, ServerPlayer player) {
+		if (acquired.isEmpty()) {
+			return;
+		}
+		List<EffectDefinition> definitions = acquired.definitions();
+		for (EffectDefinition definition : definitions) {
+			applyTo(server, player, definition, EffectContext.Reason.REAPPLIED);
+		}
+		EntropyMod.LOGGER.info("Re-applied {} effect(s) to {}", definitions.size(),
+				player.getName().getString());
+
+		List<String> unknown = acquired.unknownIds();
+		if (!unknown.isEmpty()) {
+			EntropyMod.LOGGER.warn("Saved run references {} effect id(s) this build does not define: {}. "
+					+ "They were skipped; the rest of the run is intact.", unknown.size(), unknown);
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// Accessors
+	// ------------------------------------------------------------------
+
+	/** The phase the NEXT pick will use. Strict GOOD -&gt; BAD alternation. */
 	public EffectPhase currentPhase() {
 		return (pickCount % 2 == 0) ? EffectPhase.GOOD : EffectPhase.BAD;
 	}
 
-	private void fireRemove(MinecraftServer server, ActiveEffect expired, String reason) {
-		EffectDefinition definition = EffectRegistry.byId(expired.effectId());
-		if (definition == null) {
-			// Only reachable if an effect is deleted from the registry while active
-			// (i.e. a mod update mid-run, once persistence lands). Log rather than
-			// throw: a stale entry must not be able to crash the server tick.
-			EntropyMod.LOGGER.warn("Active effect '{}' expired but has no EffectDefinition -- cannot remove it.",
-					expired.effectId());
-			return;
-		}
-		EntropyMod.LOGGER.info("Effect expired ({}): {}", reason, definition.id());
-		EffectBehaviors.get(definition.id()).remove(new EffectContext(server, definition));
+	/** The run's acquired effects: active set, no-repeat set, and category source in one. */
+	public AcquiredEffects acquired() {
+		return acquired;
 	}
 
 	/** Full pick history for this run, oldest first. Unmodifiable. */
@@ -242,15 +322,13 @@ public class EntropyManager {
 		return Collections.unmodifiableList(history);
 	}
 
-	/** Currently-running effects. Unmodifiable; exposed for debugging and the history/status surfaces. */
-	public List<ActiveEffect> getActiveEffects() {
-		return activeEffects.active();
-	}
-
+	public boolean isWaitingOnChoice() { return waitingOnChoice; }
+	public boolean isGameOver() { return gameOver; }
+	public int getTicksIntoInterval() { return tickCounter; }
 	public int getEntropy() { return entropy; }
 	public int getPickCount() { return pickCount; }
 	public int getEntropyCap() { return entropyCap; }
-	public void setEntropyCap(int cap) { this.entropyCap = cap; }
+	public void setEntropyCap(int cap) { this.entropyCap = cap; setDirty(); }
 	public int getIntervalTicks() { return intervalTicks; }
-	public void setIntervalTicks(int ticks) { this.intervalTicks = ticks; }
+	public void setIntervalTicks(int ticks) { this.intervalTicks = ticks; setDirty(); }
 }

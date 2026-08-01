@@ -120,8 +120,8 @@ public final class EntropyCommands {
 							"[Entropy] interval " + manager.getTicksIntoInterval() + "/"
 									+ manager.getIntervalTicks() + " ticks"), false);
 					source.sendSuccess(() -> Component.literal(
-							"[Entropy] active: " + (manager.getActiveEffects().isEmpty()
-									? "(none)" : manager.getActiveEffects().toString())), false);
+							"[Entropy] acquired (" + manager.acquired().size() + "): "
+									+ (manager.acquired().isEmpty() ? "(none)" : manager.acquired().toString())), false);
 					return 1;
 				}));
 	}

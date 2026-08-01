@@ -1,24 +1,19 @@
 package com.entropymod.entropy.behavior;
 
-import com.entropymod.entropy.EffectBehavior;
-import com.entropymod.entropy.EffectContext;
+import com.entropymod.entropy.AttributeEffectBehavior;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 
 /**
- * Sure Footing (GOOD / MOVEMENT / 3600t) -- "+10% movement speed for 3 min".
+ * Sure Footing (GOOD / MOVEMENT) -- +15% movement speed.
  *
- * <p>STUB -- announces only, touches no game state. This class is the single
- * place the real implementation goes; nothing outside it needs to change.
- * Real version: a movement-speed attribute modifier with a stable UUID, added in apply and removed by that same UUID in remove.
+ * <p>ADD_MULTIPLIED_BASE against the player's base speed of 0.1, so this is exactly +15% and is the precise inverse of Heavy Boots. MOVEMENT_SPEED floors at 0.0, which only matters for the negative twin.
  */
-public final class SureFootingBehavior implements EffectBehavior {
+public final class SureFootingBehavior extends AttributeEffectBehavior {
 
-	@Override
-	public void apply(EffectContext ctx) {
-		ctx.announceApply();
-	}
+	public static final String ID = "sure_footing";
 
-	@Override
-	public void remove(EffectContext ctx) {
-		ctx.announceRemove();
+	public SureFootingBehavior() {
+		super(Attributes.MOVEMENT_SPEED, 0.15, AttributeModifier.Operation.ADD_MULTIPLIED_BASE);
 	}
 }

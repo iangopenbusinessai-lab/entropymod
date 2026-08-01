@@ -8,12 +8,15 @@ import com.entropymod.network.HistoryRequestPayload;
 import com.entropymod.network.HistoryResponsePayload;
 import com.entropymod.network.OpenChoicePayload;
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.entity.event.v1.ServerEntityLevelChangeEvents;
+import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,6 +67,32 @@ public class EntropyMod implements ModInitializer {
 		// to the real EntropyManager, unlike the client-side /entropypreview.
 		EntropyCommands.register();
 
+		// ---- Effect re-application ----------------------------------------
+		// All effects are permanent, but the state that implements them is NOT.
+		// Attribute modifiers are applied transiently (never written to player NBT
+		// -- see AttributeEffectBehavior for why), and on top of that a death
+		// respawn builds a brand-new ServerPlayer whose attribute map starts empty:
+		// vanilla's restoreFrom only carries permanent modifiers, and only when its
+		// boolean parameter is true, which it is not for a death. Verified in
+		// bytecode, see CLAUDE.md.
+		//
+		// So these three hooks are not a safety net -- they are the only thing that
+		// puts effects back. Every apply() is required to be idempotent, so
+		// re-applying an effect the player still has is a no-op rather than a
+		// double-stack.
+		// NOTE: there is no Entity.getServer() in this mapping. ServerPlayer.level()
+		// returns ServerLevel covariantly, so level().getServer() is the accessor --
+		// see the CLAUDE.md mapping note.
+		ServerPlayerEvents.JOIN.register(EntropyMod::reapplyTo);
+
+		ServerPlayerEvents.AFTER_RESPAWN.register((oldPlayer, newPlayer, alive) -> reapplyTo(newPlayer));
+
+		// Returning from the End goes through PlayerList.respawn too, but an
+		// ordinary portal does not -- it moves the same entity between levels. This
+		// covers that path so a trip to the Nether can't quietly drop everything.
+		ServerEntityLevelChangeEvents.AFTER_PLAYER_CHANGE_LEVEL.register(
+				(player, origin, destination) -> reapplyTo(player));
+
 		// Every server tick, let the EntropyManager check whether it's time
 		// for the next pick. This is the heartbeat of the whole mod.
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
@@ -74,6 +103,15 @@ public class EntropyMod implements ModInitializer {
 				EntropyManager.DEFAULT_INTERVAL_TICKS,
 				EntropyManager.DEFAULT_INTERVAL_TICKS / 1200.0,
 				EntropyManager.DEFAULT_ENTROPY_CAP);
+	}
+
+	/** Re-establishes every acquired effect on one player. See the registrations above. */
+	private static void reapplyTo(ServerPlayer player) {
+		MinecraftServer server = player.level().getServer();
+		if (server == null) {
+			return;
+		}
+		EntropyManager.get(server).reapplyAll(server, player);
 	}
 
 	public static Identifier id(String path) {

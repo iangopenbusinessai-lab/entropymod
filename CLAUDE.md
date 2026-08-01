@@ -144,6 +144,34 @@ Facts that checking produced, three of which contradicted reasonable guesses:
   `Predicate`, which is what `.requires` wants. Note the two `hasPermission`s
   are different things — the static one on `Commands` exists, the instance one
   on the source does not.
+- **There is no `Entity.getServer()`** in this mapping — the convenience
+  accessor most code reaches for simply isn't there. But `ServerPlayer.level()`
+  is a **covariant override returning `ServerLevel`**, so from a `ServerPlayer`
+  the accessor is just `player.level().getServer()`, no cast needed. (The
+  `(ServerLevel)` cast recorded above is still required when you only have a
+  `Player`.)
+- **`ServerEntityWorldChangeEvents` → `ServerEntityLevelChangeEvents`**, same
+  World→Level rename as everything else, and the field is
+  `AFTER_PLAYER_CHANGE_LEVEL` (not `AFTER_PLAYER_CHANGE`). Its functional method
+  is `afterChangeLevel(ServerPlayer, ServerLevel origin, ServerLevel destination)`.
+- **`DimensionDataStorage` → `SavedDataStorage`**, reached via
+  `ServerLevel.getDataStorage()`. `SavedData` no longer has `save(CompoundTag)`
+  / a load function; it is **codec-based** now:
+  `new SavedDataType<>(Identifier, Supplier<T>, Codec<T>, DataFixTypes)` plus
+  `storage.computeIfAbsent(TYPE)`. Any tutorial showing `SavedData.load`/`save`
+  overrides predates this.
+- **`AttributeModifier` is keyed by `Identifier`, not `UUID`.** Every older guide
+  builds a `UUID.fromString("...")` constant table; that constructor is gone. The
+  record is `AttributeModifier(Identifier, double, Operation)`, and
+  `AttributeInstance` looks modifiers up by `Identifier` throughout
+  (`getModifier`, `hasModifier`, `removeModifier`). Deriving the id from
+  something stable you already have beats a hardcoded UUID table.
+- **`addTransientModifier` throws `IllegalArgumentException` on a duplicate id**
+  — verified by running it. Use **`addOrUpdateTransientModifier`** (or
+  `addOrReplacePermanentModifier`) for anything that might be applied more than
+  once; its bytecode removes the existing id first, which is what makes
+  re-application idempotent. The failure mode here is a crash on respawn rather
+  than a silent double-buff, which is at least loud — but it is still a crash.
 - Server commands register via
   `CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> ...)`
   — **three** parameters, from `net.fabricmc.fabric.api.command.v2`. The
@@ -176,11 +204,9 @@ is in the right place (start of `triggerPick`, before rolling).
   sitting on an open GUI blocks the entire server's timer for everyone.
   Might be fine for solo play (which this was originally framed around) but
   worth confirming — see Open Question 2.
-- In-memory only, `WeakHashMap<MinecraftServer, EntropyManager>`. Entropy,
-  pick count, **pick history, and the active-effect list** all reset on every
-  server restart. Needs a real `PersistentState` (or equivalent) to survive a
-  save/reload. Note this got bigger with the tracking work — Question 10 now
-  has four things to decide about, not two.
+- ~~In-memory only~~ **RESOLVED.** `EntropyManager` is now a `SavedData` on the
+  overworld's storage; entropy, pick count, acquired effects and history all
+  survive a save/reload. See "Persistence — BUILT".
 - No countdown warning before a pick forces open — it just happens. Might be
   jarring; might be exactly the point (see Open Question 8).
 
@@ -208,13 +234,16 @@ system, MelodyBrain's layered build). Adding effect #47 later is just a new
   yet (e.g. "never roll 3 counterplay:false effects at once below entropy 40"
   isn't checked anywhere). `rollThree` is now the obvious place — it already
   filters by category, so a counterplay constraint slots in beside it.
-- **The Tier 1 pool is thin enough that anti-stacking bites quickly.** GOOD has
-  6 effects across only 4 categories (MOVEMENT ×2, UTILITY ×2, SURVIVAL,
-  TOOL); occupying MOVEMENT + UTILITY leaves just 2 eligible choices, and
-  three long-duration picks can empty it entirely and trip the collision
-  fallback. This is a content problem, not a code problem — porting Tiers 2-4
-  makes it go away. Worth knowing before reading a fallback warning in the log
-  as a bug.
+- **The pool is thin enough that both fallbacks are reachable in normal play.**
+  10 effects per phase means the no-repeat pool is empty by the 11th pick of a
+  phase, and picks 9 and 10 legitimately show fewer than 3 cards. At the default
+  entropy cap of 100 (~50 picks per phase) a run will hit this every time. This
+  is a content problem, not a code problem — but it is not a rare edge case, and
+  a fallback warning in the log is expected rather than a bug.
+- **All 20 effects share the same 0-25 entropy range.** There is only one tier,
+  so the range does nothing yet; it starts mattering when Tier 2 lands, and
+  Open Question 3 (should high entropy still roll low-tier effects?) is the
+  thing to settle before writing those ranges.
 
 ### Networking (`OpenChoicePayload`, `ChoiceMadePayload`) — functionally complete, unverified
 **What it does well:** clean split of S2C (here are your choices) vs C2S
@@ -332,94 +361,239 @@ Two things to know before changing it:
   `y` down when `player.getActiveEffects()` is non-empty is the obvious fix;
   it was left alone because the top-right position was specified.
 
-### Mixins — placeholders only, correctly scaffolded
-Both mixin stubs are unused example code, kept only to prove the pattern is
-wired up correctly for later signature effects (Mirror World's inverted
-input, Fisheye's forced FOV, Doppelganger's custom entity, etc.). Nothing to
-evaluate yet — there's no real mixin logic written.
+### Mixins — three real ones now, plus the original placeholders
+`EntropyModMixin` / `EntropyModClientMixin` are still unused example code.
+**Three real mixins now exist** for the hook-driven effects — see "The three
+mixins" under the Tier 1 content batch below. The pattern is proven; later
+signature effects (Mirror World's inverted input, Fisheye's forced FOV,
+Doppelganger's custom entity) can follow the same shape.
 
-### Effect execution — architecture BUILT, content still empty
-**The plumbing is done; the effects still do nothing.** Picking an effect now
-routes through a real per-effect class instead of inline code in
-`EntropyManager`, but every one of those classes is a stub that logs and sends
-a chat message. Nothing touches the game world yet — no status effects, no
-entity spawning, no attribute modifiers.
+### Effect execution — BUILT, and now with real content
+Picking an effect routes through a per-effect class in
+`com.entropymod.entropy.behavior`. **As of the permanent-effects session these
+are no longer stubs** — all 20 Tier 1 effects change real game state.
 
-**Adding a new effect is now exactly three things, and nothing else:**
+**Adding a new effect is exactly three things, and nothing else:**
 
 1. one `register(...)` line in `EffectRegistry`
-2. one new class in `com.entropymod.entropy.behavior` implementing
-   `EffectBehavior`
+2. one new class in `com.entropymod.entropy.behavior`
 3. one `register(...)` line in `EffectBehaviors`
 
-No other file should need to change — not `EntropyManager`, not the GUI, not
-networking. If a new effect makes you edit a fourth file, that's a signal the
-abstraction is missing something; fix the abstraction rather than the caller.
+Most new effects should extend `AttributeEffectBehavior` and be ~10 lines. If a
+new effect makes you edit a fourth file, that's a signal the abstraction is
+missing something; fix the abstraction rather than the caller.
 
 - `EffectBehavior` — `apply(EffectContext)` / `remove(EffectContext)`. Per
-  CLAUDE.md Open Question 9 this is option (b), one class per effect, not one
-  big switch.
-- `EffectContext` — wraps the `MinecraftServer` **and the `EffectDefinition`
-  being applied**, so a behavior can read its own duration/category/description
-  without a registry lookup. This is the extension point: add fields *here*
-  rather than changing `apply`'s signature, which would touch every effect.
-  `player()` is nullable on purpose — the server ticks briefly with nobody
-  online during world load, and a real behavior that dereferences it blindly
-  crashes there.
+  Open Question 9 this is option (b), one class per effect, not a big switch.
+- `EffectContext` — wraps the server, the `EffectDefinition`, **a specific
+  target `ServerPlayer`**, and a `Reason` (`PICKED` vs `REAPPLIED`). The target
+  is not optional: re-application happens one player at a time, and the old
+  "first player in the list" shortcut would have buffed the wrong player the
+  moment a second one existed.
 - `EffectBehaviors` — id → behavior map. Ids are matched to `EffectRegistry` by
-  **string**, which the compiler cannot check: a typo yields a silently
-  do-nothing effect rather than a build failure. `EffectBehaviors.validate()`
-  runs at mod init and logs both directions of mismatch for exactly this
-  reason. An unregistered id returns a logging no-op, never null.
-- `EffectContext.announceApply()` / `announceRemove()` are **scaffolding**.
-  They exist so 11 stubs don't repeat the same broadcast boilerplate. As each
-  effect gets a real implementation it stops calling them; when none do, delete
-  both.
+  **string**, which the compiler cannot check, so each behavior exposes an `ID`
+  constant that both files use, and `validate()` reports both directions of
+  mismatch at init.
 
-### Active effect tracking + expiry — BUILT
-`ActiveEffectTracker` owns the live effect list and the two rules that read it
-(expiry, and category occupancy for anti-stacking). `EntropyManager.tick()`
-processes expiry every tick, not just on interval boundaries.
+**`apply` MUST be idempotent.** This is the most important rule in the codebase
+now and the easiest to break. `apply` runs once on the pick and then *again on
+every respawn, rejoin and dimension change* — an unbounded number of times.
+`AttributeEffectBehavior` gets this right via `addOrUpdateTransientModifier`;
+see the Part 0 note on why `addTransientModifier` is the trap.
 
-`durationTicks` semantics, all three verified headlessly:
+### Permanent effects — the architecture shift, and why
+**Every effect is permanent. `EffectDefinition` has no duration field at all.**
 
-- **`0`** — applied once, never added to the active list, `remove()` is
-  *never* called. `FieldRepairBehavior.remove` is deliberately an empty method
-  with a comment rather than an announcement, so a message there would be a
-  visible sign the contract broke upstream.
-- **`-1`** — "until the next interval". **Implemented as an event, not a
-  countdown**: `ActiveEffect.tick()` is a no-op for these, and they are expired
-  by `expireIntervalScoped()` at the top of `triggerPick`. This is the whole
-  point — converting `-1` into `intervalTicks` at apply time compiles fine and
-  looks right, then silently goes wrong the moment the interval is
-  reconfigured. Don't "simplify" it back into a countdown.
-- **`>0`** — decremented once per server tick; `remove()` fires on the exact
-  tick it reaches 0.
+It used to have `durationTicks`, an int whose value encoded three different
+lifetimes: `0` = fire once and never track, `-1` = until the next interval,
+`>0` = a tick countdown. That was replaced rather than extended, because an
+overloaded magic number cannot tell you which of its meanings is in play at the
+point you read it, and every consumer had to branch on all three.
 
-Expiry is deliberately **not** gated on `waitingOnChoice`: a duration is
-elapsed time from when it was applied, not a count of ticks the interval clock
-happened to be running. (Moot in singleplayer — the choice screen pauses the
-world — but correct if that ever changes.)
+**If temporary effects ever return, they must not return as an int.** Add a
+`sealed interface EffectDuration` with `Permanent` and `Ticks(int)` cases so the
+compiler forces every call site to handle both. This is written into
+`EffectDefinition`'s javadoc as well.
 
-Re-picking an effect that is still live refreshes its timer instead of
-double-tracking it. That is *not* the replace rule; it only ever matches an
-identical id, and is normally unreachable because anti-stacking excludes the
-whole category first. It exists to keep the collision-fallback path safe.
+What this deleted, rather than left unreachable:
+- `ActiveEffect` — the entire class. Its only job was holding `remainingTicks`
+  and the interval-scoped flag.
+- `ActiveEffectTracker.tickAndCollectExpired()` and `expireIntervalScoped()`.
+- The expiry pass in `EntropyManager.tick()`, which is back to just counting.
+- `EffectContext.announceApply()/announceRemove()` — the stub-era scaffolding.
+  The pick announcement moved to `EntropyManager`, because it is a statement
+  about the *run* ("you chose this"), and behaviors now also run on every
+  respawn where announcing would be pure spam.
 
-### Anti-stacking — BUILT (exclude-from-pool)
-`EffectRegistry.rollThree(phase, entropy, random, excludedCategories)` filters
-out every effect whose category already has an active effect, so a conflicting
-option never appears among the three cards. A pick can therefore never silently
-cancel something the player already has.
+`ActiveEffectTracker` became **`AcquiredEffects`** — renamed because "tracker"
+described countdown machinery that no longer exists. It is an insertion-ordered
+`LinkedHashSet<String>` of effect ids and nothing more.
 
-- A **partial** result is not a fallback. If only two effects survive the
-  filter, the player sees two cards — that's the honest answer.
-- The fallback fires only when the filter leaves the pool **completely empty**,
-  in which case the unfiltered pool is used and `RollResult.categoryFallback()`
-  is set so `EntropyManager` can log it loudly. **This is placeholder policy,
-  not a decision** — see Open Question 6, still open.
-- A genuinely empty eligible pool (entropy past every effect's range) is a
-  *different* failure and is deliberately not reported as a fallback.
+**The important consequence: three concerns collapsed into one set.** With
+permanence, "currently active", "already picked", and "which categories are
+occupied" are the same fact. They were three separate things under the old
+model and are now one, which means they cannot drift apart. Do not reintroduce a
+second set for any of them.
+
+### Persistence — BUILT (was: "not built")
+`EntropyManager` **is** a `SavedData`, stored on the overworld's
+`SavedDataStorage`. This replaced the in-memory
+`WeakHashMap<MinecraftServer, EntropyManager>`.
+
+This became mandatory, not nice-to-have, the moment effects became permanent: in
+singleplayer, quitting to the title screen stops the integrated server, so
+without it every acquired effect and the entire run vanished on a trip through
+the main menu. "Effects survive logout/login" cannot be delivered by
+re-application alone if the list of what to re-apply is gone.
+
+- Persisted: entropy, pick count, game-over, cap, interval, the acquired-effect
+  ids, and the full pick history.
+- **Not** persisted, deliberately: `tickCounter` (a saved partial countdown
+  would let a player reload repeatedly to sit just below the threshold forever;
+  losing at most one interval on load is the better failure) and
+  `waitingOnChoice` (a pending choice cannot outlive the client answering it).
+- **Every mutation must call `setDirty()`** or it is not written. That is the
+  one easy-to-miss rule in the file.
+- **Every codec field is `optionalFieldOf` with a default.** That is what lets a
+  save from an older build load in a newer one. Adding a *required* field would
+  make every existing save unloadable — don't.
+- An effect id in a save that this build no longer defines is skipped with a
+  warning, not a load failure.
+
+### Re-application across death, relog and dimensions — BUILT
+**Verified, not assumed:** vanilla's `ServerPlayer.restoreFrom` calls
+`AttributeMap.assignPermanentModifiers` only inside an `ifeq` on its boolean
+parameter, and `PlayerList.respawn` passes that parameter straight through —
+`false` for a death. A death respawn also constructs a brand-new `ServerPlayer`.
+So **attribute modifiers are dropped on death respawn.**
+
+The fix is three hooks in `EntropyMod`, all calling `reapplyAll`:
+`ServerPlayerEvents.JOIN`, `ServerPlayerEvents.AFTER_RESPAWN`, and
+`ServerEntityLevelChangeEvents.AFTER_PLAYER_CHANGE_LEVEL` (an ordinary portal
+moves the same entity and does *not* go through respawn, so without the third
+hook a trip to the Nether would quietly drop everything).
+
+**These hooks are not a safety net — they are the only thing that puts effects
+back.** Modifiers are applied *transiently*, deliberately:
+`addOrReplacePermanentModifier` would write them into the player's own NBT,
+making the save file a second source of truth that could disagree with
+`AcquiredEffects` — including leaving orphaned buffs behind if the mod were
+removed. Transient means the acquired set is the **only** truth and attributes
+are derived state, rebuilt from it every time. The cost is that re-application
+is mandatory; that is a good trade for an invariant that cannot drift.
+
+### No-repeat — BUILT, and distinct from anti-stacking
+These are two different rules and are easy to confuse. They are applied in
+priority order in `EffectRegistry.roll`:
+
+| | No-repeat | Anti-stacking |
+|---|---|---|
+| Keyed on | effect **id** | effect **category** |
+| Scope | the whole run, permanently | while a category is occupied |
+| Status | **hard rule**, applied first | **soft rule**, dropped first |
+
+**No-repeat:** once an effect is picked it never appears again for the rest of
+the run. Under permanence, being re-offered something you already have is
+meaningless — there is nothing to refresh.
+
+**Priority matters and is deliberate.** If both filters together empty the pool,
+anti-stacking is abandoned *first* and no-repeat is kept: a second MOVEMENT
+effect is a real playable outcome, a duplicate of an effect you already own is
+not. Only if no-repeat *alone* empties the pool is it dropped, flagged via
+`RollResult.repeatFallback()`.
+
+**The repeat fallback is genuinely reachable today**, not theoretical: with 10
+effects per phase it fires on the 11th pick of that phase. It is a tested path
+(see the headless harness), and it is still PLACEHOLDER policy — Open Question 6
+remains open, and more content is the real fix.
+
+A partial result (1 or 2 cards) is not a fallback and is not flagged. It is the
+honest answer when the pool is that small, and it is the normal experience for
+picks 9 and 10 of a phase.
+
+### The Tier 1 content batch — 20 effects, first real content
+Ten GOOD, ten BAD, all permanent, all entropy 0-25. This replaced the original
+11 placeholder stubs. **It is a baseline, not the finished game** — Tiers 2-4
+and the odd/signature effects still slot in the same way.
+
+Fourteen are pure `AttributeEffectBehavior` subclasses. Six need a mixin,
+because no vanilla attribute covers them: hunger rate, incoming damage, and XP
+gain.
+
+**Two effects were originally specced as "custom hook" and are attributes
+instead**, which is strictly better and worth knowing before someone "fixes" it:
+
+- **Featherlight / Glass Jaw** use `FALL_DAMAGE_MULTIPLIER` (base 1.0), not a
+  damage event.
+- **Efficient Miner / Dull Blade** use `BLOCK_BREAK_SPEED` (base 1.0), not a
+  block-break-speed hook. This one matters for correctness, not just tidiness:
+  the attribute is client-syncable, so the block-cracking animation matches the
+  server. A server-only mixin would have desynced the visual from the real
+  break time.
+
+Five effects from the old stub set were **dropped**, not ported, because they
+don't fit the permanent model or need work beyond this session: `field_repair`
+(was duration-0, one-shot — has no home now), `prospectors_eye` (needs a
+client-side block-glow renderer), `foggy_head` (FOV is client-side), `night_owl`
+(fine as a permanent effect, just not in the specced 20), and `butterfingers`.
+All are reasonable to re-add later as proper permanent effects.
+
+#### Attribute clamps — javap-verified, do not re-derive from memory
+These were checked by running the real `RangedAttribute` instances, not read
+from a wiki. The floors are the part that matters.
+
+| Attribute | default | min | max |
+|---|---|---|---|
+| `MAX_HEALTH` | 20.0 | **1.0** | 1024.0 |
+| `ATTACK_SPEED` | 4.0 | **0.0** | 1024.0 |
+| `ATTACK_DAMAGE` | 2.0 | 0.0 | 2048.0 |
+| `MOVEMENT_SPEED` | 0.7 | 0.0 | 1024.0 |
+| `LUCK` | 0.0 | **-1024.0** | 1024.0 |
+| `FALL_DAMAGE_MULTIPLIER` | 1.0 | 0.0 | 100.0 |
+| `BLOCK_BREAK_SPEED` | 1.0 | 0.0 | 1024.0 |
+
+- **`MAX_HEALTH` floors at 1.0, not 0.** `sanitizeValue(-5)` and
+  `sanitizeValue(0)` both return `1.0`. Max health can never be driven to zero
+  by stacked penalties — the worst case is half a heart. This is why
+  `brittle_bones` is safely `counterplay = true`.
+- **Lowering max health does NOT lower current health automatically.** A player
+  at 20/20 becomes 20/16 and displays more hearts than they have until something
+  calls `setHealth`. `BrittleBonesBehavior.afterApply` clamps it explicitly.
+  Any future max-health penalty must do the same.
+- **`ATTACK_SPEED` floors at 0.0, and 0 is unrecoverable** — the attack cooldown
+  would never refill. `-20%` of base lands at 3.2, nowhere near it, and
+  no-repeat prevents stacking. Check any future attack-speed penalty against
+  this floor.
+- **`ATTACK_DAMAGE` floors at 0.0 and the player's base is only 1.0**, so
+  `weak_grip` (-2) reduces *bare-handed* attacks to 0 damage. Weapons add their
+  own modifier and stay positive. That is an intended consequence with obvious
+  counterplay (carry a weapon), not an oversight.
+- **`LUCK` is the one attribute with real negative headroom** (min -1024), so
+  `unlucky` needs no floor handling at all.
+- `ATTACK_DAMAGE` is **not client-syncable** — the client tooltip won't reflect
+  `steady_hands` / `weak_grip` even though the server applies them.
+
+#### The three mixins
+`EffectHooks` is the single door between mixins and run state. Mixins are the
+most fragile code here, so each is one line: they compute nothing and decide
+nothing, they just multiply by what `EffectHooks` returns.
+
+- `PlayerExhaustionMixin` → `Player.causeFoodExhaustion`. **Targets `Player`,
+  not `FoodData`**: `FoodData.addExhaustion(float)` holds no reference to the
+  player it belongs to, so a mixin there could not tell whose hunger it was.
+- `LivingEntityDamageMixin` → `LivingEntity.hurtServer`, HEAD, so the multiplier
+  lands *before* armour and enchantments and composes with them multiplicatively.
+  The `instanceof Player` guard is load-bearing: `hurtServer` runs for every mob.
+- `PlayerExperienceMixin` → `Player.giveExperiencePoints`. Uses
+  `EffectHooks.scaleAmount`, which **rounds rather than truncates** — `(int)(1 *
+  1.5f)` is 1, so Fast Learner would do nothing at all for the very common 1-XP
+  orb.
+
+`EffectHooks` never throws and never returns null; every path falls back to
+`1.0f`. An exception escaping a mixin surfaces as a crash blaming vanilla rather
+than this mod. It also returns `1.0f` client-side, where the acquired set does
+not exist — the `instanceof ServerLevel` check is what makes the mixins safe on
+both sides.
 
 ### Pick history — BUILT
 `PickRecord` (pick number, phase, effect id/name/description, entropy at the
@@ -472,8 +646,8 @@ singleplayer the world must have Allow Cheats: ON** or they won't appear.
 It used to be called `/entropytest`, and the name was actively misleading: it
 opens `ChoiceScreen` client-side with three hardcoded effect strings and never
 contacts the server. Clicking a card in it sends no `ChoiceMadePayload`, so it
-never reaches `onChoiceMade` — no history entry, no `ActiveEffect`, no
-anti-stacking, no `EffectBehavior` firing. On screen it is **indistinguishable
+never reaches `onChoiceMade` — no history entry, nothing added to
+`AcquiredEffects`, no anti-stacking, no `EffectBehavior` firing. On screen it is **indistinguishable
 from a real pick**, which is exactly what made it dangerous: the effect-behavior
 architecture session shipped with the reasonable-sounding belief that
 `/entropytest` could verify it, and it could not.
@@ -487,20 +661,34 @@ name.** If you add another, name it `preview`/`mock`/`fake`, and if it's meant
 to test real behavior, make it call the real entry point rather than
 reconstructing what the real entry point does.
 
-### How to check the tracking logic without booting Minecraft
-`ActiveEffect`, `ActiveEffectTracker`, `PickRecord`, `EffectRegistry` and the
-whole data model are **free of Minecraft imports on purpose** — same discipline
-as `EntropyPalette` on the client side. A plain
-`javac`/`java -cp build/classes/java/main` harness can drive expiry timing,
-the `-1` interval-scoped rule, and anti-stacking against the real shipped
-classes. Do that rather than testing a copy, and rather than waiting on a
-3-minute timer in-game.
+### How to check this without booting Minecraft
+`AcquiredEffects`, `PickRecord`, `EffectRegistry` and the whole data model are
+**free of Minecraft imports on purpose** — same discipline as `EntropyPalette`
+on the client side. A plain `javac`/`java -cp build/classes/java/main` harness
+drives the no-repeat rule, both fallbacks, and pool exhaustion against the real
+shipped classes. Do that rather than testing a copy.
 
-Keeping that dependency-free is a load-bearing property, not an accident:
-`EntropyManager` deliberately does *not* fire behaviors from inside the
-tracker, it asks the tracker which effects expired and fires them itself. Don't
-"tidy" that into a callback the tracker invokes — it would drag
-`MinecraftServer` into the one part of this that's currently testable.
+For anything that *does* need Minecraft classes (codecs, attributes), a harness
+can still run headlessly against the full runtime classpath — call
+`SharedConstants.tryDetectVersion()` then `Bootstrap.bootStrap()` first or any
+registry access throws "Not bootstrapped". That is how the attribute clamps in
+this file were established, and how the idempotency claim below was proven
+against the real `AttributeInstance` rather than a mock.
+
+Three things are worth re-checking with a harness whenever they're touched:
+
+1. **The no-repeat rule and its fallbacks**, including deliberately draining a
+   phase's pool — that path is reachable in normal play, not an edge case.
+2. **The persistence codec.** A broken one doesn't misbehave subtly, it makes
+   the world fail to load. Round-trip it field by field with distinct values,
+   and check that a save missing newer fields still loads.
+3. **Idempotency.** Apply a modifier ten times and assert the value didn't move.
+   This is the guarantee the whole respawn/relog design rests on.
+
+What none of this can prove, and what still needs a real game session: that the
+effects are *felt* (speed, hearts, mining rate), that the mixins actually inject
+against the live game, and that a real death/relog restores everything exactly
+once.
 
 Payload changes still need the round-trip check described under "Entropy cap on
 the wire" above; `HistoryResponsePayload` has been verified that way
@@ -532,11 +720,9 @@ there's no world-creation config screen, no GameRule, no command, and no
 config file wiring any of them up. Right now the only way to change these is
 to edit code and rebuild. See Open Question 5.
 
-### Persistence — not built
-Flagged above under `EntropyManager`, repeating here because it's a genuine
-gap, not a nice-to-have: without this, entropy resets every time the server
-restarts, which breaks the entire "race against entropy" premise for any
-session that spans more than one sitting.
+### Persistence — see "Persistence — BUILT" above
+This used to be listed here as an unbuilt gap. It is built: `EntropyManager` is
+a `SavedData` and a run now survives a restart.
 
 ---
 
@@ -550,6 +736,15 @@ session that spans more than one sitting.
 - Effect behavior is one class per effect (`EffectBehavior` implementations in
   `com.entropymod.entropy.behavior`), never a central switch. New effect =
   new file + two registration lines, zero edits to existing code.
+- **All effects are permanent.** No durations, no expiry. `EffectDefinition` has
+  no duration field and must not regrow one as a magic int.
+- **`EffectBehavior.apply` must be idempotent** — it runs again on every
+  respawn, rejoin, and dimension change.
+- **No-repeat: an effect picked once never appears again that run.** Distinct
+  from anti-stacking (id vs category) and outranks it.
+- **`AcquiredEffects` is the single source of truth** for what the player has —
+  active set, already-picked set, and category occupancy all read from it, and
+  attribute state is derived from it rather than stored alongside it.
 - Phase alternates strictly GOOD → BAD → GOOD → BAD, never two of the same
   phase in a row
 - Bad effects below entropy 40 must be counterplay-survivable (no
@@ -623,11 +818,17 @@ allowing one category collision — and logs a loud warning flagging itself as
 placeholder policy. The loop can never strand.
 
 **What's still undecided:** whether allowing a collision is actually the right
-answer. The alternatives are all still live — extend the incumbent effect's
-duration and skip the interval; force-expire the oldest active effect to make
-room; offer fewer than 3 cards and accept it. Pick one before this ships.
-The fallback is easiest to trigger with the current thin Tier 1 pool and gets
-rarer as Tiers 2-4 land, so this may matter less than it looks.
+answer. Two of the old alternatives died with temporary effects (there is no
+duration to extend and nothing to force-expire), leaving: offer fewer than 3
+cards and accept it, or end the run early once the pool is exhausted.
+
+**This got sharper, not softer, with permanence.** There are now *two* fallbacks
+— no-repeat and anti-stacking — and the no-repeat one is reachable in ordinary
+play: 10 effects per phase means the 11th pick of a phase has nothing new to
+offer. At the default cap of 100 that is well inside a normal run. More content
+raises the bar but does not remove it; a cap of 100 needs ~50 effects per phase
+to never repeat. Deciding what *should* happen when the well runs dry is now a
+real design question, not a defensive nicety.
 
 ### 7. Should the GUI pause the world, or keep it running?
 `shouldPause()` is currently `true` (world freezes while you decide). This
@@ -650,50 +851,42 @@ implementation per effect in `com.entropymod.entropy.behavior`, wired by id in
 the name is retired. All 11 Tier 1 effects have a stub; none have real
 behavior. See "Effect execution" in Part 1 for the three-step recipe.
 
-### 10. Persistence scope — just the counters, or active effects too?
-Minimum viable persistence is just saving `entropy`, `pickCount`, and config
-values. But if a Curse like "Weapon Ban, 3 min" is active when the server
-restarts, should that survive the restart (remaining duration saved), or is
-it acceptable for in-flight temporary effects to just be lost on restart
-(only permanent/one-time effects and the counters need to survive)?
+### 10. Persistence scope — RESOLVED
+The question ("do in-flight temporary effects need to survive a restart?")
+**dissolved when effects became permanent** — there are no in-flight temporary
+effects any more. What remained was straightforward and is built:
+`EntropyManager` is a `SavedData` persisting entropy, pick count, game-over,
+config, the acquired-effect ids, and the full history. See "Persistence — BUILT"
+in Part 1 for what is deliberately *not* saved and why.
 
-Now a four-way decision, not two — the tracking work added state:
-`ActiveEffectTracker`'s list (with `remainingTicks` per entry, and the
-interval-scoped flag) and the `PickRecord` history. History is the easy one:
-it's append-only plain data and should obviously persist. Active effects are
-the hard one, and note that persisting them means `EffectBehavior.remove()`
-can be called in a session where `apply()` never ran — which is already
-documented as a requirement on the interface, but nothing enforces it while
-every behavior is a stub.
+One consequence the old note predicted is now real and handled: a saved run can
+be loaded by a build whose registry has changed. Unknown effect ids are skipped
+with a warning rather than failing the load, and every codec field is optional
+so an older save still opens.
 
 ---
 
 ## Suggested next session order
 
-Questions 5 and 9 are now resolved and their code is built (stubs, not
-content). Remaining, in dependency order:
+Questions 5, 9 and 10 are resolved and built. The Tier 1 content batch (20
+permanent effects) is in and is real, not stubs.
 
-1. Resolve Questions 1, 2, 7 — these still affect the *shape* of code written
-   in every other step, so deciding late means rework.
-2. **First, actually play through a few `/entropyforcepick` picks in-game.**
-   The effect-behavior architecture is verified by compilation, bytecode, and
-   headless harnesses, but has never run inside a live server tick loop. Do
-   this before building on top of it. Needs a world with cheats on.
-3. Give the 11 Tier 1 stubs real behavior. Suggested order, easiest first, so
-   the plumbing gets proven before the hard ones: `night_owl` (a plain
-   `MobEffectInstance`) → `sure_footing` / `heavy_boots` (attribute modifiers,
-   and they're inverses so build them together) → `field_repair` (the only
-   duration-0 effect, proves that path) → `featherlight` → the rest.
-   Each one is a single file; nothing else should need to change.
-   Tip: temporarily `setIntervalTicks(200)` or pick a short-duration effect to
-   watch `remove()` fire without a 3-minute wait.
-4. Add win detection per Question 1.
-5. Port Tiers 2-4 into `EffectRegistry` (mechanical, low-risk, do anytime) —
-   worth doing early anyway, since it's what stops the anti-stacking collision
-   fallback from firing.
-6. Decide Question 6 for real, once step 5 shows how often it actually fires.
-7. Add persistence (Question 10) once the above is stable enough that it's
-   worth surviving a restart.
-8. Config surface (Question 4) — can happen in parallel, low-risk to defer.
-9. A real pick-history screen to replace the `/entropyhistory` debug logging.
-10. Odd/signature effects, prioritized per Question 8.
+1. **Play a run.** Force several picks, feel each effect, then die and relog and
+   confirm everything is still on exactly once. Nothing below is worth building
+   on top of an unverified foundation, and the permanent/persistence/
+   re-application work has never run in a live server.
+2. Resolve Questions 1, 2, 7 — these still affect the *shape* of code written in
+   every other step.
+3. **Decide Question 6 properly.** It stopped being theoretical: with 10 effects
+   per phase the no-repeat pool empties partway through a normal run, and the
+   current answer (silently re-offer something you already own) is a placeholder
+   that will be visible in play.
+4. More content — the direct answer to (3). Either more Tier 1 breadth or the
+   start of Tier 2. Settle Question 3 first if the new effects need entropy
+   ranges that overlap Tier 1's.
+5. Add win detection per Question 1.
+6. Config surface (Question 4) — can happen in parallel, low-risk to defer.
+7. A real pick-history screen to replace the `/entropyhistory` debug logging.
+   The data is persisted now, so it survives long enough to be worth showing.
+8. Odd/signature effects, prioritized per Question 8. The three mixins added for
+   hunger/damage/XP prove the pattern these will need.

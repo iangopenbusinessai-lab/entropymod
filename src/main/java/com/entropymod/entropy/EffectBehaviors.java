@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * id -> {@link EffectBehavior} lookup. Deliberately the same shape as
+ * id -&gt; {@link EffectBehavior} lookup. Deliberately the same shape as
  * {@link EffectRegistry}: one {@code register(...)} line per effect and nothing
  * else, so adding effect #47 is a mechanical two-line change (one here, one
  * there) plus one new file.
@@ -17,27 +17,39 @@ import java.util.Map;
  * <p>These ids MUST match {@link EffectRegistry}'s exactly. A typo here does not
  * fail to compile -- it silently yields a no-op effect. {@link #validate()} runs
  * at mod init and logs both directions of mismatch precisely because the
- * compiler cannot catch this class of bug.
+ * compiler cannot catch this class of bug. Each behavior exposes its own
+ * {@code ID} constant and it is used below rather than a repeated string
+ * literal, which shrinks the window for that typo to the one place the constant
+ * is declared.
  */
 public final class EffectBehaviors {
 
 	private static final Map<String, EffectBehavior> BY_ID = new HashMap<>();
 
 	static {
-		// --- TIER 1 GOOD ---
-		register("sure_footing", new SureFootingBehavior());
-		register("iron_stomach", new IronStomachBehavior());
-		register("featherlight", new FeatherlightBehavior());
-		register("prospectors_eye", new ProspectorsEyeBehavior());
-		register("field_repair", new FieldRepairBehavior());
-		register("night_owl", new NightOwlBehavior());
+		// ---------- TIER 1 GOOD ----------
+		register(SureFootingBehavior.ID, new SureFootingBehavior());
+		register(ThickHideBehavior.ID, new ThickHideBehavior());
+		register(SteadyHandsBehavior.ID, new SteadyHandsBehavior());
+		register(LuckyFindBehavior.ID, new LuckyFindBehavior());
+		register(SwiftStrikesBehavior.ID, new SwiftStrikesBehavior());
+		register(FeatherlightBehavior.ID, new FeatherlightBehavior());
+		register(EfficientMinerBehavior.ID, new EfficientMinerBehavior());
+		register(IronStomachBehavior.ID, new IronStomachBehavior());
+		register(IronSkinBehavior.ID, new IronSkinBehavior());
+		register(FastLearnerBehavior.ID, new FastLearnerBehavior());
 
-		// --- TIER 1 BAD ---
-		register("butterfingers", new ButterfingersBehavior());
-		register("heavy_boots", new HeavyBootsBehavior());
-		register("growling_stomach", new GrowlingStomachBehavior());
-		register("foggy_head", new FoggyHeadBehavior());
-		register("dull_blade", new DullBladeBehavior());
+		// ---------- TIER 1 BAD ----------
+		register(HeavyBootsBehavior.ID, new HeavyBootsBehavior());
+		register(BrittleBonesBehavior.ID, new BrittleBonesBehavior());
+		register(WeakGripBehavior.ID, new WeakGripBehavior());
+		register(UnluckyBehavior.ID, new UnluckyBehavior());
+		register(SluggishStrikesBehavior.ID, new SluggishStrikesBehavior());
+		register(GlassJawBehavior.ID, new GlassJawBehavior());
+		register(DullBladeBehavior.ID, new DullBladeBehavior());
+		register(GrowlingStomachBehavior.ID, new GrowlingStomachBehavior());
+		register(FragileBehavior.ID, new FragileBehavior());
+		register(SlowLearnerBehavior.ID, new SlowLearnerBehavior());
 
 		// TODO: Tiers 2-4 + odd/signature effects, same one-line-per-effect pattern.
 	}

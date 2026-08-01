@@ -1,24 +1,19 @@
 package com.entropymod.entropy.behavior;
 
-import com.entropymod.entropy.EffectBehavior;
-import com.entropymod.entropy.EffectContext;
+import com.entropymod.entropy.AttributeEffectBehavior;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 
 /**
- * Heavy Boots (BAD / MOVEMENT / 3600t) -- "15% slowness".
+ * Heavy Boots (BAD / MOVEMENT) -- -15% movement speed.
  *
- * <p>STUB -- announces only, touches no game state. This class is the single
- * place the real implementation goes; nothing outside it needs to change.
- * Real version: the inverse of Sure Footing -- a negative movement-speed attribute modifier, not the Slowness mob effect, so the two stay symmetric and cancel cleanly.
+ * <p>Exact inverse of Sure Footing. MOVEMENT_SPEED floors at 0.0, but -15% of base cannot approach it, and the no-repeat rule means this can never stack with itself.
  */
-public final class HeavyBootsBehavior implements EffectBehavior {
+public final class HeavyBootsBehavior extends AttributeEffectBehavior {
 
-	@Override
-	public void apply(EffectContext ctx) {
-		ctx.announceApply();
-	}
+	public static final String ID = "heavy_boots";
 
-	@Override
-	public void remove(EffectContext ctx) {
-		ctx.announceRemove();
+	public HeavyBootsBehavior() {
+		super(Attributes.MOVEMENT_SPEED, -0.15, AttributeModifier.Operation.ADD_MULTIPLIED_BASE);
 	}
 }

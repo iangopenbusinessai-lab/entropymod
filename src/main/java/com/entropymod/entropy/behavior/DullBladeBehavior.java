@@ -1,24 +1,19 @@
 package com.entropymod.entropy.behavior;
 
-import com.entropymod.entropy.EffectBehavior;
-import com.entropymod.entropy.EffectContext;
+import com.entropymod.entropy.AttributeEffectBehavior;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 
 /**
- * Dull Blade (BAD / TOOL / 3600t) -- "Mining speed -20%".
+ * Dull Blade (BAD / TOOL) -- -20% mining speed.
  *
- * <p>STUB -- announces only, touches no game state. This class is the single
- * place the real implementation goes; nothing outside it needs to change.
- * Real version: Mining Fatigue is too coarse (it is a 30% step); prefer a mining-speed attribute modifier or a break-speed event so the -20% is exact.
+ * <p>Inverse of Efficient Miner, 0.8x. BLOCK_BREAK_SPEED floors at 0.0; at 0 the player could never break a block, so any future mining penalty must not be able to reach -1.0 in total.
  */
-public final class DullBladeBehavior implements EffectBehavior {
+public final class DullBladeBehavior extends AttributeEffectBehavior {
 
-	@Override
-	public void apply(EffectContext ctx) {
-		ctx.announceApply();
-	}
+	public static final String ID = "dull_blade";
 
-	@Override
-	public void remove(EffectContext ctx) {
-		ctx.announceRemove();
+	public DullBladeBehavior() {
+		super(Attributes.BLOCK_BREAK_SPEED, -0.20, AttributeModifier.Operation.ADD_MULTIPLIED_BASE);
 	}
 }

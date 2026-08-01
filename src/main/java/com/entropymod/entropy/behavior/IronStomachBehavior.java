@@ -1,24 +1,19 @@
 package com.entropymod.entropy.behavior;
 
-import com.entropymod.entropy.EffectBehavior;
-import com.entropymod.entropy.EffectContext;
+import com.entropymod.entropy.HookEffectBehavior;
 
 /**
- * Iron Stomach (GOOD / SURVIVAL / 3600t) -- "Hunger drains 25% slower for 3 min".
+ * Iron Stomach (GOOD / SURVIVAL) -- hunger drains 25% slower.
  *
- * <p>STUB -- announces only, touches no game state. This class is the single
- * place the real implementation goes; nothing outside it needs to change.
- * Real version: hunger rate is not an attribute, so this needs either a FoodData mixin or a per-tick exhaustion refund. remove must restore the normal rate exactly.
+ * <p>Implemented by scaling exhaustion in a Player.causeFoodExhaustion mixin. Note the mixin targets Player, not FoodData: FoodData.addExhaustion(float) has no reference to the player it belongs to, so there would be no way to ask whose hunger this is.
+ *
+ * <p>apply()/remove() are empty by design -- see {@link HookEffectBehavior}.
+ * The multiplier below is read by the mixin via EffectHooks.
  */
-public final class IronStomachBehavior implements EffectBehavior {
+public final class IronStomachBehavior extends HookEffectBehavior {
 
-	@Override
-	public void apply(EffectContext ctx) {
-		ctx.announceApply();
-	}
+	public static final String ID = "iron_stomach";
 
-	@Override
-	public void remove(EffectContext ctx) {
-		ctx.announceRemove();
-	}
+	/** Exhaustion accumulates at 75% of normal, so hunger drains 25% slower. */
+	public static final float MULTIPLIER = 0.75f;
 }
