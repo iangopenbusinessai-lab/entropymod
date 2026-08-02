@@ -1,3 +1,5 @@
-[02:09:15] [main/INFO]: [STDOUT]: missing behavior : []
-[02:09:15] [main/INFO]: [STDOUT]: orphan behavior  : []
-[02:09:15] [main/INFO]: [STDOUT]: ALL CHECKS PASSED
+[02:31:25] [main/INFO]: [STDOUT]: === 3. IDEMPOTENCY (real shipped behavior objects, real AttributeInstance) ===
+[02:31:25] [main/INFO]: [STDOUT]: === 4. HOOK WIRING (same path, not a parallel one) ===
+[02:31:25] [main/INFO]: [STDOUT]: === 4b. REGISTRY <-> BEHAVIOR CONSISTENCY (both directions) ===
+[02:31:25] [main/INFO]: [STDOUT]: === 5. NO-REPEAT POOL ===
+[02:31:25] [main/INFO]: [STDOUT]: ALL CHECKS PASSED

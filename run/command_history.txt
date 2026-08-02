@@ -22,3 +22,11 @@
 /entropyforcepick
 /entropystatus
 /entropyhistory
+/entropyforcepick
+/xp add @p 50
+/xp add @p 3 levels
+/entropyforcepick
+/kill
+/gamemode creative
+/gamemode survival
+/entropyforcepick
