@@ -5,6 +5,8 @@
 	"mixins": [
 		"EntropyModMixin",
 		"AvoidEntityGoalMixin",
+		"CropGrowthMixin",
+		"ItemStackDurabilityMixin",
 		"EntityStepSoundMixin",
 		"LivingEntityDamageMixin",
 		"LivingEntityFrostWalkerMixin",
@@ -14,7 +16,9 @@
 		"PlayerAttributesMixin",
 		"PlayerExhaustionMixin",
 		"PlayerExperienceMixin",
-		"PlayerItemPickupMixin"
+		"PlayerItemPickupMixin",
+		"ServerPlayerJumpMixin",
+		"VillagerPricesMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

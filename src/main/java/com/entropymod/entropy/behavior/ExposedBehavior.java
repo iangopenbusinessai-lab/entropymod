@@ -3,8 +3,8 @@ package com.entropymod.entropy.behavior;
 import com.entropymod.entropy.HookEffectBehavior;
 
 /**
- * Heavy Footsteps (BAD / DEBUFF) -- loud footsteps, and sneaking no longer hides
- * you from hostile mobs.
+ * Exposed (BAD / DEBUFF) -- loud footsteps, and sneaking no longer hides you
+ * from hostile mobs.
  *
  * <p>This effect has been through two corrections, both from real in-game
  * testing, and both are recorded here because the underlying facts are not
@@ -60,9 +60,9 @@ import com.entropymod.entropy.HookEffectBehavior;
  * <p>What the effect therefore really does is <b>cancel the sneaking discount</b>,
  * and that is a real, observable, worthwhile curse: stealth stops working.
  */
-public final class HeavyFootstepsBehavior extends HookEffectBehavior {
+public final class ExposedBehavior extends HookEffectBehavior {
 
-	public static final String ID = "heavy_footsteps";
+	public static final String ID = "exposed";
 
 	/**
 	 * Footstep volume multiplier. 2.5x the vanilla {@code volume * 0.15f} -- clearly

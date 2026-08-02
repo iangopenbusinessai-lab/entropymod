@@ -24,6 +24,7 @@ public record OpenChoicePayload(
 		EffectPhase phase,
 		int entropy,
 		int entropyCap,
+		boolean rerollAvailable,
 		Choice choice1,
 		Choice choice2,
 		Choice choice3
@@ -46,6 +47,7 @@ public record OpenChoicePayload(
 			PHASE_CODEC, OpenChoicePayload::phase,
 			ByteBufCodecs.VAR_INT, OpenChoicePayload::entropy,
 			ByteBufCodecs.VAR_INT, OpenChoicePayload::entropyCap,
+			ByteBufCodecs.BOOL, OpenChoicePayload::rerollAvailable,
 			Choice.CODEC, OpenChoicePayload::choice1,
 			Choice.CODEC, OpenChoicePayload::choice2,
 			Choice.CODEC, OpenChoicePayload::choice3,
@@ -63,12 +65,12 @@ public record OpenChoicePayload(
 	}
 
 	public static OpenChoicePayload fromChoices(EffectPhase phase, int entropy, int entropyCap,
-												List<EffectDefinition> choices) {
+												boolean rerollAvailable, List<EffectDefinition> choices) {
 		EffectDefinition a = choices.get(0);
 		EffectDefinition b = choices.size() > 1 ? choices.get(1) : choices.get(0);
 		EffectDefinition c = choices.size() > 2 ? choices.get(2) : choices.get(0);
 		return new OpenChoicePayload(
-				phase, entropy, entropyCap,
+				phase, entropy, entropyCap, rerollAvailable,
 				new Choice(a.id(), a.displayName(), a.description()),
 				new Choice(b.id(), b.displayName(), b.description()),
 				new Choice(c.id(), c.displayName(), c.description())

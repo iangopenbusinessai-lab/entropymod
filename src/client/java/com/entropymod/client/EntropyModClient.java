@@ -40,7 +40,7 @@ public class EntropyModClient implements ClientModInitializer {
 			// feeds the persistent HUD as well as the screen.
 			EntropyHud.update(payload.phase(), payload.entropy(), payload.entropyCap());
 			context.client().setScreen(new ChoiceScreen(
-					payload.phase(), payload.entropy(), payload.entropyCap(),
+					payload.phase(), payload.entropy(), payload.entropyCap(), payload.rerollAvailable(),
 					payload.choice1().id(), payload.choice1().name(), payload.choice1().description(),
 					payload.choice2().id(), payload.choice2().name(), payload.choice2().description(),
 					payload.choice3().id(), payload.choice3().name(), payload.choice3().description()
@@ -189,7 +189,7 @@ public class EntropyModClient implements ClientModInitializer {
 		// just opened, in the same frame, with nothing logged anywhere. Using
 		// client.execute() runs this on the next tick, after chat has closed.
 		client.execute(() -> client.setScreen(new ChoiceScreen(
-				phase, entropy, entropyCap,
+				phase, entropy, entropyCap, false,
 				"sure_footing", "Sure Footing", desc1,
 				"iron_stomach", "Iron Stomach", "Hunger drains 25% slower for 3 min",
 				"featherlight", "Featherlight", "No fall damage for 2 min"

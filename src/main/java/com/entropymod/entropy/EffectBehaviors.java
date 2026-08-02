@@ -43,6 +43,8 @@ public final class EffectBehaviors {
 		register(FrostWalkerInnateBehavior.ID, new FrostWalkerInnateBehavior());
 		register(IronWillBehavior.ID, new IronWillBehavior());
 		register(BeastWhispererBehavior.ID, new BeastWhispererBehavior());
+		register(GreenThumbBehavior.ID, new GreenThumbBehavior());
+		register(SecondGuessBehavior.ID, new SecondGuessBehavior());
 
 		// ---------- TIER 1 BAD ----------
 		register(HeavyBootsBehavior.ID, new HeavyBootsBehavior());
@@ -57,7 +59,11 @@ public final class EffectBehaviors {
 		register(SlowLearnerBehavior.ID, new SlowLearnerBehavior());
 		register(LeadenLegsBehavior.ID, new LeadenLegsBehavior());
 		register(StoneFeetBehavior.ID, new StoneFeetBehavior());
-		register(HeavyFootstepsBehavior.ID, new HeavyFootstepsBehavior());
+		register(ExposedBehavior.ID, new ExposedBehavior());
+		register(BlightTouchedBehavior.ID, new BlightTouchedBehavior());
+		register(LeakyPocketsBehavior.ID, new LeakyPocketsBehavior());
+		register(ClumsyDiggerBehavior.ID, new ClumsyDiggerBehavior());
+		register(BadReputationBehavior.ID, new BadReputationBehavior());
 
 		// TODO: Tiers 2-4 + odd/signature effects, same one-line-per-effect pattern.
 	}

@@ -5,6 +5,8 @@ import com.entropymod.client.EntropyHud;
 import com.entropymod.entropy.EffectPhase;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.network.ChoiceMadePayload;
+import com.entropymod.network.RerollRequestPayload;
+import net.minecraft.client.gui.components.Button;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
@@ -55,6 +57,12 @@ public class ChoiceScreen extends Screen {
 	// ---------------------------------------------------------------------
 
 	private static final int SCREEN_MARGIN = 12;
+
+	/** Reroll button geometry. Part of the centred layout block -- see init(). */
+	private static final int REROLL_BUTTON_HEIGHT = 20;
+	private static final int REROLL_BUTTON_MIN_WIDTH = 80;
+	private static final int REROLL_BUTTON_MAX_WIDTH = 220;
+	private static final int REROLL_GAP = 8;
 	private static final int PANEL_MAX_WIDTH = 160;
 	private static final int PANEL_MIN_WIDTH = 90;
 	private static final int PANEL_GAP = 20;
@@ -107,6 +115,12 @@ public class ChoiceScreen extends Screen {
 	private final int entropyCap;
 	private final List<Choice> choices;
 
+	/** Whether the server says Second Guess can still be spent on this pick. */
+	private final boolean rerollAvailable;
+
+	/** Non-null only while {@link #rerollAvailable}; disabled on click. */
+	private Button rerollButton;
+
 	/** Recomputed in init(); read by extractRenderState. */
 	private int accentColor = HEADER_COLOR;
 	private int headerTextY;
@@ -126,11 +140,11 @@ public class ChoiceScreen extends Screen {
 						 String id1, String name1, String desc1,
 						 String id2, String name2, String desc2,
 						 String id3, String name3, String desc3) {
-		this(phase, entropy, EntropyManager.DEFAULT_ENTROPY_CAP,
+		this(phase, entropy, EntropyManager.DEFAULT_ENTROPY_CAP, false,
 				id1, name1, desc1, id2, name2, desc2, id3, name3, desc3);
 	}
 
-	public ChoiceScreen(EffectPhase phase, int entropy, int entropyCap,
+	public ChoiceScreen(EffectPhase phase, int entropy, int entropyCap, boolean rerollAvailable,
 						 String id1, String name1, String desc1,
 						 String id2, String name2, String desc2,
 						 String id3, String name3, String desc3) {
@@ -138,6 +152,7 @@ public class ChoiceScreen extends Screen {
 		this.phase = phase;
 		this.entropy = entropy;
 		this.entropyCap = entropyCap;
+		this.rerollAvailable = rerollAvailable;
 		this.choices = List.of(
 				new Choice(id1, name1, desc1),
 				new Choice(id2, name2, desc2),
@@ -197,7 +212,11 @@ public class ChoiceScreen extends Screen {
 		// Vertically centre header + rule + panels as one block.
 		int headerBlock = this.font.lineHeight + 6 + ACCENT_RULE_HEIGHT;
 		int panelsBlock = columns ? panelHeight : panelHeight * 3 + ROW_GAP * 2;
-		int totalHeight = headerBlock + 14 + panelsBlock;
+		// The reroll button is part of the centred block, not an afterthought stuck
+		// underneath it -- otherwise it would push past the bottom edge at small GUI
+		// sizes, and this screen has no escape hatch (shouldCloseOnEsc is false).
+		int rerollBlock = rerollAvailable ? REROLL_GAP + REROLL_BUTTON_HEIGHT : 0;
+		int totalHeight = headerBlock + 14 + panelsBlock + rerollBlock;
 
 		int top = Math.max(SCREEN_MARGIN, (this.height - totalHeight) / 2);
 		this.headerTextY = top;
@@ -220,6 +239,37 @@ public class ChoiceScreen extends Screen {
 					choices.get(i), wrapped.get(i),
 					layout.mode(), style, imageSize, scaledLineHeight));
 		}
+
+		if (rerollAvailable) {
+			int buttonWidth = Math.min(REROLL_BUTTON_MAX_WIDTH,
+					Math.max(REROLL_BUTTON_MIN_WIDTH, this.width - 2 * SCREEN_MARGIN));
+			this.rerollButton = Button.builder(
+							Component.literal("Second Guess — reroll these options"),
+							button -> onReroll())
+					.bounds(this.width / 2 - buttonWidth / 2,
+							panelsTop + panelsBlock + REROLL_GAP,
+							buttonWidth, REROLL_BUTTON_HEIGHT)
+					.build();
+			this.addRenderableWidget(this.rerollButton);
+		}
+	}
+
+	/**
+	 * Spends Second Guess. The screen deliberately stays open: the server answers
+	 * with a fresh {@code OpenChoicePayload} which replaces it, and if the reroll is
+	 * refused for any reason the player keeps the pick they already had rather than
+	 * being stranded with no screen and a pending choice.
+	 *
+	 * <p>The button is disabled immediately so a double-click cannot send two
+	 * requests. The server would reject the second anyway -- {@code requestReroll}
+	 * re-checks everything -- but there is no reason to make it arbitrate a race
+	 * this side can simply not start.
+	 */
+	private void onReroll() {
+		if (this.rerollButton != null) {
+			this.rerollButton.active = false;
+		}
+		ClientPlayNetworking.send(RerollRequestPayload.INSTANCE);
 	}
 
 	record DescriptionStyle(float scale, int maxLines) {

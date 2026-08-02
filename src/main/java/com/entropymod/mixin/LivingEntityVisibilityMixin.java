@@ -35,7 +35,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * <em>raw</em> {@code followDistance} with no visibility term, so anything
  * acquired beyond it is dropped again immediately. The usable effect of this
  * mixin is therefore to cancel reductions such as sneaking's 0.8 -- not to make
- * mobs see farther. See {@link com.entropymod.entropy.behavior.HeavyFootstepsBehavior}
+ * mobs see farther. See {@link com.entropymod.entropy.behavior.ExposedBehavior}
  * for the measurement and the arithmetic.
  *
  * <p><b>Players without the effect are unaffected.</b>

@@ -17,12 +17,12 @@ import org.spongepowered.asm.mixin.injection.Redirect;
  * leaving the sound event and pitch alone so footsteps still sound like the block
  * being walked on.
  *
- * <p>This is not purely cosmetic: vanilla derives a sound's audible radius from
- * its volume, so a louder footstep genuinely carries farther to other players.
- * It does <b>not</b> make mobs notice you -- ordinary mob AI has no hearing at
- * all. That half of the effect is {@code LivingEntityVisibilityMixin}; see
- * {@link com.entropymod.entropy.behavior.HeavyFootstepsBehavior} for the full
- * finding.
+ * <p><b>This changes loudness, not range.</b> {@code SoundEvent.getRange(volume)}
+ * is {@code volume > 1.0f ? 16.0f * volume : 16.0f}, and footsteps sit far below
+ * 1.0 even after scaling, so the broadcast radius stays a flat 16 blocks. It also
+ * does <b>not</b> make mobs notice you -- ordinary mob AI has no hearing at all.
+ * That half of the effect is {@code LivingEntityVisibilityMixin}; see
+ * {@link com.entropymod.entropy.behavior.ExposedBehavior} for the full finding.
  *
  * <p>{@code playStepSound} is declared on {@code Entity} and runs for every
  * entity in the world, so the {@code instanceof Player} guard is load-bearing --

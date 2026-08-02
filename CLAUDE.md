@@ -36,6 +36,7 @@ not guessed) vs. the Yarn names you'll see in older guides:
 | `PayloadTypeRegistry.playC2S()` | `PayloadTypeRegistry.serverboundPlay()` |
 | `Text` / `Text.literal`| `Component` / `Component.literal` |
 | `PlayerManager`        | `PlayerList`                   |
+| `npc.Villager`         | `npc.villager.Villager` *(moved package)* |
 | `getPlayerManager()`   | `getPlayerList()`              |
 | `World`                | `Level`                        |
 | `PlayerEntity`         | `Player`                       |
@@ -228,20 +229,20 @@ system, MelodyBrain's layered build). Adding effect #47 later is just a new
   Tier 2-4 + odd effects are all in the same pool, some effects (e.g. a
   "harmless funny" one vs. a "genuinely brutal" one) probably shouldn't have
   equal odds. Not urgent, flagging for later.
-- Only Tier 1 (28 effects) is actually in the registry. Tiers 2-4 and all the
+- Only Tier 1 (34 effects) is actually in the registry. Tiers 2-4 and all the
   odd/signature effects exist only in the design doc, not in code.
 - `counterplay` flag exists on the data model but nothing reads/enforces it
   yet (e.g. "never roll 3 counterplay:false effects at once below entropy 40"
   isn't checked anywhere). `rollThree` is now the obvious place — it already
   filters by category, so a counterplay constraint slots in beside it.
 - **The pool is thin enough that both fallbacks are reachable in normal play.**
-  15 GOOD / 13 BAD means the no-repeat pool is empty by the 16th GOOD pick and
-  the 14th BAD one, and the last two picks of each phase legitimately show fewer
+  17 GOOD / 17 BAD means the no-repeat pool is empty by the 18th pick of either
+  phase, and the last two picks of each phase legitimately show fewer
   than 3 cards. At the default
   entropy cap of 100 (~50 picks per phase) a run will hit this every time. This
   is a content problem, not a code problem — but it is not a rare edge case, and
   a fallback warning in the log is expected rather than a bug.
-- **All 28 effects share the same 0-25 entropy range.** There is only one tier,
+- **All 34 effects share the same 0-25 entropy range.** There is only one tier,
   so the range does nothing yet; it starts mattering when Tier 2 lands, and
   Open Question 3 (should high entropy still roll low-tier effects?) is the
   thing to settle before writing those ranges.
@@ -362,10 +363,12 @@ Two things to know before changing it:
   `y` down when `player.getActiveEffects()` is non-empty is the obvious fix;
   it was left alone because the top-right position was specified.
 
-### Mixins — eleven real ones now, plus the original placeholders
+### Mixins — fifteen real ones now, plus the original placeholders
 `EntropyModMixin` / `EntropyModClientMixin` are still unused example code.
-**Eleven real mixins now exist**: three for the original hook-driven effects, and
-eight more from the mixin cluster. See "The original three mixins" and "The mixin
+**Fifteen real mixins now exist**: three for the original hook-driven effects,
+eight from the mixin cluster, and four from the crop/event/meta session
+(`CropGrowthMixin`, `ServerPlayerJumpMixin`, `ItemStackDurabilityMixin`,
+`VillagerPricesMixin`). See "The original three mixins" and "The mixin
 cluster" under the Tier 1 content batch below — the latter carries the
 javap-verified target table, which is the part worth reading before adding
 another. The pattern is proven; later signature effects (Mirror World's inverted
@@ -506,9 +509,9 @@ effect is a real playable outcome, a duplicate of an effect you already own is
 not. Only if no-repeat *alone* empties the pool is it dropped, flagged via
 `RollResult.repeatFallback()`.
 
-**The repeat fallback is genuinely reachable today**, not theoretical: with 15
-GOOD and 13 BAD effects it fires on the 16th GOOD pick and the 14th BAD one —
-both asserted exactly, at those pick numbers, by the headless harness. It is a
+**The repeat fallback is genuinely reachable today**, not theoretical: with 17
+GOOD and 17 BAD effects it fires on the 18th pick of either phase — asserted
+exactly, at that pick number, by the headless harness. It is a
 tested path, and it is still PLACEHOLDER policy — Open Question 6 remains open,
 and more content is the real fix.
 
@@ -516,17 +519,25 @@ A partial result (1 or 2 cards) is not a fallback and is not flagged. It is the
 honest answer when the pool is that small, and it is the normal experience for
 the last two picks of a phase.
 
-### The Tier 1 content batch — 28 effects, first real content
+### The Tier 1 content batch — 34 effects, first real content
 Originally ten GOOD and ten BAD, all permanent, all entropy 0-25; this replaced
 the original 11 placeholder stubs. **It is a baseline, not the finished game** —
 Tiers 2-4 and the odd/signature effects still slot in the same way.
 
 **The movement/physics batch added three more** (`moon_walker`, `leaden_legs`,
 `stone_feet`) and **the mixin cluster added five** (`magnetic_boots`,
-`frost_walker_innate`, `iron_will`, `beast_whisperer`, `heavy_footsteps`),
-bringing the registry to **28: 15 GOOD, 13 BAD.** See "Movement and physics
-attributes" and "The mixin cluster" below for the verification behind them. The
-phase counts are deliberately no longer symmetric.
+`frost_walker_innate`, `iron_will`, `beast_whisperer`, `exposed`),
+and the crop/event/meta session added six more (`green_thumb`, `second_guess`
+GOOD; `blight_touched`, `leaky_pockets`, `clumsy_digger`, `bad_reputation` BAD),
+bringing the registry to **34: 17 GOOD, 17 BAD** — symmetric again. See "Movement
+and physics attributes", "The mixin cluster" and the crop/villager/Second Guess
+sections below for the verification behind them.
+
+**`heavy_footsteps` was renamed to `exposed`** once its real mechanic was
+understood (it cancels sneaking rather than extending mob range). The id changed,
+so a save from before the rename carries an effect id this build no longer
+defines — that is handled the same way as any other unknown id: skipped with a
+warning at load, rest of the run intact.
 
 Eighteen are pure `AttributeEffectBehavior` subclasses (including
 `magnetic_boots`, via a mod-registered attribute). Ten need a mixin, because no
@@ -697,7 +708,7 @@ both sides.
 
 ### The mixin cluster — 5 effects, 8 more mixins, all targets javap-verified
 This session added `magnetic_boots`, `frost_walker_innate`, `iron_will`,
-`beast_whisperer` (GOOD) and `heavy_footsteps` (BAD). **All five shipped**; two
+`beast_whisperer` (GOOD) and `exposed` (BAD). **All five shipped**; two
 had their implementation route changed by what the investigation found, and those
 changes are the valuable part of this record.
 
@@ -717,6 +728,10 @@ before writing another mixin.
 | `LivingEntityVisibilityMixin` | `LivingEntity.getVisibilityPercent(Entity)` | `@Inject` RETURN |
 | `PanicGoalMixin` | `PanicGoal.shouldPanic()` | `@Inject` RETURN |
 | `AvoidEntityGoalMixin` | `AvoidEntityGoal.canUse()` | `@Inject` RETURN |
+| `CropGrowthMixin` | `CropBlock.getGrowthSpeed` *(static)* | `@Inject` RETURN |
+| `ServerPlayerJumpMixin` | `ServerPlayer.jumpFromGround()` | `@Inject` TAIL |
+| `ItemStackDurabilityMixin` | `ItemStack.hurtAndBreak(I,ServerLevel,ServerPlayer,Consumer)` | `@ModifyVariable` |
+| `VillagerPricesMixin` | `Villager.updateSpecialPrices(Player)` *(private)* | `@Inject` TAIL |
 
 **Compiling proves nothing about a mixin.** Injection targets resolve at runtime,
 so a wrong name or descriptor builds green and fails when the game loads. Verify
@@ -894,6 +909,95 @@ Corollary for future effects: **an effect is not done when the mixin applies.**
 It is done when a value has been observed to change in game. Prefer effects whose
 result is directly measurable, and when a magnitude is chosen, sanity-check what
 it means in blocks/hearts/seconds before shipping it.
+
+#### Crops: hook `getGrowthSpeed`, not `randomTick` (Green Thumb / Blight Touched)
+Vanilla grows a crop with
+`random.nextInt((int)(25.0F / getGrowthSpeed(...)) + 1) == 0`, so scaling that
+speed is the whole effect: higher speed, smaller divisor, better odds.
+
+**`CropBlock.randomTick` is the obvious target and the worse one.**
+`BeetrootBlock` and `TorchflowerCropBlock` both override it — the subclass trap
+above — and although both happen to call `super`, relying on that is luck.
+
+**`CropBlock.getGrowthSpeed` is strictly better on both counts.** It is `static`,
+so it cannot be overridden at all, and it is called from **three** classes rather
+than one: `CropBlock`, `StemBlock` and `PitcherCropBlock`. One hook therefore
+covers wheat, carrots, potatoes, beetroot and torchflower (all via
+`CropBlock.randomTick`), plus pumpkin and melon stems, plus the pitcher crop.
+
+- **Scope limit, stated rather than hidden:** plants that don't use
+  `getGrowthSpeed` are unaffected — sugar cane, cactus, bamboo, saplings, nether
+  wart, cocoa, sweet berry bushes. "Crops" here means farmland crops and stems.
+- **Scoping to a player is possible and clean.** A random tick has no owner, but
+  it does have a `ServerLevel` and a `BlockPos`, and
+  `EntityGetter.getNearestPlayer(x, y, z, radius, false)` answers "who is within
+  8 blocks". *Nearest*, not *any*, so two players with opposing effects cannot
+  both apply. The stop condition in the brief did not fire.
+- **Never let the multiplier reach 0.** `25.0F / 0` is `Infinity`,
+  `(int)Infinity` is `Integer.MAX_VALUE`, and `nextInt(MAX_VALUE + 1)` overflows
+  to `nextInt(Integer.MIN_VALUE)`, which **throws inside a block tick**.
+  `EffectHooks.cropGrowthMultiplier` floors the result for exactly this reason.
+
+#### Villager pricing: mixin-only, and the class moved (Bad Reputation)
+Two findings, both worth having permanently:
+
+- **Fabric API has no trade-price event — it has no trade-related classes at all
+  in this version.** So this is mixin-only. That was the brief's flagged risk and
+  it resolved to "yes, mixin", not to a stop.
+- **`Villager` moved package**: it is
+  `net.minecraft.world.entity.npc.villager.Villager`, not
+  `net.minecraft.world.entity.npc.Villager`. Grepping the old path returns
+  nothing, which reads like "the class is gone" rather than "it moved" — the same
+  shape of mistake as the Frost Walker finding. Villager *trades* are also
+  data-driven now (`data/minecraft/villager_trade/...`).
+
+The hook is `Villager.updateSpecialPrices(Player)`, which is **vanilla's own
+per-player pricing pass** — where gossip reputation and Hero of the Village are
+turned into `MerchantOffer.addToSpecialPriceDiff` adjustments. Injecting at TAIL
+makes the surcharge additive with reputation instead of clobbering it, and the
+vanilla trading UI renders the adjusted price for free.
+
+**Subclass-override risk: structurally impossible here**, and checked explicitly
+per the rule above. The method is `private` (so it cannot be overridden) *and*
+there are no subclasses of `Villager` in the jar. Two independent guarantees.
+
+**Scope:** wandering traders are unaffected — `WanderingTrader` extends
+`AbstractVillager`, not `Villager`, and has no special-price mechanism. Out of
+reach, not overlooked. Vanilla clamps the final cost to `[1, maxStackSize]`, so
+a surcharge can never make a trade impossible.
+
+#### Second Guess: the first state-bearing effect
+Everything before this was a pure function of membership in `AcquiredEffects`.
+Second Guess carries one boolean of its own, `rerollUsed`, and the rules it
+follows are the template for any future meta effect:
+
+- **The flag lives in `EntropyManager`'s existing codec**, not in a parallel
+  store. One `optionalFieldOf("reroll_used", false)` line — which also means a
+  save written before this effect existed still loads, and a run with the reroll
+  unspent omits the field entirely (that is `optionalFieldOf` working as
+  intended, not a bug; asserting the field is always present would assert the
+  opposite of the design).
+- **The trigger has to be a button, not a command.** `ChoiceScreen` is modal and
+  `isPauseScreen()` is true, so chat cannot be opened while a pick is pending —
+  a `/entropyreroll` command would be untypeable exactly when it is needed. The
+  button is part of the centred layout block so it cannot push off-screen at
+  small GUI scales (`shouldCloseOnEsc()` is false; nothing may ever clip).
+- **`requestReroll` delegates to the real `triggerPick`** and contains no roll
+  logic — verified in bytecode the same way `/entropyforcepick` is: exactly one
+  `triggerPick` call, zero references to `EffectRegistry.roll`,
+  `OpenChoicePayload`, `ServerPlayNetworking` or `shuffle`.
+- **It does not advance the loop.** No entropy, no pick count, no history entry,
+  no interval reset — those only move in `onChoiceMade`, which a reroll never
+  reaches. The reroll is consumed *only* if new choices actually opened, so an
+  exhausted pool does not eat it for nothing.
+- **"Once" does not depend on no-repeat.** The flag is on the run, so
+  re-acquiring the effect cannot refund it. No-repeat is treated as a second line
+  of defence only, because the repeat fallback can legitimately re-offer an
+  already-taken effect once a phase's pool empties — a design resting on
+  no-repeat alone would eventually be wrong.
+- `rerollAvailable` rides on `OpenChoicePayload` so the client knows whether to
+  draw the button, but it is **not authorisation**: `requestReroll` re-checks
+  ownership, spent-ness and a pending pick server-side.
 
 #### Debug output has to reach the player, not just the log
 `/entropyhistory` was reported as a hard regression — "prints nothing in-game
@@ -1168,7 +1272,7 @@ cards and accept it, or end the run early once the pool is exhausted.
 
 **This got sharper, not softer, with permanence.** There are now *two* fallbacks
 — no-repeat and anti-stacking — and the no-repeat one is reachable in ordinary
-play: at 15 GOOD / 13 BAD, the 16th GOOD pick has nothing new to
+play: at 17 GOOD / 17 BAD, the 18th pick of a phase has nothing new to
 offer. At the default cap of 100 that is well inside a normal run. More content
 raises the bar but does not remove it; a cap of 100 needs ~50 effects per phase
 to never repeat. Deciding what *should* happen when the well runs dry is now a

@@ -27,7 +27,7 @@ public final class EffectRegistry {
 
 	static {
 		// =================================================================
-		// TIER 1 GOOD (Entropy 0-25) -- 15 effects
+		// TIER 1 GOOD (Entropy 0-25) -- 17 effects
 		// =================================================================
 
 		// --- attribute-driven ---
@@ -63,9 +63,13 @@ public final class EffectRegistry {
 				EffectCategory.COMBAT, EffectPhase.GOOD, 0, 25, true);
 		register("beast_whisperer", "Beast Whisperer", "Animals never flee from you",
 				EffectCategory.COMPANION, EffectPhase.GOOD, 0, 25, true);
+		register("green_thumb", "Green Thumb", "Crops within 8 blocks of you grow twice as fast",
+				EffectCategory.UTILITY, EffectPhase.GOOD, 0, 25, true);
+		register("second_guess", "Second Guess", "Once per run, reroll the options you are offered",
+				EffectCategory.META, EffectPhase.GOOD, 0, 25, true);
 
 		// =================================================================
-		// TIER 1 BAD (Entropy 0-25) -- 13 effects
+		// TIER 1 BAD (Entropy 0-25) -- 17 effects
 		//
 		// Every one is counterplay = true: none can kill you on its own, and
 		// each has an in-game answer (armour, food, care around ledges).
@@ -99,7 +103,15 @@ public final class EffectRegistry {
 				EffectCategory.GEAR, EffectPhase.BAD, 0, 25, true);
 		register("slow_learner", "Slow Learner", "-50% experience gained",
 				EffectCategory.META, EffectPhase.BAD, 0, 25, true);
-		register("heavy_footsteps", "Heavy Footsteps", "Loud footsteps -- sneaking no longer hides you from mobs",
+		register("exposed", "Exposed", "Loud footsteps -- sneaking no longer hides you from mobs",
+				EffectCategory.DEBUFF, EffectPhase.BAD, 0, 25, true);
+		register("blight_touched", "Blight Touched", "Crops within 8 blocks of you grow half as fast",
+				EffectCategory.UTILITY, EffectPhase.BAD, 0, 25, true);
+		register("leaky_pockets", "Leaky Pockets", "Jumping sometimes spills an item from your inventory",
+				EffectCategory.GEAR, EffectPhase.BAD, 0, 25, true);
+		register("clumsy_digger", "Clumsy Digger", "Your tools sometimes take extra wear",
+				EffectCategory.TOOL, EffectPhase.BAD, 0, 25, true);
+		register("bad_reputation", "Bad Reputation", "Villagers charge you more",
 				EffectCategory.DEBUFF, EffectPhase.BAD, 0, 25, true);
 
 		// TODO: Tiers 2-4 + odd/signature effects go here, same pattern.

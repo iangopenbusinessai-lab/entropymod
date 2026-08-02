@@ -8,6 +8,7 @@ import com.entropymod.network.ChoiceMadePayload;
 import com.entropymod.network.HistoryRequestPayload;
 import com.entropymod.network.HistoryResponsePayload;
 import com.entropymod.network.OpenChoicePayload;
+import com.entropymod.network.RerollRequestPayload;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityLevelChangeEvents;
 import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
@@ -43,6 +44,7 @@ public class EntropyMod implements ModInitializer {
 		PayloadTypeRegistry.serverboundPlay().register(ChoiceMadePayload.TYPE, ChoiceMadePayload.CODEC);
 		PayloadTypeRegistry.serverboundPlay().register(HistoryRequestPayload.TYPE, HistoryRequestPayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(HistoryResponsePayload.TYPE, HistoryResponsePayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(RerollRequestPayload.TYPE, RerollRequestPayload.CODEC);
 
 		// Effect ids are matched between EffectRegistry and EffectBehaviors by string,
 		// which the compiler cannot check. Report mismatches once, at startup.
@@ -57,6 +59,14 @@ public class EntropyMod implements ModInitializer {
 		ServerPlayNetworking.registerGlobalReceiver(ChoiceMadePayload.TYPE, (payload, context) -> {
 			MinecraftServer server = ((ServerLevel) context.player().level()).getServer();
 			EntropyManager.get(server).onChoiceMade(server, payload.chosenEffectId());
+		});
+
+		// Second Guess. Every condition is re-verified server-side inside
+		// requestReroll -- the client's button only decides what is drawn, never
+		// what is allowed.
+		ServerPlayNetworking.registerGlobalReceiver(RerollRequestPayload.TYPE, (payload, context) -> {
+			MinecraftServer server = ((ServerLevel) context.player().level()).getServer();
+			EntropyManager.get(server).requestReroll(server);
 		});
 
 		// History is fetched on demand, and answered only to the player who asked --

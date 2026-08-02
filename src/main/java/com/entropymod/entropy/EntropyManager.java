@@ -1,6 +1,7 @@
 package com.entropymod.entropy;
 
 import com.entropymod.EntropyMod;
+import com.entropymod.entropy.behavior.SecondGuessBehavior;
 import com.entropymod.network.OpenChoicePayload;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
@@ -62,7 +63,8 @@ public class EntropyManager extends SavedData {
 			Codec.INT.optionalFieldOf("interval_ticks", DEFAULT_INTERVAL_TICKS).forGetter(m -> m.intervalTicks),
 			Codec.STRING.listOf().optionalFieldOf("acquired", List.of())
 					.forGetter(m -> List.copyOf(m.acquired.ids())),
-			PickRecord.CODEC.listOf().optionalFieldOf("history", List.of()).forGetter(m -> m.history)
+			PickRecord.CODEC.listOf().optionalFieldOf("history", List.of()).forGetter(m -> m.history),
+			Codec.BOOL.optionalFieldOf("reroll_used", false).forGetter(m -> m.rerollUsed)
 	).apply(instance, EntropyManager::new));
 
 	private static final SavedDataType<EntropyManager> TYPE = new SavedDataType<>(
@@ -88,6 +90,16 @@ public class EntropyManager extends SavedData {
 	private int pickCount = 0;
 	private boolean gameOver = false;
 
+	/**
+	 * Second Guess's one-shot reroll, spent for the whole run.
+	 *
+	 * <p><b>Persisted here deliberately, in the same codec as everything else.</b>
+	 * A separate store for one boolean would be a second source of truth about the
+	 * run, which is the thing this class exists to prevent. Because it lives on the
+	 * run rather than on the effect, re-acquiring Second Guess cannot refund it.
+	 */
+	private boolean rerollUsed = false;
+
 	// Config, settable at world creation (wire up to a config screen later).
 	private int intervalTicks = DEFAULT_INTERVAL_TICKS;
 	private int entropyCap = DEFAULT_ENTROPY_CAP;
@@ -107,7 +119,7 @@ public class EntropyManager extends SavedData {
 
 	/** Codec constructor. */
 	private EntropyManager(int entropy, int pickCount, boolean gameOver, int entropyCap, int intervalTicks,
-						   List<String> acquiredIds, List<PickRecord> history) {
+						   List<String> acquiredIds, List<PickRecord> history, boolean rerollUsed) {
 		this.entropy = entropy;
 		this.pickCount = pickCount;
 		this.gameOver = gameOver;
@@ -115,6 +127,7 @@ public class EntropyManager extends SavedData {
 		this.intervalTicks = intervalTicks;
 		acquiredIds.forEach(this.acquired::add);
 		this.history.addAll(history);
+		this.rerollUsed = rerollUsed;
 	}
 
 	// ------------------------------------------------------------------
@@ -201,11 +214,61 @@ public class EntropyManager extends SavedData {
 		EntropyMod.LOGGER.info("Pick #{}: phase={} entropy={} occupied={} choices={}",
 				pickCount + 1, phase, entropy, occupied, choices);
 
-		OpenChoicePayload payload = OpenChoicePayload.fromChoices(phase, entropy, entropyCap, choices);
+		// waitingOnChoice is already true here, which isRerollAvailable() requires.
+		OpenChoicePayload payload =
+				OpenChoicePayload.fromChoices(phase, entropy, entropyCap, isRerollAvailable(), choices);
 		for (ServerPlayer player : PlayerLookup.all(server)) {
 			ServerPlayNetworking.send(player, payload);
 		}
 		return PickTrigger.OPENED;
+	}
+
+	/**
+	 * True if Second Guess can be spent right now: the effect is owned, the reroll
+	 * is unspent, and there is actually a pending offer to replace. Sent to the
+	 * client on {@code OpenChoicePayload} so the screen knows whether to show the
+	 * button; re-checked server-side in {@link #requestReroll} because a client can
+	 * send anything.
+	 */
+	public boolean isRerollAvailable() {
+		return waitingOnChoice && !rerollUsed && acquired.contains(SecondGuessBehavior.ID);
+	}
+
+	/**
+	 * Spends Second Guess: throws away the pending three options and rolls three
+	 * more.
+	 *
+	 * <p><b>Delegates to {@link #triggerPick} rather than rolling here.</b> That is
+	 * the same rule {@code /entropyforcepick} follows and for the same reason -- a
+	 * reroll that built its own choices would stop exercising no-repeat,
+	 * anti-stacking, the fallback warnings and the payload construction, and would
+	 * silently drift from the real path. This method contains exactly one call to
+	 * {@code triggerPick} and no roll logic; that is verifiable in its bytecode.
+	 *
+	 * <p><b>It does not advance the loop.</b> No entropy is spent, no pick is
+	 * counted, no history entry is written and the interval timer is untouched --
+	 * all of that happens in {@link #onChoiceMade}, which a reroll never reaches.
+	 *
+	 * <p>The reroll is consumed only if new choices actually opened, so a roll that
+	 * produces nothing (an exhausted pool, or the run ending on this tick) leaves
+	 * the player their reroll rather than eating it for nothing.
+	 *
+	 * @return true if new choices were sent
+	 */
+	public boolean requestReroll(MinecraftServer server) {
+		if (!isRerollAvailable()) {
+			return false;
+		}
+		PickTrigger result = triggerPick(server);
+		if (result != PickTrigger.OPENED) {
+			EntropyMod.LOGGER.warn("Second Guess reroll produced no new choices ({}) -- not consumed.", result);
+			return false;
+		}
+		rerollUsed = true;
+		setDirty();
+		EntropyMod.LOGGER.info("Second Guess spent -- pick #{} rerolled. No entropy or pick consumed.",
+				pickCount + 1);
+		return true;
 	}
 
 	/** Called by the server-side network receiver when a player submits their pick. */
@@ -322,6 +385,7 @@ public class EntropyManager extends SavedData {
 		return Collections.unmodifiableList(history);
 	}
 
+	public boolean isRerollUsed() { return rerollUsed; }
 	public boolean isWaitingOnChoice() { return waitingOnChoice; }
 	public boolean isGameOver() { return gameOver; }
 	public int getTicksIntoInterval() { return tickCounter; }
