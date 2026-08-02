@@ -228,20 +228,20 @@ system, MelodyBrain's layered build). Adding effect #47 later is just a new
   Tier 2-4 + odd effects are all in the same pool, some effects (e.g. a
   "harmless funny" one vs. a "genuinely brutal" one) probably shouldn't have
   equal odds. Not urgent, flagging for later.
-- Only Tier 1 (23 effects) is actually in the registry. Tiers 2-4 and all the
+- Only Tier 1 (28 effects) is actually in the registry. Tiers 2-4 and all the
   odd/signature effects exist only in the design doc, not in code.
 - `counterplay` flag exists on the data model but nothing reads/enforces it
   yet (e.g. "never roll 3 counterplay:false effects at once below entropy 40"
   isn't checked anywhere). `rollThree` is now the obvious place — it already
   filters by category, so a counterplay constraint slots in beside it.
 - **The pool is thin enough that both fallbacks are reachable in normal play.**
-  11 GOOD / 12 BAD means the no-repeat pool is empty by the 12th GOOD pick and
-  the 13th BAD one, and the last two picks of each phase legitimately show fewer
+  15 GOOD / 13 BAD means the no-repeat pool is empty by the 16th GOOD pick and
+  the 14th BAD one, and the last two picks of each phase legitimately show fewer
   than 3 cards. At the default
   entropy cap of 100 (~50 picks per phase) a run will hit this every time. This
   is a content problem, not a code problem — but it is not a rare edge case, and
   a fallback warning in the log is expected rather than a bug.
-- **All 23 effects share the same 0-25 entropy range.** There is only one tier,
+- **All 28 effects share the same 0-25 entropy range.** There is only one tier,
   so the range does nothing yet; it starts mattering when Tier 2 lands, and
   Open Question 3 (should high entropy still roll low-tier effects?) is the
   thing to settle before writing those ranges.
@@ -362,12 +362,15 @@ Two things to know before changing it:
   `y` down when `player.getActiveEffects()` is non-empty is the obvious fix;
   it was left alone because the top-right position was specified.
 
-### Mixins — three real ones now, plus the original placeholders
+### Mixins — eleven real ones now, plus the original placeholders
 `EntropyModMixin` / `EntropyModClientMixin` are still unused example code.
-**Three real mixins now exist** for the hook-driven effects — see "The three
-mixins" under the Tier 1 content batch below. The pattern is proven; later
-signature effects (Mirror World's inverted input, Fisheye's forced FOV,
-Doppelganger's custom entity) can follow the same shape.
+**Eleven real mixins now exist**: three for the original hook-driven effects, and
+eight more from the mixin cluster. See "The original three mixins" and "The mixin
+cluster" under the Tier 1 content batch below — the latter carries the
+javap-verified target table, which is the part worth reading before adding
+another. The pattern is proven; later signature effects (Mirror World's inverted
+input, Fisheye's forced FOV, Doppelganger's custom entity) can follow the same
+shape.
 
 ### Effect execution — BUILT, and now with real content
 Picking an effect routes through a per-effect class in
@@ -503,8 +506,8 @@ effect is a real playable outcome, a duplicate of an effect you already own is
 not. Only if no-repeat *alone* empties the pool is it dropped, flagged via
 `RollResult.repeatFallback()`.
 
-**The repeat fallback is genuinely reachable today**, not theoretical: with 11
-GOOD and 12 BAD effects it fires on the 12th GOOD pick and the 13th BAD one —
+**The repeat fallback is genuinely reachable today**, not theoretical: with 15
+GOOD and 13 BAD effects it fires on the 16th GOOD pick and the 14th BAD one —
 both asserted exactly, at those pick numbers, by the headless harness. It is a
 tested path, and it is still PLACEHOLDER policy — Open Question 6 remains open,
 and more content is the real fix.
@@ -513,20 +516,23 @@ A partial result (1 or 2 cards) is not a fallback and is not flagged. It is the
 honest answer when the pool is that small, and it is the normal experience for
 the last two picks of a phase.
 
-### The Tier 1 content batch — 23 effects, first real content
+### The Tier 1 content batch — 28 effects, first real content
 Originally ten GOOD and ten BAD, all permanent, all entropy 0-25; this replaced
 the original 11 placeholder stubs. **It is a baseline, not the finished game** —
 Tiers 2-4 and the odd/signature effects still slot in the same way.
 
 **The movement/physics batch added three more** (`moon_walker`, `leaden_legs`,
-`stone_feet`), bringing the registry to **23: 11 GOOD, 12 BAD.** See "Movement
-and physics attributes" below for the verification behind them, and note the
-phase counts are no longer symmetric — the fourth effect of that batch
-(`magnetic_boots`) was deferred to the mixin cluster, see below.
+`stone_feet`) and **the mixin cluster added five** (`magnetic_boots`,
+`frost_walker_innate`, `iron_will`, `beast_whisperer`, `heavy_footsteps`),
+bringing the registry to **28: 15 GOOD, 13 BAD.** See "Movement and physics
+attributes" and "The mixin cluster" below for the verification behind them. The
+phase counts are deliberately no longer symmetric.
 
-Seventeen are pure `AttributeEffectBehavior` subclasses. Six need a mixin,
-because no vanilla attribute covers them: hunger rate, incoming damage, and XP
-gain.
+Eighteen are pure `AttributeEffectBehavior` subclasses (including
+`magnetic_boots`, via a mod-registered attribute). Ten need a mixin, because no
+vanilla attribute covers them: hunger rate, incoming damage, XP gain, water
+freezing, projectile knockback, footstep volume, mob detection range, and animal
+fleeing.
 
 **Two effects were originally specced as "custom hook" and are attributes
 instead**, which is strictly better and worth knowing before someone "fixes" it:
@@ -657,28 +663,16 @@ vanilla. Confirmed in bytecode: `JUMP_STRENGTH` is read once, in
 `getJumpPower(float)`; `GRAVITY` is read in `getDefaultGravity()` and consumed by
 `applyGravity()` on every airborne tick.
 
-#### Deferred to the mixin cluster: Magnetic Boots
-`magnetic_boots` (GOOD / MOVEMENT, "pickup range ~3x") was specced alongside the
-three above and **was not implemented**, deliberately, rather than being shipped
-in a weakened form.
+#### Magnetic Boots — was deferred here, now SHIPPED in the mixin cluster
+`magnetic_boots` was correctly deferred out of the movement/physics session
+because item pickup range is hardcoded in `Player.aiStep()` and no attribute
+governs it, which made it a mixin task rather than an attribute task. **The mixin
+cluster session built it**, exactly along the lines predicted: a custom
+registered attribute (`entropymod:pickup_range`) read by a `Player.aiStep`
+redirect. It is now a plain `AttributeEffectBehavior`. See "The mixin cluster"
+below for the target details.
 
-Per the finding above, item pickup range is hardcoded in `Player.aiStep()` and no
-attribute governs it. The two clean options both fail here: there is no vanilla
-attribute to modify, and *registering a custom Fabric attribute would not help on
-its own* — a custom attribute is inert unless something reads it, so it would
-still need a mixin into `Player.aiStep` to consume the value. That makes this a
-mixin task, not an attribute task, and it belongs with the other mixin work
-rather than being faked through a side channel (e.g. teleporting nearby
-`ItemEntity`s toward the player, which would be visibly wrong and would fight
-vanilla's pickup-delay and owner rules).
-
-**When it is picked up: the mixin target is `Player.aiStep`**, replacing the
-`inflate(1.0, 0.5, 1.0)` call. A custom registered attribute read by that mixin
-is the clean shape, and it keeps the effect inside `AttributeEffectBehavior`.
-Note the box is *relative to the bounding box*, so "3x" should be applied to the
-1.0/0.5/1.0 inflation, not to an absolute block radius.
-
-#### The three mixins
+#### The original three mixins
 `EffectHooks` is the single door between mixins and run state. Mixins are the
 most fragile code here, so each is one line: they compute nothing and decide
 nothing, they just multiply by what `EffectHooks` returns.
@@ -699,6 +693,158 @@ nothing, they just multiply by what `EffectHooks` returns.
 than this mod. It also returns `1.0f` client-side, where the acquired set does
 not exist — the `instanceof ServerLevel` check is what makes the mixins safe on
 both sides.
+
+### The mixin cluster — 5 effects, 8 more mixins, all targets javap-verified
+This session added `magnetic_boots`, `frost_walker_innate`, `iron_will`,
+`beast_whisperer` (GOOD) and `heavy_footsteps` (BAD). **All five shipped**; two
+had their implementation route changed by what the investigation found, and those
+changes are the valuable part of this record.
+
+Mixin target names are far less guessable than attribute names, and three of the
+findings below contradict what the obvious approach would have been. Read this
+before writing another mixin.
+
+#### Verified mixin targets
+
+| Mixin | Target | Kind |
+|---|---|---|
+| `PlayerAttributesMixin` | `Player.createAttributes()` | `@Inject` RETURN |
+| `PlayerItemPickupMixin` | `Player.aiStep()` → `AABB.inflate(DDD)` | `@Redirect` |
+| `LivingEntityFrostWalkerMixin` | `LivingEntity.onChangedBlock(ServerLevel, BlockPos)` | `@Inject` TAIL |
+| `LivingEntityKnockbackMixin` | `LivingEntity.hurtServer` → `knockback(DDD)V` | `@Redirect` |
+| `EntityStepSoundMixin` | `Entity.playStepSound` → `playSound(SoundEvent,F,F)` | `@Redirect` |
+| `LivingEntityVisibilityMixin` | `LivingEntity.getVisibilityPercent(Entity)` | `@Inject` RETURN |
+| `PanicGoalMixin` | `PanicGoal.shouldPanic()` | `@Inject` RETURN |
+| `AvoidEntityGoalMixin` | `AvoidEntityGoal.canUse()` | `@Inject` RETURN |
+
+**Compiling proves nothing about a mixin.** Injection targets resolve at runtime,
+so a wrong name or descriptor builds green and fails when the game loads. Verify
+targets against the jar instead — for a `@Redirect`, confirm the exact
+`owner.name:descriptor` string appears *inside the enclosing method*:
+
+```bash
+javap -p -c -cp <deobf jar> net.minecraft.world.entity.LivingEntity \
+  | awk '/^  [a-zA-Z<@].*\(.*\);$/ { inm = (index($0,"hurtServer(")>0) } inm' \
+  | grep -F "Method knockback:(DDD)V"
+```
+
+#### Frost Walker is DATA, not Java — the biggest surprise here
+**`FrostWalkerEnchantment` does not exist.** The
+`onEntityMoved(LivingEntity, Level, BlockPos, int)` that every older guide hooks
+is gone. Frost Walker is a **data-driven enchantment**:
+`data/minecraft/enchantment/frost_walker.json` declares a
+`minecraft:location_changed` effect of type `minecraft:replace_disk` (radius 3 at
+level 1, +1/level, clamped 16; 1 block high at offset `(0,-1,0)`; replaces water
+with `frosted_ice[age=0]` where the block above is air and the spot is
+unobstructed; fires a `block_place` game event; requires on-ground and not
+riding).
+
+So there is no Java method to hook and nothing to copy. `LivingEntityFrostWalkerMixin`
+instead resolves **vanilla's own enchantment** out of the registry and calls
+`Enchantment.runLocationChangedEffects(...)` on it, which evaluates the real
+conditions and applies the real effect. A datapack that retunes Frost Walker
+retunes this effect too, for free.
+
+- The trigger is `LivingEntity.onChangedBlock(ServerLevel, BlockPos)` — that is
+  the method which calls `EnchantmentHelper.runLocationChangedEffects`, i.e.
+  vanilla's own schedule for this.
+- `runLocationChangedEffects` needs an `EnchantedItemInUse`, but **`ReplaceDisk.apply`
+  never reads that parameter** — verified in its bytecode, which never loads the
+  slot. `ItemStack.EMPTY` in the feet slot is therefore a faithful stand-in for
+  "no boots", which is the whole point of the effect.
+- **The general lesson:** when a vanilla mechanic seems to have lost its class,
+  check `data/minecraft/...` in the jar before concluding it was removed. Several
+  systems moved from code to data in this era.
+
+#### General mobs cannot hear — Heavy Footsteps' scope was redirected
+Part (b) of Heavy Footsteps ("mobs notice you from farther away") was specced as
+sound-driven. **It cannot be**, and this was the brief's stop condition firing:
+
+- **`Sensing`, the mob perception class, has exactly one query:
+  `hasLineOfSight(Entity)`.** There is no hearing, no noise radius, and nothing in
+  ordinary hostile AI that reacts to footsteps.
+- The only sound-driven perception in the game is the vibration/sculk system
+  (Warden, sculk sensors), which reacts to game events. Wiring footsteps to that
+  would have covered *one mob*, not "mobs" — a fake version of the effect.
+
+What *does* exist is a general **detectability multiplier**.
+`TargetingConditions.test` — the shared gate behind essentially every hostile
+targeting goal — computes effective range as
+`target.getVisibilityPercent(attacker) * range`, floored at 2. And
+`LivingEntity.getVisibilityPercent` is **the same lever vanilla uses for
+sneaking**: crouching returns `0.8`, i.e. mobs notice you from 20% closer.
+
+So part (b) ships through that value (`DETECTION_MULTIPLIER = 1.35`), which is
+general across mob AI and composes with sneaking and armour invisibility instead
+of overriding them. **It is honestly not sound propagation**, and the effect's
+description says "notice you from farther away" rather than claiming mobs hear
+you. Part (a) (louder footsteps, `Entity.playStepSound`) is real and shipped
+separately; volume genuinely widens a sound's audible radius for other players.
+
+#### "Fleeing" is exactly two mechanisms, both generic — Beast Whisperer
+The scope worry was per-species AI patching. It is not needed:
+
+- **`PanicGoal.shouldPanic()`** is
+  `mob.getLastDamageSource() != null && ...is(<tag>)`. Keyed on the damage
+  *source*, so the attacker is reachable via `getEntity()` and the suppression can
+  be scoped to one player. Every panicking mob inherits this one class.
+  **Target `shouldPanic`, not `canUse`** — `canUse()` is
+  `shouldPanic() || mob.isOnFire() || ...`, so cancelling there would also stop a
+  burning animal running for water.
+- **`AvoidEntityGoal`** is one generic class parameterised by the type to avoid,
+  not a per-species reimplementation. `canUse()` resolves the nearest match into
+  the protected `toAvoid` field, so a single mixin covers fox, ocelot and anything
+  added later. Gate on the resolved target and rabbit-flees-wolf stays untouched.
+  Inject at RETURN, not HEAD — `toAvoid` is only populated during `canUse`.
+
+#### Iron Will: why the call site, and why explosions were never at risk
+`LivingEntity.knockback(double, double, double)` **receives no `DamageSource`**,
+so a mixin on that method could only ever be blanket knockback immunity.
+Redirecting the call *inside* `hurtServer` puts the source in scope — a redirect
+handler may capture the enclosing method's parameters after its own.
+
+The three-way split was verified against the shipped tags, not assumed:
+
+- `is_projectile` = arrow, trident, mob_projectile, unattributed_fireball,
+  fireball, wither_skull, thrown, wind_charge.
+- **`no_knockback` already contains `explosion` and `player_explosion`**, and the
+  redirected call sits inside the branch that tag excludes. Explosion shove is
+  applied by the explosion itself and never passes through here — so explosions
+  are safe *by construction*, not merely by the gate.
+- Melee (`player_attack` / `mob_attack`) is in neither tag, so it reaches the
+  redirect and passes straight through.
+
+**Known limit, deliberately not hidden:** Punch-enchantment knockback is applied
+by a separate call and is *not* suppressed. A Punch bow still moves the player.
+
+#### Registering a custom attribute — and the crash it nearly shipped
+`entropymod:pickup_range` (`RangedAttribute`, default **1.0**, min 0, max 16,
+syncable) is registered in `onInitialize` and added to the player in
+`PlayerAttributesMixin` via `Player.createAttributes()`. Its default of 1.0 is
+load-bearing: **a player without Magnetic Boots gets vanilla pickup by
+construction**, because the mixin multiplies by exactly 1.0 rather than checking
+a flag.
+
+**Vanilla freezes `BuiltInRegistries` at the end of `Bootstrap.bootStrap()`.**
+Mod registration works only because Fabric's registry-sync `BootstrapMixin`
+replaces that freeze — in a method literally named **`delayRegistryFreeze()`** —
+so mods can register during `onInitialize`. Two consequences, both real:
+
+1. **Do not dereference a `Holder.Reference` during `onInitialize`.** The value is
+   not bound until the (delayed) freeze, so `PICKUP_RANGE.value()` throws
+   `IllegalStateException: Trying to access unbound value` and takes mod init down
+   with it. The first version of `EntropyAttributes.register()` logged
+   `PICKUP_RANGE.value()` and **the headless harness caught it as a hard startup
+   crash before it ever ran in game.** Log the `Identifier` instead; anything
+   needing the `Attribute` must wait until the game is running, which every
+   `EffectBehavior` already does.
+2. **Headless harnesses now need a prologue.** Plain `Bootstrap.bootStrap()` is no
+   longer enough: touching `EffectBehaviors` constructs `MagneticBootsBehavior`,
+   which class-inits `EntropyAttributes`, which dies on the frozen registry. The
+   shared `HarnessBootstrap.init()` reproduces Fabric's ordering — bootstrap,
+   reflectively unfreeze `ATTRIBUTE`, register, then bind the holder (read the raw
+   value out of `MappedRegistry.byValue`, since every public accessor routes
+   through the unbound `Holder.Reference.value()` you are trying to bind).
 
 ### Pick history — BUILT
 `PickRecord` (pick number, phase, effect id/name/description, entropy at the
@@ -929,7 +1075,7 @@ cards and accept it, or end the run early once the pool is exhausted.
 
 **This got sharper, not softer, with permanence.** There are now *two* fallbacks
 — no-repeat and anti-stacking — and the no-repeat one is reachable in ordinary
-play: at 11 GOOD / 12 BAD, the 12th GOOD pick has nothing new to
+play: at 15 GOOD / 13 BAD, the 16th GOOD pick has nothing new to
 offer. At the default cap of 100 that is well inside a normal run. More content
 raises the bar but does not remove it; a cap of 100 needs ~50 effects per phase
 to never repeat. Deciding what *should* happen when the well runs dry is now a
@@ -993,8 +1139,9 @@ permanent effects) is in and is real, not stubs.
 6. Config surface (Question 4) — can happen in parallel, low-risk to defer.
 7. A real pick-history screen to replace the `/entropyhistory` debug logging.
    The data is persisted now, so it survives long enough to be worth showing.
-8. Odd/signature effects, prioritized per Question 8. The three mixins added for
-   hunger/damage/XP prove the pattern these will need. **`magnetic_boots` belongs
-   in this batch** — it was specced with the movement effects but deferred here
-   once item pickup range turned out to be hardcoded rather than attribute-driven;
-   see "Deferred to the mixin cluster" above for the target and shape.
+8. Odd/signature effects, prioritized per Question 8. **Eleven mixins now exist
+   and the pattern is well proven** — including a mod-registered attribute, a
+   goal-AI hook, and driving a data-driven vanilla enchantment directly. Read
+   "The mixin cluster" above before starting: its target table, and the note that
+   compiling proves nothing about a mixin, are the two things that will save the
+   most time. `magnetic_boots` shipped there and is no longer outstanding.

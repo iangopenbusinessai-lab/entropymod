@@ -12,9 +12,10 @@ import java.util.stream.Collectors;
  * need to be added -- the timer, GUI, and networking code never change when you
  * add effect #47.
  *
- * <p><b>Current content: the first real Tier 1 batch — 20 effects, 10 GOOD and
- * 10 BAD, all permanent, all entropy 0-25.</b> This replaced the original
- * 11-effect placeholder set. It is a baseline, not the finished game: Tiers 2-4
+ * <p><b>Current content: Tier 1 — 28 effects, 15 GOOD and 13 BAD, all permanent,
+ * all entropy 0-25.</b> This grew from the original 11-effect placeholder set
+ * through the 20-effect Tier 1 batch, three movement/physics effects, and five
+ * mixin-driven ones. It is a baseline, not the finished game: Tiers 2-4
  * and the odd/signature effects still slot in the same way, and the entropy
  * ranges here deliberately all overlap because there is only one tier so far.
  *
@@ -26,7 +27,7 @@ public final class EffectRegistry {
 
 	static {
 		// =================================================================
-		// TIER 1 GOOD (Entropy 0-25) -- 10 effects
+		// TIER 1 GOOD (Entropy 0-25) -- 15 effects
 		// =================================================================
 
 		// --- attribute-driven ---
@@ -46,6 +47,8 @@ public final class EffectRegistry {
 				EffectCategory.TOOL, EffectPhase.GOOD, 0, 25, true);
 		register("moon_walker", "Moon Walker", "Gravity reduced by 30% -- jump higher, fall slower",
 				EffectCategory.MOVEMENT, EffectPhase.GOOD, 0, 25, true);
+		register("magnetic_boots", "Magnetic Boots", "Items and XP are pulled in from 50% farther",
+				EffectCategory.UTILITY, EffectPhase.GOOD, 0, 25, true);
 
 		// --- hook-driven ---
 		register("iron_stomach", "Iron Stomach", "Hunger drains 25% slower",
@@ -54,9 +57,15 @@ public final class EffectRegistry {
 				EffectCategory.GEAR, EffectPhase.GOOD, 0, 25, true);
 		register("fast_learner", "Fast Learner", "+50% experience gained",
 				EffectCategory.META, EffectPhase.GOOD, 0, 25, true);
+		register("frost_walker_innate", "Frost Walker Innate", "Water freezes under your feet -- no boots needed",
+				EffectCategory.MOVEMENT, EffectPhase.GOOD, 0, 25, true);
+		register("iron_will", "Iron Will", "Projectiles no longer knock you back",
+				EffectCategory.COMBAT, EffectPhase.GOOD, 0, 25, true);
+		register("beast_whisperer", "Beast Whisperer", "Animals never flee from you",
+				EffectCategory.COMPANION, EffectPhase.GOOD, 0, 25, true);
 
 		// =================================================================
-		// TIER 1 BAD (Entropy 0-25) -- 10 effects
+		// TIER 1 BAD (Entropy 0-25) -- 13 effects
 		//
 		// Every one is counterplay = true: none can kill you on its own, and
 		// each has an in-game answer (armour, food, care around ledges).
@@ -90,6 +99,8 @@ public final class EffectRegistry {
 				EffectCategory.GEAR, EffectPhase.BAD, 0, 25, true);
 		register("slow_learner", "Slow Learner", "-50% experience gained",
 				EffectCategory.META, EffectPhase.BAD, 0, 25, true);
+		register("heavy_footsteps", "Heavy Footsteps", "Loud footsteps -- hostile mobs notice you from farther away",
+				EffectCategory.DEBUFF, EffectPhase.BAD, 0, 25, true);
 
 		// TODO: Tiers 2-4 + odd/signature effects go here, same pattern.
 		// See entropy-modpack-effects.md for the full list to port over.

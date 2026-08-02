@@ -1,13 +1,18 @@
 package com.entropymod.entropy;
 
+import com.entropymod.entropy.behavior.BeastWhispererBehavior;
 import com.entropymod.entropy.behavior.FastLearnerBehavior;
 import com.entropymod.entropy.behavior.FragileBehavior;
+import com.entropymod.entropy.behavior.FrostWalkerInnateBehavior;
 import com.entropymod.entropy.behavior.GrowlingStomachBehavior;
+import com.entropymod.entropy.behavior.HeavyFootstepsBehavior;
 import com.entropymod.entropy.behavior.IronSkinBehavior;
 import com.entropymod.entropy.behavior.IronStomachBehavior;
+import com.entropymod.entropy.behavior.IronWillBehavior;
 import com.entropymod.entropy.behavior.SlowLearnerBehavior;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 
 /**
@@ -79,6 +84,65 @@ public final class EffectHooks {
 			multiplier *= SlowLearnerBehavior.MULTIPLIER;
 		}
 		return multiplier;
+	}
+
+	/**
+	 * True if projectile knockback should be skipped for this player (Iron Will).
+	 * Read by the {@code LivingEntity.hurtServer} knockback redirect, which has
+	 * already established that the damage source is projectile-based -- this
+	 * answers only "does this player have the effect".
+	 */
+	public static boolean ignoresProjectileKnockback(Player player) {
+		AcquiredEffects acquired = acquired(player);
+		return acquired != null && acquired.contains(IronWillBehavior.ID);
+	}
+
+	/** True if this player's water-walking should be granted (Frost Walker Innate). */
+	public static boolean hasInnateFrostWalker(Player player) {
+		AcquiredEffects acquired = acquired(player);
+		return acquired != null && acquired.contains(FrostWalkerInnateBehavior.ID);
+	}
+
+	/** Scales footstep loudness. Read by the Entity.playStepSound mixin. */
+	public static float stepSoundVolumeMultiplier(Player player) {
+		AcquiredEffects acquired = acquired(player);
+		if (acquired == null) {
+			return 1.0f;
+		}
+		return acquired.contains(HeavyFootstepsBehavior.ID)
+				? HeavyFootstepsBehavior.VOLUME_MULTIPLIER
+				: 1.0f;
+	}
+
+	/**
+	 * Scales how far away mobs notice this player. Read by the
+	 * {@code LivingEntity.getVisibilityPercent} mixin, which feeds
+	 * {@code TargetingConditions.test} -- the same value vanilla reduces to 0.8
+	 * while sneaking.
+	 */
+	public static float detectionRangeMultiplier(Player player) {
+		AcquiredEffects acquired = acquired(player);
+		if (acquired == null) {
+			return 1.0f;
+		}
+		return acquired.contains(HeavyFootstepsBehavior.ID)
+				? HeavyFootstepsBehavior.DETECTION_MULTIPLIER
+				: 1.0f;
+	}
+
+	/**
+	 * True if animals should not flee from this player (Beast Whisperer). Read by
+	 * both the {@code PanicGoal} and {@code AvoidEntityGoal} mixins.
+	 *
+	 * <p>Takes an {@code Entity} rather than a {@code Player} because both call
+	 * sites hold something more general -- a damage source's attacker, and a
+	 * goal's avoid target -- and pushing the {@code instanceof} in here keeps the
+	 * mixins to the one-line shape the rest of this class exists to preserve.
+	 */
+	public static boolean suppressesFleeing(Entity entity) {
+		return entity instanceof Player player
+				&& acquired(player) != null
+				&& acquired(player).contains(BeastWhispererBehavior.ID);
 	}
 
 	/**

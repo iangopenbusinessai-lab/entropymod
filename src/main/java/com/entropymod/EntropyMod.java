@@ -2,6 +2,7 @@ package com.entropymod;
 
 import com.entropymod.command.EntropyCommands;
 import com.entropymod.entropy.EffectBehaviors;
+import com.entropymod.entropy.EntropyAttributes;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.network.ChoiceMadePayload;
 import com.entropymod.network.HistoryRequestPayload;
@@ -29,6 +30,10 @@ public class EntropyMod implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		LOGGER.info("Entropy Mod initializing...");
+
+		// Register this mod's own attributes before anything can look one up.
+		// Vanilla has no item-pickup-range attribute -- see EntropyAttributes.
+		EntropyAttributes.register();
 
 		// Register both payload types so they can be sent/received at all.
 		// NOTE: clientboundPlay()/serverboundPlay() -- these were playS2C()/playC2S()
