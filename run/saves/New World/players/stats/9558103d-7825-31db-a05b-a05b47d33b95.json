@@ -1,0 +1,55 @@
+{
+  "stats": {
+    "minecraft:killed_by": {
+      "minecraft:skeleton": 1
+    },
+    "minecraft:used": {
+      "minecraft:acacia_trapdoor": 1,
+      "minecraft:water_bucket": 1,
+      "minecraft:wooden_hoe": 7,
+      "minecraft:dirt": 2,
+      "minecraft:wheat_seeds": 49
+    },
+    "minecraft:killed": {
+      "minecraft:zombie": 2
+    },
+    "minecraft:custom": {
+      "minecraft:time_since_rest": 4273,
+      "minecraft:walk_one_cm": 8771,
+      "minecraft:leave_game": 2,
+      "minecraft:mob_kills": 7,
+      "minecraft:walk_under_water_one_cm": 285,
+      "minecraft:damage_taken": 2450,
+      "minecraft:damage_dealt": 446,
+      "minecraft:play_time": 10994,
+      "minecraft:jump": 218,
+      "minecraft:time_since_death": 4254,
+      "minecraft:drop": 40,
+      "minecraft:sprint_one_cm": 10418,
+      "minecraft:fall_one_cm": 30296,
+      "minecraft:total_world_time": 13876,
+      "minecraft:fly_one_cm": 72843,
+      "minecraft:walk_on_water_one_cm": 82,
+      "minecraft:crouch_one_cm": 2765,
+      "minecraft:sneak_time": 891,
+      "minecraft:deaths": 7
+    },
+    "minecraft:dropped": {
+      "minecraft:dirt": 2243
+    },
+    "minecraft:mined": {
+      "minecraft:short_grass": 2,
+      "minecraft:dirt": 1,
+      "minecraft:leaf_litter": 1,
+      "minecraft:grass_block": 6
+    },
+    "minecraft:picked_up": {
+      "minecraft:dirt": 9,
+      "minecraft:wheat_seeds": 1,
+      "minecraft:bone": 1,
+      "minecraft:arrow": 2,
+      "minecraft:rotten_flesh": 2
+    }
+  },
+  "DataVersion": 4790
+}
