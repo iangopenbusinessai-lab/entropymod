@@ -228,19 +228,20 @@ system, MelodyBrain's layered build). Adding effect #47 later is just a new
   Tier 2-4 + odd effects are all in the same pool, some effects (e.g. a
   "harmless funny" one vs. a "genuinely brutal" one) probably shouldn't have
   equal odds. Not urgent, flagging for later.
-- Only Tier 1 (11 effects) is actually in the registry. Tiers 2-4 and all the
+- Only Tier 1 (23 effects) is actually in the registry. Tiers 2-4 and all the
   odd/signature effects exist only in the design doc, not in code.
 - `counterplay` flag exists on the data model but nothing reads/enforces it
   yet (e.g. "never roll 3 counterplay:false effects at once below entropy 40"
   isn't checked anywhere). `rollThree` is now the obvious place — it already
   filters by category, so a counterplay constraint slots in beside it.
 - **The pool is thin enough that both fallbacks are reachable in normal play.**
-  10 effects per phase means the no-repeat pool is empty by the 11th pick of a
-  phase, and picks 9 and 10 legitimately show fewer than 3 cards. At the default
+  11 GOOD / 12 BAD means the no-repeat pool is empty by the 12th GOOD pick and
+  the 13th BAD one, and the last two picks of each phase legitimately show fewer
+  than 3 cards. At the default
   entropy cap of 100 (~50 picks per phase) a run will hit this every time. This
   is a content problem, not a code problem — but it is not a rare edge case, and
   a fallback warning in the log is expected rather than a bug.
-- **All 20 effects share the same 0-25 entropy range.** There is only one tier,
+- **All 23 effects share the same 0-25 entropy range.** There is only one tier,
   so the range does nothing yet; it starts mattering when Tier 2 lands, and
   Open Question 3 (should high entropy still roll low-tier effects?) is the
   thing to settle before writing those ranges.
@@ -502,21 +503,28 @@ effect is a real playable outcome, a duplicate of an effect you already own is
 not. Only if no-repeat *alone* empties the pool is it dropped, flagged via
 `RollResult.repeatFallback()`.
 
-**The repeat fallback is genuinely reachable today**, not theoretical: with 10
-effects per phase it fires on the 11th pick of that phase. It is a tested path
-(see the headless harness), and it is still PLACEHOLDER policy — Open Question 6
-remains open, and more content is the real fix.
+**The repeat fallback is genuinely reachable today**, not theoretical: with 11
+GOOD and 12 BAD effects it fires on the 12th GOOD pick and the 13th BAD one —
+both asserted exactly, at those pick numbers, by the headless harness. It is a
+tested path, and it is still PLACEHOLDER policy — Open Question 6 remains open,
+and more content is the real fix.
 
 A partial result (1 or 2 cards) is not a fallback and is not flagged. It is the
 honest answer when the pool is that small, and it is the normal experience for
-picks 9 and 10 of a phase.
+the last two picks of a phase.
 
-### The Tier 1 content batch — 20 effects, first real content
-Ten GOOD, ten BAD, all permanent, all entropy 0-25. This replaced the original
-11 placeholder stubs. **It is a baseline, not the finished game** — Tiers 2-4
-and the odd/signature effects still slot in the same way.
+### The Tier 1 content batch — 23 effects, first real content
+Originally ten GOOD and ten BAD, all permanent, all entropy 0-25; this replaced
+the original 11 placeholder stubs. **It is a baseline, not the finished game** —
+Tiers 2-4 and the odd/signature effects still slot in the same way.
 
-Fourteen are pure `AttributeEffectBehavior` subclasses. Six need a mixin,
+**The movement/physics batch added three more** (`moon_walker`, `leaden_legs`,
+`stone_feet`), bringing the registry to **23: 11 GOOD, 12 BAD.** See "Movement
+and physics attributes" below for the verification behind them, and note the
+phase counts are no longer symmetric — the fourth effect of that batch
+(`magnetic_boots`) was deferred to the mixin cluster, see below.
+
+Seventeen are pure `AttributeEffectBehavior` subclasses. Six need a mixin,
 because no vanilla attribute covers them: hunger rate, incoming damage, and XP
 gain.
 
@@ -551,6 +559,11 @@ from a wiki. The floors are the part that matters.
 | `LUCK` | 0.0 | **-1024.0** | 1024.0 |
 | `FALL_DAMAGE_MULTIPLIER` | 1.0 | 0.0 | 100.0 |
 | `BLOCK_BREAK_SPEED` | 1.0 | 0.0 | 1024.0 |
+| `GRAVITY` | 0.08 | **-1.0** | **1.0** |
+| `JUMP_STRENGTH` | 0.41999998688697815 | **0.0** | 32.0 |
+| `ENTITY_INTERACTION_RANGE` | 3.0 | 0.0 | 64.0 |
+| `BLOCK_INTERACTION_RANGE` | 4.5 | 0.0 | 64.0 |
+| `SAFE_FALL_DISTANCE` | 3.0 | -1024.0 | 1024.0 |
 
 - **`MAX_HEALTH` floors at 1.0, not 0.** `sanitizeValue(-5)` and
   `sanitizeValue(0)` both return `1.0`. Max health can never be driven to zero
@@ -572,6 +585,98 @@ from a wiki. The floors are the part that matters.
   `unlucky` needs no floor handling at all.
 - `ATTACK_DAMAGE` is **not client-syncable** — the client tooltip won't reflect
   `steady_hands` / `weak_grip` even though the server applies them.
+
+#### Movement and physics attributes — verified, read this before guessing again
+The movement batch (`moon_walker`, `leaden_legs`, `stone_feet`) had to establish
+whether gravity, jump and item-pickup range are attribute-driven **for players**
+in 26.1.2. They were checked in bytecode and against the live registry, not
+assumed — and the three answers are not the same answer, which is the point of
+recording them.
+
+- **`GRAVITY` is real and player-applicable.** Granted by
+  `LivingEntity.createLivingAttributes()` (so every living entity has it, players
+  included), and it is genuinely the value physics uses:
+  `LivingEntity.getDefaultGravity()` is literally
+  `getAttributeValue(Attributes.GRAVITY)`, and `Entity.applyGravity()` subtracts
+  that from vertical motion every airborne tick. No motion mixin needed.
+- **`JUMP_STRENGTH` is real and player-applicable — the horse association does
+  NOT hold here.** `LivingEntity.getJumpPower(float)` is
+  `getAttributeValue(JUMP_STRENGTH) * scale * getBlockJumpFactor() +
+  getJumpBoostPower()`, and **neither `Player`, `Avatar` nor `ServerPlayer`
+  overrides `getJumpPower`** — `ServerPlayer.jumpFromGround` calls `super` and
+  only adds the jump stat and food exhaustion. This was the finding most likely
+  to have gone the other way; it did not.
+- **There is NO item-pickup-range attribute, and `INTERACTION_RANGE` is not it.**
+  `ENTITY_INTERACTION_RANGE` / `BLOCK_INTERACTION_RANGE` feed exactly two
+  methods, `Player.entityInteractionRange()` and `Player.blockInteractionRange()`
+  — attack and use *reach*. Item pickup is a **separate, hardcoded** mechanic:
+  `Player.aiStep()` collects with `getBoundingBox().inflate(1.0, 0.5, 1.0)`,
+  literal constants in the bytecode, and `ItemEntity.playerTouch` reads no
+  attribute and no range at all. Experience orbs come out of the same inflated
+  box. **Do not reach for `INTERACTION_RANGE` to implement a magnet effect — it
+  will change reach and not pickup.**
+
+**`GRAVITY`'s floor is dangerous in a way `MAX_HEALTH`'s is not.** It clamps to
+`[-1.0, 1.0]`, so unlike max health — whose 1.0 floor makes over-stacking
+harmlessly bottom out — driving gravity to `0` leaves the player floating with no
+way down, and **negative gravity is legal** and launches them upward permanently.
+`JUMP_STRENGTH` floors at `0.0`, i.e. cannot jump at all. Neither is reachable
+today because no-repeat prevents a second gravity or jump effect, but any future
+tier that adds one **must** be checked against these floors rather than assumed
+safe by analogy with the health case.
+
+**Jump apex is not linear in jump strength — it goes as the square of velocity.**
+Simulating the real per-tick integration (apply gravity, integrate, apply the
+0.98 air drag) against vanilla's 0.42 / 0.08 reproduces the known 1.2522-block
+jump, which is what validates the model. Against that:
+
+| effect | apex | clears a 1-block ledge? |
+|---|---|---|
+| vanilla | 1.2522 | yes |
+| Moon Walker, -30% gravity | 1.6573 | yes (clears 1.5) |
+| Leaden Legs, +40% gravity | 0.9804 | **no — 2% short** |
+| Stone Feet, -40% jump | 0.5140 | **no** |
+
+**Both BAD effects currently block 1-block jumps, and the thresholds are cliffs,
+not gradients.** For gravity the break point is between +35% (1.0037, clears) and
++40% (0.9804, does not). For jump strength it is between -10% (1.0474, clears)
+and -15% (0.9465, does not) — because of the squaring, jump strength is far more
+sensitive than it looks. `STEP_HEIGHT` is untouched, so slabs and stairs still
+auto-step and the world stays traversable via ramps; that is why both stay
+`counterplay = true`. Ship values are the specced -30/+40/-40. If they read as
+broken rather than heavy in play, +30% gravity and -10% jump are the tunings that
+keep the effect while preserving normal traversal.
+
+**Leaden Legs and Stone Feet are genuinely different mechanics**, despite both
+shortening a jump — worth stating because the obvious "simplification" is to
+merge them. Gravity applies every tick in *both* directions, so Leaden Legs also
+makes the player fall faster, hit terminal velocity sooner and accumulate fall
+distance faster, interacting with fall damage and water landings. Stone Feet
+changes only the initial upward impulse and leaves falling byte-identical to
+vanilla. Confirmed in bytecode: `JUMP_STRENGTH` is read once, in
+`getJumpPower(float)`; `GRAVITY` is read in `getDefaultGravity()` and consumed by
+`applyGravity()` on every airborne tick.
+
+#### Deferred to the mixin cluster: Magnetic Boots
+`magnetic_boots` (GOOD / MOVEMENT, "pickup range ~3x") was specced alongside the
+three above and **was not implemented**, deliberately, rather than being shipped
+in a weakened form.
+
+Per the finding above, item pickup range is hardcoded in `Player.aiStep()` and no
+attribute governs it. The two clean options both fail here: there is no vanilla
+attribute to modify, and *registering a custom Fabric attribute would not help on
+its own* — a custom attribute is inert unless something reads it, so it would
+still need a mixin into `Player.aiStep` to consume the value. That makes this a
+mixin task, not an attribute task, and it belongs with the other mixin work
+rather than being faked through a side channel (e.g. teleporting nearby
+`ItemEntity`s toward the player, which would be visibly wrong and would fight
+vanilla's pickup-delay and owner rules).
+
+**When it is picked up: the mixin target is `Player.aiStep`**, replacing the
+`inflate(1.0, 0.5, 1.0)` call. A custom registered attribute read by that mixin
+is the clean shape, and it keeps the effect inside `AttributeEffectBehavior`.
+Note the box is *relative to the bounding box*, so "3x" should be applied to the
+1.0/0.5/1.0 inflation, not to an absolute block radius.
 
 #### The three mixins
 `EffectHooks` is the single door between mixins and run state. Mixins are the
@@ -824,7 +929,7 @@ cards and accept it, or end the run early once the pool is exhausted.
 
 **This got sharper, not softer, with permanence.** There are now *two* fallbacks
 — no-repeat and anti-stacking — and the no-repeat one is reachable in ordinary
-play: 10 effects per phase means the 11th pick of a phase has nothing new to
+play: at 11 GOOD / 12 BAD, the 12th GOOD pick has nothing new to
 offer. At the default cap of 100 that is well inside a normal run. More content
 raises the bar but does not remove it; a cap of 100 needs ~50 effects per phase
 to never repeat. Deciding what *should* happen when the well runs dry is now a
@@ -889,4 +994,7 @@ permanent effects) is in and is real, not stubs.
 7. A real pick-history screen to replace the `/entropyhistory` debug logging.
    The data is persisted now, so it survives long enough to be worth showing.
 8. Odd/signature effects, prioritized per Question 8. The three mixins added for
-   hunger/damage/XP prove the pattern these will need.
+   hunger/damage/XP prove the pattern these will need. **`magnetic_boots` belongs
+   in this batch** — it was specced with the movement effects but deferred here
+   once item pickup range turned out to be hardcoded rather than attribute-driven;
+   see "Deferred to the mixin cluster" above for the target and shape.

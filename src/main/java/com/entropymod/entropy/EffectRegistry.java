@@ -44,6 +44,8 @@ public final class EffectRegistry {
 				EffectCategory.MOVEMENT, EffectPhase.GOOD, 0, 25, true);
 		register("efficient_miner", "Efficient Miner", "+15% mining speed",
 				EffectCategory.TOOL, EffectPhase.GOOD, 0, 25, true);
+		register("moon_walker", "Moon Walker", "Gravity reduced by 30% -- jump higher, fall slower",
+				EffectCategory.MOVEMENT, EffectPhase.GOOD, 0, 25, true);
 
 		// --- hook-driven ---
 		register("iron_stomach", "Iron Stomach", "Hunger drains 25% slower",
@@ -76,6 +78,10 @@ public final class EffectRegistry {
 				EffectCategory.MOVEMENT, EffectPhase.BAD, 0, 25, true);
 		register("dull_blade", "Dull Blade", "-20% mining speed",
 				EffectCategory.TOOL, EffectPhase.BAD, 0, 25, true);
+		register("leaden_legs", "Leaden Legs", "Gravity increased by 40% -- jump lower, fall harder",
+				EffectCategory.MOVEMENT, EffectPhase.BAD, 0, 25, true);
+		register("stone_feet", "Stone Feet", "-40% jump strength",
+				EffectCategory.MOVEMENT, EffectPhase.BAD, 0, 25, true);
 
 		// --- hook-driven ---
 		register("growling_stomach", "Growling Stomach", "Hunger drains 25% faster",
