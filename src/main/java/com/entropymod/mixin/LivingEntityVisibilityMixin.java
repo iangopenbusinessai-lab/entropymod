@@ -28,6 +28,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * the entity is crouching. This pushes it the other way, so the change composes
  * with sneaking and armour-based invisibility rather than overriding them.
  *
+ * <p><b>Important limit, established by in-game testing rather than by reading
+ * this call site: scaling this value ABOVE 1.0 cannot extend detection range.</b>
+ * Acquisition uses {@code followDistance * visibilityPercent}, but retention
+ * ({@code TargetGoal.canContinueToUse}) re-checks the distance against the
+ * <em>raw</em> {@code followDistance} with no visibility term, so anything
+ * acquired beyond it is dropped again immediately. The usable effect of this
+ * mixin is therefore to cancel reductions such as sneaking's 0.8 -- not to make
+ * mobs see farther. See {@link com.entropymod.entropy.behavior.HeavyFootstepsBehavior}
+ * for the measurement and the arithmetic.
+ *
  * <p><b>Players without the effect are unaffected.</b>
  * {@code detectionRangeMultiplier} returns {@code 1.0f} for them, and for
  * everything that is not a player the method returns before doing anything --

@@ -16,7 +16,9 @@ import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 
 import java.util.Locale;
 
@@ -45,20 +47,41 @@ public class EntropyModClient implements ClientModInitializer {
 			));
 		});
 
-		// TEMPORARY debug surface for the pick history. There is no screen or
-		// keybind for this yet -- the point of this receiver is to prove the
-		// request/response pair round-trips correctly. Trigger it with
-		// /entropyhistory and read the result in the log.
+		// Interim surface for the pick history, until a real screen exists.
+		//
+		// This used to log ONLY, which is why /entropyhistory looked broken in game:
+		// the round-trip was working perfectly and printing to logs/latest.log, where
+		// a player has no reason to look. Nothing was ever sent to chat. The history
+		// data, the SavedData persistence and the payload pair were all fine --
+		// see CLAUDE.md. Output now goes to chat; the log lines stay because they are
+		// what made that diagnosis possible in the first place.
 		ClientPlayNetworking.registerGlobalReceiver(HistoryResponsePayload.TYPE, (payload, context) -> {
 			if (payload.entries().isEmpty()) {
 				EntropyMod.LOGGER.info("Pick history: (empty -- no picks made yet this run)");
+				context.player().sendSystemMessage(Component.literal(
+						"[Entropy] No picks yet this run.").withStyle(ChatFormatting.GRAY));
 				return;
 			}
 			EntropyMod.LOGGER.info("Pick history -- {} entries:", payload.entries().size());
+			context.player().sendSystemMessage(Component.literal(
+					"[Entropy] Pick history -- " + payload.entries().size() + " pick(s):")
+					.withStyle(ChatFormatting.GOLD));
 			for (HistoryResponsePayload.Entry entry : payload.entries()) {
 				EntropyMod.LOGGER.info("  #{} [{}] entropy {} -> {} ({}) -- {}",
 						entry.pickNumber(), entry.phase(), entry.entropyAtPick(),
 						entry.effectName(), entry.effectId(), entry.effectDescription());
+
+				ChatFormatting phaseColor = entry.phase() == EffectPhase.GOOD
+						? ChatFormatting.GREEN
+						: ChatFormatting.RED;
+				context.player().sendSystemMessage(Component.literal(
+						"  #" + entry.pickNumber() + " ")
+						.withStyle(ChatFormatting.DARK_GRAY)
+						.append(Component.literal("[" + entry.phase() + "] ").withStyle(phaseColor))
+						.append(Component.literal(entry.effectName()).withStyle(ChatFormatting.WHITE))
+						.append(Component.literal(" -- " + entry.effectDescription()
+								+ " (entropy " + entry.entropyAtPick() + ")")
+								.withStyle(ChatFormatting.GRAY)));
 			}
 		});
 
@@ -110,6 +133,10 @@ public class EntropyModClient implements ClientModInitializer {
 				if (!ClientPlayNetworking.canSend(HistoryRequestPayload.TYPE)) {
 					EntropyMod.LOGGER.warn("/entropyhistory -- server does not accept HistoryRequestPayload "
 							+ "(not an Entropy Mod server?)");
+					// This failure was also log-only, so a genuinely unsupported server
+					// looked identical to a working one that printed nothing.
+					ctx.getSource().sendError(Component.literal(
+							"This server does not support Entropy Mod's history request."));
 					return 0;
 				}
 				ClientPlayNetworking.send(HistoryRequestPayload.INSTANCE);

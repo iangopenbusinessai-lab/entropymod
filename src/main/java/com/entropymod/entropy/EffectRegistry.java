@@ -47,7 +47,7 @@ public final class EffectRegistry {
 				EffectCategory.TOOL, EffectPhase.GOOD, 0, 25, true);
 		register("moon_walker", "Moon Walker", "Gravity reduced by 30% -- jump higher, fall slower",
 				EffectCategory.MOVEMENT, EffectPhase.GOOD, 0, 25, true);
-		register("magnetic_boots", "Magnetic Boots", "Items and XP are pulled in from 50% farther",
+		register("magnetic_boots", "Magnetic Boots", "Items and XP are pulled in from twice as far",
 				EffectCategory.UTILITY, EffectPhase.GOOD, 0, 25, true);
 
 		// --- hook-driven ---
@@ -99,7 +99,7 @@ public final class EffectRegistry {
 				EffectCategory.GEAR, EffectPhase.BAD, 0, 25, true);
 		register("slow_learner", "Slow Learner", "-50% experience gained",
 				EffectCategory.META, EffectPhase.BAD, 0, 25, true);
-		register("heavy_footsteps", "Heavy Footsteps", "Loud footsteps -- hostile mobs notice you from farther away",
+		register("heavy_footsteps", "Heavy Footsteps", "Loud footsteps -- sneaking no longer hides you from mobs",
 				EffectCategory.DEBUFF, EffectPhase.BAD, 0, 25, true);
 
 		// TODO: Tiers 2-4 + odd/signature effects go here, same pattern.

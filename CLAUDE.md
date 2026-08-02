@@ -669,8 +669,9 @@ because item pickup range is hardcoded in `Player.aiStep()` and no attribute
 governs it, which made it a mixin task rather than an attribute task. **The mixin
 cluster session built it**, exactly along the lines predicted: a custom
 registered attribute (`entropymod:pickup_range`) read by a `Player.aiStep`
-redirect. It is now a plain `AttributeEffectBehavior`. See "The mixin cluster"
-below for the target details.
+redirect. It is now a plain `AttributeEffectBehavior`. Shipped at 1.5x, retuned to **2.0x**
+after in-game testing found 1.5x imperceptible (pickup reach 1.3 -> 2.3 blocks
+from player centre). See "The mixin cluster" below for the target details.
 
 #### The original three mixins
 `EffectHooks` is the single door between mixins and run state. Mixins are the
@@ -774,12 +775,40 @@ targeting goal — computes effective range as
 `LivingEntity.getVisibilityPercent` is **the same lever vanilla uses for
 sneaking**: crouching returns `0.8`, i.e. mobs notice you from 20% closer.
 
-So part (b) ships through that value (`DETECTION_MULTIPLIER = 1.35`), which is
-general across mob AI and composes with sneaking and armour invisibility instead
-of overriding them. **It is honestly not sound propagation**, and the effect's
-description says "notice you from farther away" rather than claiming mobs hear
-you. Part (a) (louder footsteps, `Entity.playStepSound`) is real and shipped
-separately; volume genuinely widens a sound's audible radius for other players.
+So part (b) ships through that value, which is general across mob AI and composes
+with sneaking and armour invisibility instead of overriding them. **It is
+honestly not sound propagation.**
+
+**Then in-game testing corrected it a second time, and this is the durable
+finding:** a zombie (follow range 35) still acquired the player at 35 blocks with
+the multiplier at 1.35, when 47.25 was expected. The cause is an asymmetry in
+vanilla:
+
+| step | method | uses visibility? |
+|---|---|---|
+| acquisition | `TargetingConditions.test` | **yes** — `max(followDistance * visibilityPercent, 2.0)` |
+| retention | `TargetGoal.canContinueToUse` | **no** — `distanceToSqr > followDistance²`, raw |
+
+A target acquired beyond the raw follow distance is dropped again immediately, so
+**`getVisibilityPercent` can only ever REDUCE effective detection range, never
+extend it.** That is exactly why vanilla only ever uses values ≤ 1.0 (sneaking's
+0.8, invisibility's armour fraction). Anything above 1.0 is silently discarded.
+
+Consequences, now reflected in the code:
+
+- The multiplier is **1.25**, the exact inverse of sneaking's 0.8, so
+  `0.8 × 1.25 = 1.0`: the curse *cancels the sneaking discount* rather than
+  punishing the attempt. It is also the **saturation point** — standing behaviour
+  is identical for every value ≥ 1.0 (the retention cap), and sneaking behaviour
+  is identical for every value ≥ 1.25. Values above it do nothing at all.
+- The description was factually wrong and is now "sneaking no longer hides you
+  from mobs" rather than "mobs notice you from farther away".
+- **Correction to a claim made here earlier: footstep volume does NOT widen the
+  audible radius.** `SoundEvent.getRange(volume)` is
+  `volume > 1.0f ? 16.0f * volume : 16.0f`, and footsteps are ~0.15 (0.375 at the
+  2.5x multiplier) — far below the threshold. Louder, same 16-block radius.
+  Widening it would need >6.7x. Note also `Player` overrides `playStepSound` and
+  only falls through to `Entity`'s implementation on ordinary ground.
 
 #### "Fleeing" is exactly two mechanisms, both generic — Beast Whisperer
 The scope worry was per-species AI patching. It is not needed:
@@ -816,6 +845,68 @@ The three-way split was verified against the shipped tags, not assumed:
 
 **Known limit, deliberately not hidden:** Punch-enchantment knockback is applied
 by a separate call and is *not* suppressed. A Punch bow still moves the player.
+
+#### When a mixin applies cleanly and STILL changes nothing — read this first
+The mixin cluster shipped with javap-verified targets and 116 green headless
+checks, and two of its five effects did not work in game. Neither was a broken
+injection. **"The mixin applied" and "the behaviour changed" are separate
+claims, and the project has now been burned by the gap between them.** Three
+distinct failure modes, all real, none visible to the build:
+
+1. **A subclass overrides the method you targeted.** Targeting
+   `LivingEntity.foo` does nothing for players if `Player` overrides `foo` and
+   never calls `super`. Both of these exist here and were missed on the first
+   pass: **`Player` overrides `playStepSound`** and **`ServerPlayer` overrides
+   `onChangedBlock`**. Both happen to call `super` on the common path, so those
+   two mixins survived — that was luck, not design. Before targeting anything on
+   `Entity`/`LivingEntity`, check the whole chain and whether the override
+   delegates:
+
+   ```bash
+   for c in ...player.Player ...entity.Avatar ...level.ServerPlayer; do
+     javap -p -cp <jar> $c | grep -i '<methodName>'; done
+   ```
+
+2. **Something downstream re-clamps the value you changed.** The Heavy Footsteps
+   case above: `getVisibilityPercent` is genuinely multiplied, and the result is
+   genuinely thrown away by a second distance check that does not consult it.
+   Modifying a value is not the same as changing the outcome — **trace every
+   consumer of the value, not just the one you found.**
+
+3. **The change is real but below the perceptual threshold.** Magnetic Boots at
+   1.5x moved pickup reach from 1.3 to 1.8 blocks and read as "may work". Not a
+   bug; the wrong magnitude, and indistinguishable from a bug from the player's
+   seat.
+
+**The diagnostic that actually resolved all of this was `run/logs/latest.log`,
+which is in the repo.** It is the single highest-value evidence source in the
+project and it beats reasoning from the source every time — it proved the
+attribute registered, the effects applied with no error, all 28 behaviors wired,
+and the entire history round-trip working. **Read it before forming a
+hypothesis.** Useful greps:
+
+```bash
+grep -iE "entropymod|Entropy" run/logs/latest.log | tail -60
+grep -iE "mixin|inject|redirect|does not have|Registered custom attribute" run/logs/latest.log
+```
+
+Corollary for future effects: **an effect is not done when the mixin applies.**
+It is done when a value has been observed to change in game. Prefer effects whose
+result is directly measurable, and when a magnitude is chosen, sanity-check what
+it means in blocks/hearts/seconds before shipping it.
+
+#### Debug output has to reach the player, not just the log
+`/entropyhistory` was reported as a hard regression — "prints nothing in-game
+despite picks having been made" — and was suspected to be a `SavedData` migration
+bug. **It was neither a regression nor a persistence bug.** The log showed the
+full round trip working perfectly: `History requested by Player30 -- 11 pick(s).`
+followed by all 11 entries. The command and its client receiver only ever called
+`LOGGER.info`, so nothing was sent to chat and the player had no way to see it.
+
+Both paths now send to chat (the failure branch too, which was also log-only, so
+an unsupported server was indistinguishable from a working silent one). The rule:
+**a debug command whose output only goes to the log is indistinguishable from a
+broken one.** If a command is meant to be run in game, it must answer in game.
 
 #### Registering a custom attribute — and the crash it nearly shipped
 `entropymod:pickup_range` (`RangedAttribute`, default **1.0**, min 0, max 16,
@@ -859,8 +950,10 @@ time) appended in `onChoiceMade`, exposed via `EntropyManager.getHistory()`.
   `HistoryResponsePayload` (S2C, list), answered only to the player who asked.
   Deliberately not ridden along on `OpenChoicePayload`, which every pick pays
   for.
-- No screen or keybind yet. `/entropyhistory` requests it and the client logs
-  the result — temporary debug path, replace with a real screen.
+- No screen or keybind yet. `/entropyhistory` requests it and the client prints
+  it to chat — interim path, replace with a real screen. It logged *only* until
+  the diagnostic session, which is why it looked broken in game; see "Debug
+  output has to reach the player".
 - `EffectPhase`'s wire codec now lives in `network/EntropyCodecs.java` since
   two payloads need it. Sent by name, not ordinal, so reordering the enum
   can't flip GOOD and BAD on the wire.
@@ -873,7 +966,7 @@ test command.
 |---|---|---|
 | `/entropyforcepick` | server | **YES** — the real path |
 | `/entropystatus` | server | **YES** — reads real manager state |
-| `/entropyhistory` | client → server | **YES** — real request/response |
+| `/entropyhistory` | client → server | **YES** — real request/response, prints to chat |
 | `/entropypreview` | client only | **NO** — hardcoded fake data |
 
 **`/entropyforcepick` is the one that actually tests things.** It calls

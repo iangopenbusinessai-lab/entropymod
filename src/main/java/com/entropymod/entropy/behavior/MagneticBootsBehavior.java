@@ -21,20 +21,34 @@ import net.minecraft.world.entity.ai.attributes.AttributeModifier;
  * {@link AttributeEffectBehavior} machinery (idempotency, respawn/rejoin
  * survival, removal) instead of inventing a parallel path.
  *
- * <p>ADD_MULTIPLIED_BASE of +0.50 against the attribute's base of 1.0 gives 1.5,
- * so the mixin inflates by {@code (1.5, 0.75, 1.5)} against vanilla's
- * {@code (1.0, 0.5, 1.0)}. That is a modest, felt change rather than a vacuum
- * cleaner: the box is measured outward from the player's own bounding box, so
- * +50% on a 1-block margin is +0.5 blocks of reach on each horizontal side, not
- * a 50% increase in some larger absolute radius. Anything much larger starts
- * hoovering items through walls, since the pickup test is a box intersection with
- * no line-of-sight check.
+ * <h2>Magnitude, and why the first value was too small to notice</h2>
+ *
+ * <p>Originally +0.50 (a 1.5x box). In-game testing reported it as barely
+ * distinguishable from vanilla, and the arithmetic explains why: the inflation is
+ * measured outward from the player's own bounding box, which is only 0.6 blocks
+ * wide. Vanilla pickup reach is therefore {@code 0.3 + 1.0 = 1.3} blocks from the
+ * player's centre, and 1.5x moved that to just {@code 1.8}. A half-block of extra
+ * reach is real but sits inside the noise of ordinary movement.
+ *
+ * <p><b>Root cause was confirmed before retuning, not assumed.</b> The runtime log
+ * showed the attribute registered, no "targets an attribute the player does not
+ * have" error from {@link AttributeEffectBehavior} (which is what a missing
+ * attribute would produce), and {@code ServerPlayer} does not override
+ * {@code aiStep}, so the redirect is genuinely reachable. The plumbing was
+ * working; the number was simply too small.
+ *
+ * <p>Now +1.00, i.e. a 2.0x box: the mixin inflates by {@code (2.0, 1.0, 2.0)}
+ * against vanilla's {@code (1.0, 0.5, 1.0)}, putting horizontal reach at
+ * {@code 2.3} blocks and doubling vertical reach. That is clearly felt without
+ * becoming a vacuum cleaner -- worth keeping in mind, since the pickup test is a
+ * plain box intersection with <b>no line-of-sight check</b>, so a very large
+ * value would start pulling items through walls and floors.
  */
 public final class MagneticBootsBehavior extends AttributeEffectBehavior {
 
 	public static final String ID = "magnetic_boots";
 
 	public MagneticBootsBehavior() {
-		super(EntropyAttributes.PICKUP_RANGE, 0.50, AttributeModifier.Operation.ADD_MULTIPLIED_BASE);
+		super(EntropyAttributes.PICKUP_RANGE, 1.00, AttributeModifier.Operation.ADD_MULTIPLIED_BASE);
 	}
 }
