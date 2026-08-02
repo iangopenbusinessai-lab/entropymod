@@ -1,11 +1,3 @@
-/entropytest
-/help
-/entropytest
-/entropytest bad 90 137
-/entropytest good 90 137
-/effect give @p minecraft:bad_omen infinite
-/effect give @p minecraft:haste infinite
-/effect give @p minecraft:conduit_power infinite
 /entropytest good 90 137
 /entropyhistory
 /entropytest
@@ -30,3 +22,29 @@
 /gamemode creative
 /gamemode survival
 /entropyforcepick
+/time setn ight
+/time set night
+/fill ~ ~-1 ~ ~100 ~-1 ~ stone
+/summon zombie ~100 ~ ~
+/summon zombie ~75 ~ ~
+/summon zombie ~50 ~ ~
+/summon zombie ~25 ~ ~
+/kill @e
+/fill ~ ~100 ~ ~100 ~100 ~
+/fill ~ ~100 ~ ~100 ~100 ~ stone
+/gamemode creative
+/tp ~ ~100 ~
+/gamemode survival
+/summon zombie ~ ~50 ~
+/summon zombie ~50 ~ ~
+/summon zombie ~46 ~ ~
+/summon zombie ~45 ~ ~
+/entropyhistory
+/entropystatus
+/entropyforcepick
+/summon zombie ~40 ~ ~
+/summon zombie ~35 ~ ~
+/kill @e[type=zombie]
+/summon zombie ~35 ~ ~
+/entropyhistory
+/summon skeleton ~5 ~ ~

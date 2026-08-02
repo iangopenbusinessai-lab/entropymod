@@ -1,5 +1,5 @@
-[02:31:25] [main/INFO]: [STDOUT]: === 3. IDEMPOTENCY (real shipped behavior objects, real AttributeInstance) ===
-[02:31:25] [main/INFO]: [STDOUT]: === 4. HOOK WIRING (same path, not a parallel one) ===
-[02:31:25] [main/INFO]: [STDOUT]: === 4b. REGISTRY <-> BEHAVIOR CONSISTENCY (both directions) ===
-[02:31:25] [main/INFO]: [STDOUT]: === 5. NO-REPEAT POOL ===
-[02:31:25] [main/INFO]: [STDOUT]: ALL CHECKS PASSED
+[03:21:15] [main/INFO]: Registered custom attribute: entropymod:pickup_range
+[03:21:15] [main/INFO]: [STDOUT]: --------------------------------------------------------
+[03:21:15] [main/INFO]: [STDOUT]: NOTE: these are BASE values from the default attribute supplier.
+[03:21:15] [main/INFO]: [STDOUT]: Difficulty and mob equipment can add FOLLOW_RANGE modifiers at runtime,
+[03:21:15] [main/INFO]: [STDOUT]: and the goal snapshots the value when the goal is constructed.
