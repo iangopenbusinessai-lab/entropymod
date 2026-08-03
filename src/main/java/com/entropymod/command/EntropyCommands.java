@@ -1,13 +1,20 @@
 package com.entropymod.command;
 
 import com.entropymod.EntropyMod;
+import com.entropymod.entropy.EffectDefinition;
+import com.entropymod.entropy.EffectRegistry;
 import com.entropymod.entropy.EntropyManager;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.suggestion.SuggestionProvider;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+
+import java.util.stream.Collectors;
 
 /**
  * Server-side debug commands. These run on the server and talk to the real
@@ -35,7 +42,83 @@ public final class EntropyCommands {
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
 			registerForcePick(dispatcher);
 			registerStatus(dispatcher);
+			registerGrant(dispatcher);
 		});
+	}
+
+	/**
+	 * Tab-completes the effect argument with every registered id. Remembering 34
+	 * exact id strings is the friction {@code /entropygrant} exists to remove, so
+	 * completing them is part of the feature rather than a nicety.
+	 *
+	 * <p>Reads {@link EffectRegistry} live rather than caching, so it cannot go
+	 * stale against a registry that gained an effect.
+	 */
+	private static final SuggestionProvider<CommandSourceStack> EFFECT_IDS =
+			(ctx, builder) -> SharedSuggestionProvider.suggest(
+					EffectRegistry.all().stream().map(EffectDefinition::id), builder);
+
+	/**
+	 * {@code /entropygrant <effect_id>} -- adds one specific effect to the run
+	 * immediately, so it can be tested without re-rolling until it is offered.
+	 *
+	 * <p>Like {@code /entropyforcepick}, this is a <b>real</b> path, not a preview:
+	 * {@link EntropyManager#grantEffect} writes to the same acquired set, marks the
+	 * same {@code SavedData} dirty and dispatches through the same private
+	 * {@code applyToAll} a genuine pick uses. A granted effect therefore persists,
+	 * is re-applied after death and rejoin, and occupies its category for
+	 * anti-stacking.
+	 *
+	 * <p>It does <b>not</b> touch entropy, the pick count or the history -- it is a
+	 * test tool, not a shortcut through the game loop.
+	 *
+	 * <p>A bad id and an already-acquired id are both rejected out loud. The second
+	 * matters more than it looks: silently re-applying something already owned
+	 * would exercise (and so could hide) exactly the idempotency guarantee the
+	 * respawn/rejoin design depends on.
+	 */
+	private static void registerGrant(CommandDispatcher<CommandSourceStack> dispatcher) {
+		dispatcher.register(Commands.literal("entropygrant")
+				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+				.then(Commands.argument("effect", StringArgumentType.word())
+						.suggests(EFFECT_IDS)
+						.executes(ctx -> {
+							CommandSourceStack source = ctx.getSource();
+							MinecraftServer server = source.getServer();
+							String id = StringArgumentType.getString(ctx, "effect");
+
+							EntropyManager manager = EntropyManager.get(server);
+							EntropyManager.GrantResult result = manager.grantEffect(server, id);
+							EntropyMod.LOGGER.info("/entropygrant {} -> {}", id, result);
+
+							switch (result) {
+								case GRANTED -> {
+									EffectDefinition granted = EffectRegistry.byId(id);
+									source.sendSuccess(() -> Component.literal(
+											"[Entropy] Granted " + granted.displayName() + " (" + id + ") -- "
+													+ granted.description()
+													+ ". Entropy and pick count unchanged."), false);
+									return 1;
+								}
+								case ALREADY_ACQUIRED -> {
+									source.sendFailure(Component.literal(
+											"[Entropy] '" + id + "' is already acquired this run -- not re-applied. "
+													+ "Granting it twice would mask the idempotency guarantee."));
+									return 0;
+								}
+								case UNKNOWN_EFFECT -> {
+									source.sendFailure(Component.literal(
+											"[Entropy] No effect with id '" + id + "'."));
+									source.sendFailure(Component.literal(
+											"[Entropy] Valid ids (" + EffectRegistry.all().size() + "): "
+													+ EffectRegistry.all().stream()
+															.map(EffectDefinition::id)
+															.collect(Collectors.joining(", "))));
+									return 0;
+								}
+							}
+							return 0;
+						})));
 	}
 
 	/**

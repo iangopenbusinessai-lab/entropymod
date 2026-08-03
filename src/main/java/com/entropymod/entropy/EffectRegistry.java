@@ -63,7 +63,7 @@ public final class EffectRegistry {
 				EffectCategory.COMBAT, EffectPhase.GOOD, 0, 25, true);
 		register("beast_whisperer", "Beast Whisperer", "Animals never flee from you",
 				EffectCategory.COMPANION, EffectPhase.GOOD, 0, 25, true);
-		register("green_thumb", "Green Thumb", "Crops within 8 blocks of you grow twice as fast",
+		register("green_thumb", "Green Thumb", "Crops within 8 blocks of you grow as fast as the game allows",
 				EffectCategory.UTILITY, EffectPhase.GOOD, 0, 25, true);
 		register("second_guess", "Second Guess", "Once per run, reroll the options you are offered",
 				EffectCategory.META, EffectPhase.GOOD, 0, 25, true);

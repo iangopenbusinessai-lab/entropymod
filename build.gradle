@@ -34,6 +34,32 @@ dependencies {
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 }
 
+// ---------------------------------------------------------------------------
+// Headless checks.
+//
+// Every previous session rebuilt this by hand in a scratch directory and threw
+// it away, which meant each tuning pass re-derived the same numbers from
+// scratch. It lives in the repo now: `./gradlew harness`.
+//
+// It runs the REAL shipped classes against the full Minecraft runtime
+// classpath -- no Minecraft client, no world, no mocks. Deliberately its own
+// source set rather than part of `build`, so a check that needs updating after
+// a deliberate retune cannot block a release build.
+// ---------------------------------------------------------------------------
+sourceSets {
+	harness {
+		compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+		runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+	}
+}
+
+tasks.register('harness', JavaExec) {
+	group = 'verification'
+	description = 'Runs the headless checks against the real shipped classes.'
+	classpath = sourceSets.harness.runtimeClasspath
+	mainClass = 'com.entropymod.harness.HarnessMain'
+}
+
 processResources {
 	def version = project.version
 	inputs.property "version", version

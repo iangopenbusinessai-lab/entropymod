@@ -937,6 +937,81 @@ covers wheat, carrots, potatoes, beetroot and torchflower (all via
   `(int)Infinity` is `Integer.MAX_VALUE`, and `nextInt(MAX_VALUE + 1)` overflows
   to `nextInt(Integer.MIN_VALUE)`, which **throws inside a block tick**.
   `EffectHooks.cropGrowthMultiplier` floors the result for exactly this reason.
+  Re-checked at the much larger 26x multiplier: the hazard is one-sided, and a
+  bigger multiplier moves *away* from it. `(int)(25/speed) + 1` is bounded below
+  by 1 for every positive speed, which is a legal `nextInt` bound.
+
+#### Crop growth timing — derived, not measured; don't re-derive it from scratch
+This is the kind of number a future balance pass would otherwise redo from
+zero. It is a **model validated against an external known-good figure** (vanilla
+row-planted wheat at ~24 minutes), and it is asserted by `./gradlew harness`, so
+a retune that breaks it fails loudly.
+
+**Two independent probabilities decide crop speed, and only one of them is ours.**
+
+1. **The random-tick rate — not ours.** `ServerLevel.tickChunk` draws
+   `random_tick_speed` positions per game tick from each 16³ section, uniformly
+   over its 4096 blocks. The gamerule's *registered default is 3*, so one
+   specific crop block expects a random tick every `4096/3 = 1365.33` ticks —
+   **68.27 seconds**. Nothing this mod does changes this.
+2. **The growth roll — ours.** `nextInt((int)(25.0F / speed) + 1) == 0`.
+
+**The roll bound saturates at 1 once `speed > 25`**, because of the integer
+truncation: `(int)(25/25.1) == 0`, so `nextInt(1) == 0` is always true and the
+crop grows on *every* random tick. Above that, larger multipliers do **nothing at
+all** — the same saturation shape as Exposed's 1.25 detection multiplier, and the
+second time this project has hit one.
+
+Base speeds `getGrowthSpeed` produces: **10.0** row-planted on hydrated farmland,
+**5.0** for a fully-planted field (the crossing-neighbour halving), floor **1.0**
+for the worst real layout (dry, isolated, crops on both axes). So **26 is the
+smallest whole multiplier that saturates every layout** — 25 lands exactly on
+25.0, and `(int)(25/25)` is 1, which halves the rate. Green Thumb ships at 26.
+
+**The 90-second target for wheat is not reachable through this hook, at any
+multiplier.** Wheat needs 7 stage advances; even at one per random tick that is
+`7 × 68.27 = 477.9s`. 90s would need a stage every 257 ticks, 5.3× more often
+than random ticks arrive. The binding constraint is the *rate*, not the *chance*.
+Reaching it needs a second mechanism (extra random ticks near the player, or a
+direct growth tick) — deliberately not built here. For reference,
+`/gamerule random_tick_speed 16` lands wheat at 89.6s with the current multiplier.
+
+**Expected time from freshly planted to mature.** Mean of a geometric
+distribution, so individual plants vary widely. Stage counts differ per crop, so
+one multiplier deliberately does *not* equalise them — that is expected, not a
+bug. Once saturated, the farmland layout no longer matters (dry and hydrated land
+on the same number).
+
+| Crop | Stages | Extra gate | Green Thumb (26x) | Vanilla, packed field |
+|---|---|---|---|---|
+| Wheat / carrots / potatoes | 7 | — | **7m 58s** | 47m 47s |
+| Beetroot | 3 | 2/3 per tick | **5m 07s** | 30m 43s |
+| Torchflower | 2 | 2/3 per tick | **3m 25s** | 20m 29s |
+| Pumpkin / melon stem (to first fruit) | 7 + 1 | — | **9m 06s** | 54m 37s |
+| Pitcher crop | 4 | — | **4m 33s** | 27m 18s |
+
+- **Beetroot and torchflower both override `randomTick`** with an extra
+  `nextInt(3) != 0` gate before delegating to `CropBlock` — so only two thirds of
+  their random ticks reach the growth roll, i.e. 1.5 random ticks per stage. Note
+  this is the subclass-override trap in a benign form: they *do* call `super`,
+  and hooking `getGrowthSpeed` sidesteps the question entirely.
+- **The stem row counts 8, not 7.** Seven successful rolls reach age 7; the
+  *eighth* is what places the fruit. That eighth roll is wasted if no adjacent
+  block can host a pumpkin/melon, so a cramped spot runs longer than the table.
+- Green Thumb is a **6× speedup** against a packed field and **3×** against rows.
+  The description moved from "twice as fast" to "as fast as the game allows".
+  Note the old wording was only ever true for one layout: at the previous 2.0
+  multiplier a packed field's bound went 6 → 3 (exactly 2×) but rows went 3 → 2
+  (1.5×). Because the bound is an integer, **speedup is a step function of the
+  multiplier and of the layout** — any future description quoting a ratio should
+  say which layout it means.
+
+#### Leaky Pockets: 4% → 7% per jump
+Retuned after play testing. At 4% the mean gap was 25 jumps, rare enough that the
+curse could be held for a long stretch without ever being noticed — failure mode
+3 from the mixin-cluster list ("real, but below the perceptual threshold"). 7%
+means a mean gap of ~14 jumps, roughly every other minute of ordinary movement.
+One constant, `LeakyPocketsBehavior.CHANCE`, asserted by the harness.
 
 #### Villager pricing: mixin-only, and the class moved (Bad Reputation)
 Two findings, both worth having permanently:
@@ -1069,9 +1144,44 @@ test command.
 | Command | Side | Real pipeline? |
 |---|---|---|
 | `/entropyforcepick` | server | **YES** — the real path |
+| `/entropygrant <effect_id>` | server | **YES** — the real acquisition path |
 | `/entropystatus` | server | **YES** — reads real manager state |
 | `/entropyhistory` | client → server | **YES** — real request/response, prints to chat |
 | `/entropypreview` | client only | **NO** — hardcoded fake data |
+
+#### `/entropygrant` is the standard way to test a specific effect
+**Use this before building anything that depends on an effect working.** Rolling
+until the one effect you want to test happens to be offered is the friction that
+made the last two sessions ship effects that were never observed in game; this
+removes it. `/entropygrant green_thumb` and it is on, immediately.
+
+It is a **real** path, held to the same standard as `/entropyforcepick`:
+`EntropyManager.grantEffect` writes to the same `AcquiredEffects`, calls the same
+`setDirty()`, and dispatches through the same private `applyToAll` that
+`onChoiceMade` uses. A granted effect therefore persists across a save, is
+re-applied on death/rejoin/dimension change, and occupies its category for
+anti-stacking — indistinguishable from having picked it. If a future edit makes
+it construct its own `EffectContext` or call a behavior directly, that is a bug.
+
+Three properties that are deliberate, not incidental:
+
+- **It does not advance the run.** Entropy, pick count, the interval timer and
+  the history list are untouched. This is checkable rather than asserted:
+  `grantEffect`'s bytecode contains **one** call to `applyToAll`, one to
+  `acquired.add`, one to `setDirty`, and **zero** references to the `entropy`,
+  `pickCount`, `history` or `tickCounter` fields.
+
+  ```bash
+  javap -p -c -cp build/classes/java/main com.entropymod.entropy.EntropyManager \
+    | awk '/GrantResult grantEffect/{f=1} f&&/^$/{exit} f'
+  ```
+
+- **Re-granting is rejected, not re-applied.** Silently applying an
+  already-acquired effect a second time would exercise — and therefore could
+  hide — exactly the idempotency guarantee the whole respawn/rejoin design rests
+  on. The debug tool must not mask the class of bug it exists to find.
+- **A bad id is rejected out loud**, with the full list of valid ids sent to
+  chat, and the argument tab-completes from `EffectRegistry` live.
 
 **`/entropyforcepick` is the one that actually tests things.** It calls
 `EntropyManager.forcePick`, which delegates straight to the private
@@ -1110,6 +1220,23 @@ to test real behavior, make it call the real entry point rather than
 reconstructing what the real entry point does.
 
 ### How to check this without booting Minecraft
+**`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
+its own source set, not wired into `build`). Every previous session rebuilt an
+equivalent by hand in a scratch directory and threw it away, which is why the
+same numbers kept being re-derived. 48 checks currently: the tuning constants as
+actually compiled, the crop-growth derivation and its per-crop table, the
+growth-roll overflow guard, and `/entropygrant`'s contract.
+
+Two things about it worth keeping:
+
+- **It reads constants by reflection, never by reference.** `static final`
+  primitives are inlined at the *caller's* compile time, so a harness that named
+  `GreenThumbBehavior.MULTIPLIER` directly would compare its own compiled-in
+  snapshot against itself and pass regardless of what ships.
+- **It is not in `build`.** A check that needs updating after a deliberate retune
+  must not block a release build; `./gradlew build` and `./gradlew harness` are
+  separate answers to separate questions.
+
 `AcquiredEffects`, `PickRecord`, `EffectRegistry` and the whole data model are
 **free of Minecraft imports on purpose** — same discipline as `EntropyPalette`
 on the client side. A plain `javac`/`java -cp build/classes/java/main` harness
@@ -1322,7 +1449,9 @@ permanent effects) is in and is real, not stubs.
 1. **Play a run.** Force several picks, feel each effect, then die and relog and
    confirm everything is still on exactly once. Nothing below is worth building
    on top of an unverified foundation, and the permanent/persistence/
-   re-application work has never run in a live server.
+   re-application work has never run in a live server. **Use `/entropygrant` to
+   reach a specific effect** rather than rolling until it shows up — that is what
+   it exists for, and an effect is not done until it has been observed in game.
 2. Resolve Questions 1, 2, 7 — these still affect the *shape* of code written in
    every other step.
 3. **Decide Question 6 properly.** It stopped being theoretical: with 10 effects

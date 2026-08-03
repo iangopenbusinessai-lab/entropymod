@@ -25,9 +25,15 @@ public final class LeakyPocketsBehavior extends HookEffectBehavior {
 	public static final String ID = "leaky_pockets";
 
 	/**
-	 * Chance per jump. 4% is deliberately low: jumping is extremely frequent in
-	 * normal play, so anything higher stops reading as "occasionally annoying" and
+	 * Chance per jump. Still deliberately low -- jumping is extremely frequent in
+	 * normal play, so a high rate stops reading as "occasionally annoying" and
 	 * starts reading as unplayable.
+	 *
+	 * <p>Raised from the original 4% to 7% after play testing: at 4% the mean gap
+	 * was 25 jumps, which was rare enough that the effect could be held for a long
+	 * stretch without ever being noticed. At 7% the mean gap is ~14 jumps, roughly
+	 * every other minute of ordinary movement, which is often enough to read as a
+	 * curse and still far from constant.
 	 */
-	public static final float CHANCE = 0.04f;
+	public static final float CHANCE = 0.07f;
 }

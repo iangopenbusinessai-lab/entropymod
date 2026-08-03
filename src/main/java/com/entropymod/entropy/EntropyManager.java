@@ -311,6 +311,63 @@ public class EntropyManager extends SavedData {
 	}
 
 	// ------------------------------------------------------------------
+	// Debug grant
+	// ------------------------------------------------------------------
+
+	/** Why a {@link #grantEffect} call did or didn't take. */
+	public enum GrantResult {
+		GRANTED,
+		/** No {@link EffectDefinition} with that id. */
+		UNKNOWN_EFFECT,
+		/** Already in {@link AcquiredEffects} -- granting again would mask an idempotency bug. */
+		ALREADY_ACQUIRED
+	}
+
+	/**
+	 * Adds an effect to the run directly, as {@code /entropygrant} does. Debug tool:
+	 * it exists so a specific effect can be tested without re-rolling until it
+	 * happens to be offered.
+	 *
+	 * <p><b>It is the real acquisition path, not an imitation of one.</b> It writes
+	 * to the same {@link AcquiredEffects} set, marks the same {@link SavedData}
+	 * dirty, and dispatches through the same private {@link #applyToAll} that
+	 * {@link #onChoiceMade} uses -- so the effect is persisted, re-applied on
+	 * respawn and rejoin, and counts for anti-stacking, exactly as if it had been
+	 * picked. Same rule as {@code /entropyforcepick}: if a future edit makes this
+	 * build its own {@code EffectContext} or call a behavior directly, that is a
+	 * bug, because it would stop testing the thing it exists to test.
+	 *
+	 * <p><b>It deliberately does not advance the run.</b> Entropy, the pick count,
+	 * the interval timer and the history list are all untouched -- this is a debug
+	 * tool, not a shortcut through the game loop, and a granted effect should not
+	 * pollute the record of what the player actually chose. That claim is
+	 * verifiable in this method's bytecode: it reads and writes none of those
+	 * fields.
+	 *
+	 * <p><b>No-repeat is enforced rather than bypassed.</b> Re-granting something
+	 * already acquired is rejected instead of silently re-applying, because a
+	 * silent double-apply is exactly the shape of the idempotency bug the
+	 * respawn/rejoin design rests on not having -- masking it here would make the
+	 * debug tool hide the class of bug it is meant to help find.
+	 */
+	public GrantResult grantEffect(MinecraftServer server, String effectId) {
+		EffectDefinition definition = EffectRegistry.byId(effectId);
+		if (definition == null) {
+			return GrantResult.UNKNOWN_EFFECT;
+		}
+		if (!acquired.add(definition.id())) {
+			return GrantResult.ALREADY_ACQUIRED;
+		}
+		setDirty();
+		applyToAll(server, definition, EffectContext.Reason.PICKED);
+		// Deliberately does not log entropy/pickCount: this method's bytecode
+		// referencing neither field at all is the check that it cannot move them.
+		EntropyMod.LOGGER.info("Granted '{}' via debug command -- run counters untouched. Acquired {} effect(s): {}",
+				definition.id(), acquired.size(), acquired);
+		return GrantResult.GRANTED;
+	}
+
+	// ------------------------------------------------------------------
 	// Application / re-application
 	// ------------------------------------------------------------------
 
