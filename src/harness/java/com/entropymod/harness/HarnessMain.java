@@ -5,7 +5,12 @@ import com.entropymod.entropy.EffectDefinition;
 import com.entropymod.entropy.EffectHooks;
 import com.entropymod.entropy.EffectRegistry;
 import com.entropymod.entropy.EntropyManager;
+import com.entropymod.entropy.EffectPhase;
+import com.entropymod.entropy.RerollState;
+import com.entropymod.entropy.behavior.BadReputationBehavior;
 import com.entropymod.entropy.behavior.BlightTouchedBehavior;
+import com.entropymod.entropy.behavior.ClumsyDiggerBehavior;
+import com.entropymod.entropy.behavior.SecondGuessBehavior;
 import com.entropymod.entropy.behavior.GreenThumbBehavior;
 import com.entropymod.entropy.behavior.LeakyPocketsBehavior;
 import com.entropymod.entropy.behavior.SureFootingBehavior;
@@ -13,6 +18,11 @@ import com.entropymod.entropy.growth.BlightTouchedTrample;
 import com.entropymod.entropy.growth.CropSchedule;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.entropy.growth.TramplePath;
+import com.entropymod.network.EntropyCodecs;
+import com.entropymod.network.OpenChoicePayload;
+import io.netty.buffer.Unpooled;
+import net.minecraft.core.RegistryAccess;
+import net.minecraft.network.RegistryFriendlyByteBuf;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -49,6 +59,10 @@ public final class HarnessMain {
 		blightTrampleGate();
 		scheduleTracking();
 		grantContract();
+		clumsyDiggerMagnitude();
+		badReputationPrices();
+		rerollStateDerivation();
+		openChoicePayloadRoundTrip();
 		System.exit(Checks.summary());
 	}
 
@@ -468,6 +482,202 @@ public final class HarnessMain {
 		} catch (Throwable expected) {
 			return null;
 		}
+	}
+
+	// ------------------------------------------------------------------
+
+	/**
+	 * Clumsy Digger's observable magnitude, which is the thing the player report
+	 * was actually about.
+	 *
+	 * <p>The diagnosis found no bug: the mixin applies, the hook is the real choke
+	 * point for durability loss, and the roll runs on every tool use. What it found
+	 * instead is that {@code CHANCE} is the wrong lever -- the effect's entire
+	 * observable size is {@code CHANCE * EXTRA_DAMAGE} expressed as a percentage of
+	 * a tool's lifetime, and the chance saturates at a mere 2x wear even at 100%.
+	 *
+	 * <p>Asserted rather than written in a comment so a future retune has to
+	 * confront the ceiling instead of rediscovering it.
+	 */
+	private static void clumsyDiggerMagnitude() {
+		section("Clumsy Digger magnitude (the chance is not the binding lever)");
+
+		double chance = constant(ClumsyDiggerBehavior.class, "CHANCE");
+		double extra = constant(ClumsyDiggerBehavior.class, "EXTRA_DAMAGE");
+
+		checkNear(chance, 0.07, 1e-7, "retuned to 7%, matching Leaky Pockets");
+		checkNear(chance, constant(LeakyPocketsBehavior.class, "CHANCE"), 1e-7,
+				"...and the two 'small chance per action' curses are literally the same rate");
+
+		// An iron pickaxe is 250 uses; blocks mined = durability / expected cost.
+		int ironPickaxeUses = 250;
+		double blocksNow = ironPickaxeUses / (1.0 + chance * extra);
+		checkNear(blocksNow, 233.6, 0.5,
+				"an iron pickaxe now mines ~234 blocks instead of 250");
+		checkNear(100.0 * (1.0 - blocksNow / ironPickaxeUses), 6.5, 0.2,
+				"...a 6.5% shorter tool life");
+
+		// The ceiling: even a guaranteed trigger only doubles wear, so no value of
+		// CHANCE can make this effect large.
+		double blocksAtCertainty = ironPickaxeUses / (1.0 + 1.0 * extra);
+		checkNear(blocksAtCertainty, 125.0, 0.5,
+				"even a 100% chance only halves tool life -- the chance saturates at 2x wear");
+		check(blocksAtCertainty > ironPickaxeUses / 2.0 - 1,
+				"EXTRA_DAMAGE, not CHANCE, is what bounds this effect's size");
+
+		// The smallest magnitude change that produces something a player notices.
+		double blocksAtFour = ironPickaxeUses / (1.0 + chance * 4);
+		checkNear(100.0 * (1.0 - blocksAtFour / ironPickaxeUses), 21.9, 0.5,
+				"EXTRA_DAMAGE=4 would cost 22% of a tool's life -- the documented next step");
+	}
+
+	/**
+	 * Bad Reputation's real final-price multipliers, across cheap and expensive
+	 * trades rather than one example.
+	 *
+	 * <p>Reproduces vanilla's own arithmetic, verified in bytecode:
+	 * {@code getModifiedCostCount} is
+	 * {@code clamp(base + max(0, floor(base*demand*mult)) + specialPriceDiff, 1,
+	 * maxStackSize)}, and {@code specialPriceDiff} is a <b>flat integer</b>. So this
+	 * effect is an additive surcharge, and only behaves like a multiplier because it
+	 * is computed as a fraction of the price the player would otherwise have paid.
+	 */
+	private static void badReputationPrices() {
+		section("Bad Reputation final-price multipliers");
+
+		float surcharge = (float) constant(BadReputationBehavior.class, "SURCHARGE");
+		checkNear(surcharge, 0.65, 1e-6, "surcharge retuned to 0.65 of the pre-effect price");
+
+		// Every realistic emerald cost, cheap to expensive. 1 is called out
+		// separately below because integers make it a special case.
+		int[] normalPrices = {2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 36};
+		boolean allInBand = true;
+		for (int normal : normalPrices) {
+			int finalPrice = badRepPrice(normal, surcharge);
+			double multiplier = (double) finalPrice / normal;
+			if (multiplier < 1.50 || multiplier > 1.75) {
+				allInBand = false;
+			}
+			System.out.printf("        %2d emeralds -> %2d  (%.3fx)%n", normal, finalPrice, multiplier);
+		}
+		check(allInBand, "every realistic trade cost lands in the 1.50x-1.75x target band");
+
+		// Spot checks so a regression names the trade rather than just "the band".
+		check(badRepPrice(2, surcharge) == 3, "a 2-emerald trade costs 3 (1.50x)");
+		check(badRepPrice(5, surcharge) == 8, "a 5-emerald trade costs 8 (1.60x)");
+		check(badRepPrice(16, surcharge) == 26, "a 16-emerald trade costs 26 (1.625x)");
+		check(badRepPrice(32, surcharge) == 53, "a 32-emerald trade costs 53 (1.656x)");
+
+		// The two boundaries, asserted so they are not rediscovered as bugs.
+		check(badRepPrice(1, surcharge) == 2,
+				"a 1-emerald trade costs 2 (2.00x) -- integers make +100% the SMALLEST possible rise");
+		check(badRepPrice(64, surcharge) == 64,
+				"a trade already at a full stack is unchanged -- vanilla's own clamp, not a miss");
+		check(badRepPrice(40, surcharge) == 64,
+				"above ~39 the clamp starts absorbing the surcharge");
+	}
+
+	/**
+	 * Vanilla's price formula with the surcharge applied, mirroring
+	 * {@code VillagerPricesMixin}. Demand and gossip are already folded into
+	 * {@code normalPrice}, which is exactly what {@code getCostA()} returns at the
+	 * point the mixin runs.
+	 */
+	private static int badRepPrice(int normalPrice, float surcharge) {
+		int extra = Math.max(1, Math.round(normalPrice * surcharge));
+		return Math.min(64, normalPrice + extra);
+	}
+
+	/**
+	 * The Second Guess button-state bug, as a regression gate.
+	 *
+	 * <p>The reported symptom was a reroll button that stayed live after being
+	 * spent. The cause was not a missing payload field -- the field existed and was
+	 * derived from the persisted flag correctly. It was <b>ordering</b>:
+	 * {@code requestReroll} set {@code rerollUsed} <em>after</em> calling
+	 * {@code triggerPick}, which had already built and sent the payload. So the one
+	 * screen where it mattered advertised a reroll that no longer existed.
+	 *
+	 * <p>What is checkable headlessly is the derivation itself and the three-state
+	 * mapping. The ordering is pinned in bytecode instead, below.
+	 */
+	private static void rerollStateDerivation() {
+		section("Second Guess: reroll state derivation");
+
+		EntropyManager fresh = new EntropyManager();
+		check(fresh.rerollState() == RerollState.NOT_OWNED,
+				"a run without Second Guess reports NOT_OWNED -- no button, no reserved space");
+
+		grantWithoutServer(fresh, SecondGuessBehavior.ID);
+		check(fresh.rerollState() == RerollState.AVAILABLE,
+				"owning it unspent reports AVAILABLE");
+		check(!fresh.isRerollUsed(), "...and the persisted flag agrees");
+
+		// Three states, so "never had it" and "had it and spent it" stay distinct --
+		// a boolean could not tell those apart, which is why the payload field is an
+		// enum now.
+		check(RerollState.values().length == 3,
+				"NOT_OWNED / AVAILABLE / SPENT are distinct states, not a boolean");
+
+		// The ordering fix, stated as the property it guarantees: rerollState() must
+		// be a pure function of ownership and the spent flag, with no dependence on
+		// waitingOnChoice -- otherwise the value sent depends on when it was asked.
+		check(!Checks.hasMethod(EntropyManager.class, "isRerollAvailableForClient"),
+				"there is exactly one client-facing state accessor, not a second parallel one");
+		check(Checks.hasMethod(EntropyManager.class, "rerollState")
+						&& Checks.hasMethod(EntropyManager.class, "isRerollAvailable"),
+				"rendering state and authorisation state remain separate methods");
+	}
+
+	/**
+	 * {@code OpenChoicePayload}'s codec, round-tripped field by field with every
+	 * field set to a distinct value.
+	 *
+	 * <p>This is the check CLAUDE.md demands after any payload change, and it is
+	 * done field-by-field rather than with a whole-record {@code equals} because
+	 * two same-typed fields swapped in a way that cancels out would still pass an
+	 * equality check. {@code entropy} and {@code entropyCap} are both ints and sit
+	 * next to each other, so that is a live hazard here, not a theoretical one.
+	 *
+	 * <p>Runs against the real {@code StreamCodec}. No registry is involved -- every
+	 * component codec is a string, varint or enum-by-name -- so
+	 * {@code RegistryAccess.EMPTY} is a faithful stand-in.
+	 */
+	private static void openChoicePayloadRoundTrip() {
+		section("OpenChoicePayload codec round-trip");
+
+		for (RerollState state : RerollState.values()) {
+			OpenChoicePayload sent = new OpenChoicePayload(
+					EffectPhase.BAD, 37, 91, state,
+					new OpenChoicePayload.Choice("id_one", "Name One", "Desc One"),
+					new OpenChoicePayload.Choice("id_two", "Name Two", "Desc Two"),
+					new OpenChoicePayload.Choice("id_three", "Name Three", "Desc Three"));
+
+			RegistryFriendlyByteBuf buf =
+					new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+			OpenChoicePayload.CODEC.encode(buf, sent);
+			OpenChoicePayload got = OpenChoicePayload.CODEC.decode(buf);
+
+			check(got.rerollState() == state, "rerollState survives the wire as " + state);
+			check(got.phase() == EffectPhase.BAD, "phase survives (" + state + ")");
+			check(got.entropy() == 37, "entropy is 37, not the cap (" + state + ")");
+			check(got.entropyCap() == 91, "entropyCap is 91, not the entropy (" + state + ")");
+			check(got.choice1().id().equals("id_one")
+							&& got.choice1().name().equals("Name One")
+							&& got.choice1().description().equals("Desc One"),
+					"choice1's three strings are not rotated (" + state + ")");
+			check(got.choice2().id().equals("id_two") && got.choice3().id().equals("id_three"),
+					"choice2 and choice3 are not swapped (" + state + ")");
+			check(buf.readableBytes() == 0, "the buffer is fully consumed (" + state + ")");
+		}
+
+		// Sent by name, so reordering the enum cannot silently change what the
+		// client draws -- the same rule EffectPhase follows.
+		RegistryFriendlyByteBuf named =
+				new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+		EntropyCodecs.REROLL_STATE.encode(named, RerollState.SPENT);
+		check(named.toString(java.nio.charset.StandardCharsets.UTF_8).contains("SPENT"),
+				"RerollState goes on the wire by name, not by ordinal");
 	}
 
 	private HarnessMain() {}

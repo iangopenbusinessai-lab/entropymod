@@ -214,9 +214,11 @@ public class EntropyManager extends SavedData {
 		EntropyMod.LOGGER.info("Pick #{}: phase={} entropy={} occupied={} choices={}",
 				pickCount + 1, phase, entropy, occupied, choices);
 
-		// waitingOnChoice is already true here, which isRerollAvailable() requires.
+		// rerollState() is read AFTER waitingOnChoice is set and after requestReroll
+		// has already spent the reroll -- see that method for why the ordering there
+		// matters to what this sends.
 		OpenChoicePayload payload =
-				OpenChoicePayload.fromChoices(phase, entropy, entropyCap, isRerollAvailable(), choices);
+				OpenChoicePayload.fromChoices(phase, entropy, entropyCap, rerollState(), choices);
 		for (ServerPlayer player : PlayerLookup.all(server)) {
 			ServerPlayNetworking.send(player, payload);
 		}
@@ -232,6 +234,29 @@ public class EntropyManager extends SavedData {
 	 */
 	public boolean isRerollAvailable() {
 		return waitingOnChoice && !rerollUsed && acquired.contains(SecondGuessBehavior.ID);
+	}
+
+	/**
+	 * What the client should draw for the Second Guess button, derived from the
+	 * same persisted {@code rerollUsed} flag {@link #isRerollAvailable} reads.
+	 *
+	 * <p><b>Distinct from {@code isRerollAvailable} on purpose, and not a
+	 * replacement for it.</b> This answers a rendering question and is sent on the
+	 * wire; that one answers an authorisation question and is re-checked
+	 * server-side in {@link #requestReroll}, because a client can send anything.
+	 * A client told {@code SPENT} that sends a reroll request anyway is still
+	 * rejected.
+	 *
+	 * <p>Deliberately omits the {@code waitingOnChoice} term the authorisation
+	 * check has: this is only ever read while building a pending pick's payload, so
+	 * a pick is pending by construction, and leaving it out keeps the state a pure
+	 * function of the run rather than of the moment it was asked.
+	 */
+	public RerollState rerollState() {
+		if (!acquired.contains(SecondGuessBehavior.ID)) {
+			return RerollState.NOT_OWNED;
+		}
+		return rerollUsed ? RerollState.SPENT : RerollState.AVAILABLE;
 	}
 
 	/**
@@ -259,12 +284,22 @@ public class EntropyManager extends SavedData {
 		if (!isRerollAvailable()) {
 			return false;
 		}
+
+		// Spend the reroll BEFORE rolling, then refund it if nothing opened.
+		//
+		// This ordering is load-bearing, not stylistic. triggerPick builds the
+		// OpenChoicePayload from rerollState(), which reads this flag -- so if the
+		// flag were set afterwards, the replacement screen would advertise a reroll
+		// that had just been spent, and the button would come back live on the very
+		// screen the reroll produced. That was a real, reported bug.
+		rerollUsed = true;
+
 		PickTrigger result = triggerPick(server);
 		if (result != PickTrigger.OPENED) {
+			rerollUsed = false;
 			EntropyMod.LOGGER.warn("Second Guess reroll produced no new choices ({}) -- not consumed.", result);
 			return false;
 		}
-		rerollUsed = true;
 		setDirty();
 		EntropyMod.LOGGER.info("Second Guess spent -- pick #{} rerolled. No entropy or pick consumed.",
 				pickCount + 1);

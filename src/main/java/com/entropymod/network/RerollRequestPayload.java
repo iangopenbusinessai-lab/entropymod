@@ -12,9 +12,10 @@ import net.minecraft.resources.Identifier;
  * <p>Carries no data. Which player is asking comes from the connection, and
  * <b>everything else is decided server-side</b> -- whether the effect is owned,
  * whether the reroll is unspent, and whether a pick is actually pending are all
- * re-checked in {@code EntropyManager.requestReroll}. The {@code rerollAvailable}
- * flag on {@link OpenChoicePayload} only decides whether the button is drawn; it
- * is not trusted as authorisation.
+ * re-checked in {@code EntropyManager.requestReroll}. The {@code rerollState}
+ * field on {@link OpenChoicePayload} only decides how the button is drawn; it is
+ * not trusted as authorisation, so a client that was sent {@code SPENT} and asks
+ * anyway is still refused.
  */
 public record RerollRequestPayload() implements CustomPacketPayload {
 

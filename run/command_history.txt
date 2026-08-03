@@ -1,21 +1,3 @@
-/kill @e
-/fill ~ ~100 ~ ~100 ~100 ~
-/fill ~ ~100 ~ ~100 ~100 ~ stone
-/gamemode creative
-/tp ~ ~100 ~
-/gamemode survival
-/summon zombie ~ ~50 ~
-/summon zombie ~50 ~ ~
-/summon zombie ~46 ~ ~
-/summon zombie ~45 ~ ~
-/entropyhistory
-/entropystatus
-/entropyforcepick
-/summon zombie ~40 ~ ~
-/summon zombie ~35 ~ ~
-/kill @e[type=zombie]
-/summon zombie ~35 ~ ~
-/entropyhistory
 /summon skeleton ~5 ~ ~
 /entropyforcepick
 /fill ~100 ~100 ~ ~ ~100 ~
@@ -48,3 +30,21 @@
 /gamemode survival
 /entropygrant green_thumb
 /entropygrant blight_touched
+/entropygrant clumsy_digger
+/give @p diamond_shovel
+/give @p diamond
+/give @p minecraft:diamond_pickaxe
+/entropygrant bad_reputation
+/locate structure minecraft:village_desert
+/tp @s -2000 ~ 1920
+/entropygrant second_guess
+/entropyforcepick
+/entropygrant green_thumb
+/setblock ~ ~ ~ minecraft:pitcher_crop
+/gamemode creative
+/gamemode survival
+/give @p diamond_hoe
+/give @p minecraft:water_bucket
+/give @p minecraft:pumpkin_seeds
+/give @p minecraft:melon_seeds
+/give @p bone

@@ -42,12 +42,19 @@ public abstract class VillagerPricesMixin {
 		}
 		Villager villager = (Villager) (Object) this;
 		for (MerchantOffer offer : villager.getOffers()) {
-			// Proportional to the trade's own first cost, minimum 1, so a 1-emerald
-			// trade and a 32-emerald trade are both meaningfully affected. Vanilla
-			// clamps the final count to [1, maxStackSize], so this cannot make a
-			// trade impossible.
+			// getCostA(), NOT getBaseCostA(). This runs at TAIL, so getCostA() is
+			// already the exact price this player would otherwise have paid --
+			// vanilla's formula is
+			//   clamp(baseCount + demandAdjustment + specialPriceDiff, 1, maxStackSize)
+			// and both demand and the gossip/Hero-of-the-Village adjustment are
+			// folded into it by this point. Taking the fraction of that rather than
+			// of the raw base is what makes the resulting multiplier hold steady at
+			// ~1.6x regardless of demand or existing reputation; against the raw base
+			// it drifted, because the denominator the player experiences is not the
+			// number the surcharge was computed from.
+			int normalPrice = offer.getCostA().getCount();
 			int surcharge = Math.max(1,
-					Math.round(offer.getBaseCostA().getCount() * BadReputationBehavior.SURCHARGE));
+					Math.round(normalPrice * BadReputationBehavior.SURCHARGE));
 			offer.addToSpecialPriceDiff(surcharge);
 		}
 	}

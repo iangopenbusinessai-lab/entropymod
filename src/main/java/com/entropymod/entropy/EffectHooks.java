@@ -1,5 +1,6 @@
 package com.entropymod.entropy;
 
+import com.entropymod.EntropyMod;
 import com.entropymod.entropy.behavior.BadReputationBehavior;
 import com.entropymod.entropy.behavior.BeastWhispererBehavior;
 import com.entropymod.entropy.behavior.ClumsyDiggerBehavior;
@@ -189,13 +190,26 @@ public final class EffectHooks {
 	/**
 	 * Extra durability damage for this use, or 0 (Clumsy Digger). Rolls the chance
 	 * itself so the mixin stays a single expression.
+	 *
+	 * <p>Logs each successful roll at DEBUG. This effect is invisible by
+	 * construction -- there is no sound, no message and no on-screen change, only a
+	 * durability bar moving marginally faster -- so "is it firing at all" and "is it
+	 * just rare" are indistinguishable in play, which is exactly how it was
+	 * reported. The log line is what separates them: grep {@code Clumsy Digger} in
+	 * {@code run/logs/debug-N.log.gz} and count. It costs nothing for players
+	 * without the effect, since both returns above it are taken first.
 	 */
 	public static int rollClumsyDiggerExtraDamage(Player player, RandomSource random) {
 		AcquiredEffects acquired = acquired(player);
 		if (acquired == null || !acquired.contains(ClumsyDiggerBehavior.ID)) {
 			return 0;
 		}
-		return random.nextFloat() < ClumsyDiggerBehavior.CHANCE ? ClumsyDiggerBehavior.EXTRA_DAMAGE : 0;
+		if (random.nextFloat() >= ClumsyDiggerBehavior.CHANCE) {
+			return 0;
+		}
+		EntropyMod.LOGGER.debug("Clumsy Digger: +{} durability damage for {}",
+				ClumsyDiggerBehavior.EXTRA_DAMAGE, player.getName().getString());
+		return ClumsyDiggerBehavior.EXTRA_DAMAGE;
 	}
 
 	/** True if villagers should overcharge this player (Bad Reputation). */

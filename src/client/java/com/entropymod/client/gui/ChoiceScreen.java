@@ -3,6 +3,7 @@ package com.entropymod.client.gui;
 import com.entropymod.client.EntropyColors;
 import com.entropymod.client.EntropyHud;
 import com.entropymod.entropy.EffectPhase;
+import com.entropymod.entropy.RerollState;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.network.ChoiceMadePayload;
 import com.entropymod.network.RerollRequestPayload;
@@ -115,10 +116,17 @@ public class ChoiceScreen extends Screen {
 	private final int entropyCap;
 	private final List<Choice> choices;
 
-	/** Whether the server says Second Guess can still be spent on this pick. */
-	private final boolean rerollAvailable;
+	/**
+	 * What the server says about Second Guess for this pick. Authoritative -- the
+	 * client never infers it, because only the server has the persisted
+	 * {@code rerollUsed} flag.
+	 */
+	private final RerollState rerollState;
 
-	/** Non-null only while {@link #rerollAvailable}; disabled on click. */
+	/**
+	 * Non-null whenever {@link #rerollState} is not {@code NOT_OWNED}. Created
+	 * inactive for {@code SPENT}, and deactivated on click for {@code AVAILABLE}.
+	 */
 	private Button rerollButton;
 
 	/** Recomputed in init(); read by extractRenderState. */
@@ -140,11 +148,11 @@ public class ChoiceScreen extends Screen {
 						 String id1, String name1, String desc1,
 						 String id2, String name2, String desc2,
 						 String id3, String name3, String desc3) {
-		this(phase, entropy, EntropyManager.DEFAULT_ENTROPY_CAP, false,
+		this(phase, entropy, EntropyManager.DEFAULT_ENTROPY_CAP, RerollState.NOT_OWNED,
 				id1, name1, desc1, id2, name2, desc2, id3, name3, desc3);
 	}
 
-	public ChoiceScreen(EffectPhase phase, int entropy, int entropyCap, boolean rerollAvailable,
+	public ChoiceScreen(EffectPhase phase, int entropy, int entropyCap, RerollState rerollState,
 						 String id1, String name1, String desc1,
 						 String id2, String name2, String desc2,
 						 String id3, String name3, String desc3) {
@@ -152,7 +160,7 @@ public class ChoiceScreen extends Screen {
 		this.phase = phase;
 		this.entropy = entropy;
 		this.entropyCap = entropyCap;
-		this.rerollAvailable = rerollAvailable;
+		this.rerollState = rerollState;
 		this.choices = List.of(
 				new Choice(id1, name1, desc1),
 				new Choice(id2, name2, desc2),
@@ -215,7 +223,12 @@ public class ChoiceScreen extends Screen {
 		// The reroll button is part of the centred block, not an afterthought stuck
 		// underneath it -- otherwise it would push past the bottom edge at small GUI
 		// sizes, and this screen has no escape hatch (shouldCloseOnEsc is false).
-		int rerollBlock = rerollAvailable ? REROLL_GAP + REROLL_BUTTON_HEIGHT : 0;
+		// A spent reroll still reserves its space -- the button stays on screen,
+		// greyed, so the player can see the option existed and is gone rather than
+		// watching it silently vanish.
+		int rerollBlock = rerollState != RerollState.NOT_OWNED
+				? REROLL_GAP + REROLL_BUTTON_HEIGHT
+				: 0;
 		int totalHeight = headerBlock + 14 + panelsBlock + rerollBlock;
 
 		int top = Math.max(SCREEN_MARGIN, (this.height - totalHeight) / 2);
@@ -240,16 +253,24 @@ public class ChoiceScreen extends Screen {
 					layout.mode(), style, imageSize, scaledLineHeight));
 		}
 
-		if (rerollAvailable) {
+		if (rerollState != RerollState.NOT_OWNED) {
+			boolean spent = rerollState == RerollState.SPENT;
 			int buttonWidth = Math.min(REROLL_BUTTON_MAX_WIDTH,
 					Math.max(REROLL_BUTTON_MIN_WIDTH, this.width - 2 * SCREEN_MARGIN));
 			this.rerollButton = Button.builder(
-							Component.literal("Second Guess — reroll these options"),
+							Component.literal(spent
+									? "Second Guess — already used"
+									: "Second Guess — reroll these options"),
 							button -> onReroll())
 					.bounds(this.width / 2 - buttonWidth / 2,
 							panelsTop + panelsBlock + REROLL_GAP,
 							buttonWidth, REROLL_BUTTON_HEIGHT)
 					.build();
+			// Vanilla's own disabled rendering: greyed border and greyed label, and
+			// clicks are dropped by Button itself rather than by onReroll. Both the
+			// wording and the colour change, so "gone" reads at a glance and also
+			// survives a colourblind player.
+			this.rerollButton.active = !spent;
 			this.addRenderableWidget(this.rerollButton);
 		}
 	}

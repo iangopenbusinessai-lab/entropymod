@@ -3,6 +3,7 @@ package com.entropymod.network;
 import com.entropymod.EntropyMod;
 import com.entropymod.entropy.EffectDefinition;
 import com.entropymod.entropy.EffectPhase;
+import com.entropymod.entropy.RerollState;
 import io.netty.buffer.ByteBuf;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;
@@ -24,7 +25,7 @@ public record OpenChoicePayload(
 		EffectPhase phase,
 		int entropy,
 		int entropyCap,
-		boolean rerollAvailable,
+		RerollState rerollState,
 		Choice choice1,
 		Choice choice2,
 		Choice choice3
@@ -43,11 +44,16 @@ public record OpenChoicePayload(
 	// not to this codec is silently dropped on the wire rather than failing to
 	// compile. entropyCap is what the client needs to colour its accent ramp;
 	// without it the client can only assume the default cap.
+	//
+	// rerollState was a boolean until the Second Guess button-state fix. A boolean
+	// could not distinguish "never had Second Guess" from "had it and spent it",
+	// which is exactly the difference between drawing no button and drawing a
+	// greyed one -- see RerollState.
 	public static final StreamCodec<RegistryFriendlyByteBuf, OpenChoicePayload> CODEC = StreamCodec.composite(
 			PHASE_CODEC, OpenChoicePayload::phase,
 			ByteBufCodecs.VAR_INT, OpenChoicePayload::entropy,
 			ByteBufCodecs.VAR_INT, OpenChoicePayload::entropyCap,
-			ByteBufCodecs.BOOL, OpenChoicePayload::rerollAvailable,
+			EntropyCodecs.REROLL_STATE, OpenChoicePayload::rerollState,
 			Choice.CODEC, OpenChoicePayload::choice1,
 			Choice.CODEC, OpenChoicePayload::choice2,
 			Choice.CODEC, OpenChoicePayload::choice3,
@@ -65,12 +71,12 @@ public record OpenChoicePayload(
 	}
 
 	public static OpenChoicePayload fromChoices(EffectPhase phase, int entropy, int entropyCap,
-												boolean rerollAvailable, List<EffectDefinition> choices) {
+												RerollState rerollState, List<EffectDefinition> choices) {
 		EffectDefinition a = choices.get(0);
 		EffectDefinition b = choices.size() > 1 ? choices.get(1) : choices.get(0);
 		EffectDefinition c = choices.size() > 2 ? choices.get(2) : choices.get(0);
 		return new OpenChoicePayload(
-				phase, entropy, entropyCap, rerollAvailable,
+				phase, entropy, entropyCap, rerollState,
 				new Choice(a.id(), a.displayName(), a.description()),
 				new Choice(b.id(), b.displayName(), b.description()),
 				new Choice(c.id(), c.displayName(), c.description())

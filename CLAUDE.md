@@ -1192,6 +1192,49 @@ curse could be held for a long stretch without ever being noticed — failure mo
 means a mean gap of ~14 jumps, roughly every other minute of ordinary movement.
 One constant, `LeakyPocketsBehavior.CHANCE`, asserted by the harness.
 
+#### Clumsy Digger: "doesn't work, or is too rare" — neither, as it turns out
+Diagnosed before tuning, per the "when a mixin applies cleanly and still changes
+nothing" rule. **No bug was found, and the trigger path is fully correct:**
+
+- `run/logs/debug-*.log.gz` shows `Mixing ItemStackDurabilityMixin ... into
+  net.minecraft.world.item.ItemStack` — the injector matched. (`defaultRequire: 1`
+  would have failed launch otherwise, so this was never really in doubt.)
+- `ItemStack.hurtAndBreak(I, ServerLevel, ServerPlayer, Consumer)` **is** the real
+  choke point: the `(I, LivingEntity, EquipmentSlot)` overload's bytecode ends in
+  `invokevirtual hurtAndBreak:(ILServerLevel;LServerPlayer;LConsumer;)V`.
+- Block mining genuinely reaches it: `Item.mineBlock` calls
+  `hurtAndBreak(damagePerBlock, entity, MAINHAND)`, gated only on
+  `getDestroySpeed != 0` (instant-break blocks cost no durability — vanilla) and
+  `damagePerBlock > 0`.
+- Vanilla consumes the modified value: the 4-arg body passes `amount` into
+  `processDurabilityChange`, which is where Unbreaking is applied. The `+1` lands
+  *before* Unbreaking, so an enchanted tool composes rather than double-counting.
+
+**The real finding is that `CHANCE` is the wrong lever, and no value of it can
+make this effect noticeable.** The observable magnitude is entirely
+`1 + CHANCE × EXTRA_DAMAGE`, expressed as percent of a tool's lifetime:
+
+| CHANCE × EXTRA_DAMAGE | iron pickaxe (250 uses) | tool life |
+|---|---|---|
+| 0.04 × 1 (original) | 240 blocks | 4% shorter |
+| **0.07 × 1 (shipped)** | **234 blocks** | **6.5% shorter** |
+| 1.00 × 1 (ceiling of chance alone) | 125 blocks | 50% shorter |
+| 0.07 × 4 (recommended next step) | 195 blocks | 22% shorter |
+
+**Even a *guaranteed* trigger only doubles wear**, because `EXTRA_DAMAGE` is 1 —
+the same saturation shape as Exposed's 1.25 detection cap and the crop hook's 26x.
+So 7% was shipped as asked and matches Leaky Pockets for consistency, but it is
+**still inside the range a player cannot detect without counting blocks**. If it
+reads as nothing again, raise `EXTRA_DAMAGE`, not `CHANCE`. The harness asserts
+the whole table, including the ceiling, so this cannot be rediscovered from zero.
+
+**A DEBUG log line now fires on each successful roll.** This effect has no sound,
+no message and no visible change — only a durability bar moving marginally faster
+— which is precisely why "not firing" and "firing rarely" were indistinguishable
+in the report. `grep "Clumsy Digger" run/logs/debug-*.log.gz | wc -l` against
+blocks mined settles it in one step. It costs nothing for players without the
+effect, since both early returns precede it.
+
 #### Villager pricing: mixin-only, and the class moved (Bad Reputation)
 Two findings, both worth having permanently:
 
@@ -1219,6 +1262,53 @@ there are no subclasses of `Villager` in the jar. Two independent guarantees.
 `AbstractVillager`, not `Villager`, and has no special-price mechanism. Out of
 reach, not overlooked. Vanilla clamps the final cost to `[1, maxStackSize]`, so
 a surcharge can never make a trade impossible.
+
+#### Bad Reputation pricing: it is ADDITIVE, and the basis matters as much as the number
+Retuned to 1.5–1.75x. The number alone would not have got there, because **this is
+not a multiplier and cannot be made into one by scaling a constant.**
+
+Vanilla's price, verified in `MerchantOffer.getModifiedCostCount`:
+
+```
+finalCount = clamp(baseCount
+                 + max(0, floor(baseCount × demand × priceMultiplier))
+                 + specialPriceDiff,          // ← flat int; this is our channel
+                   1, maxStackSize)
+```
+
+`specialPriceDiff` is a **flat integer**. So a surcharge only behaves like a
+multiplier if it is computed against the same denominator the player experiences.
+The old version took `0.25 ×` **`getBaseCostA()`** — the raw base, before demand
+and gossip — which drifted: the ratio the player felt depended on how much demand
+and reputation had already moved the price.
+
+**Fix: take the fraction of `getCostA()` instead.** At TAIL, `getCostA()` is
+already exactly "the price this player would otherwise have paid" — demand and
+the gossip/Hero-of-the-Village adjustment are both folded in by then. At
+`SURCHARGE = 0.65` that holds the ratio steady regardless of demand or reputation:
+
+| normal | with curse | ratio | | normal | with curse | ratio |
+|---|---|---|---|---|---|---|
+| 2 | 3 | 1.500x | | 12 | 20 | 1.667x |
+| 3 | 5 | 1.667x | | 16 | 26 | 1.625x |
+| 4 | 7 | 1.750x | | 20 | 33 | 1.650x |
+| 5 | 8 | 1.600x | | 24 | 40 | 1.667x |
+| 6 | 10 | 1.667x | | 32 | 53 | 1.656x |
+| 8 | 13 | 1.625x | | 36 | 59 | 1.639x |
+
+Two boundaries, both **vanilla's, not tuning misses**, and both asserted so they
+are not refiled as bugs:
+
+- **A 1-emerald trade becomes 2, i.e. 2.00x.** Prices are integers, so +100% *is*
+  the smallest possible increase on a 1-emerald trade. There is no value of
+  `SURCHARGE` that lands 1 emerald in the 1.5–1.75 band.
+- **Above ~39 emeralds the single-stack clamp starts absorbing the surcharge**,
+  and a trade already costing 64 is completely unaffected. That is vanilla's hard
+  ceiling on trade cost.
+
+**Counterplay got stronger, not weaker.** Because the surcharge is a fraction of
+the already-discounted price, good reputation is worth more under this curse than
+it was under the old flat-from-base version.
 
 #### Second Guess: the first state-bearing effect
 Everything before this was a pure function of membership in `AcquiredEffects`.
@@ -1249,9 +1339,49 @@ follows are the template for any future meta effect:
   of defence only, because the repeat fallback can legitimately re-offer an
   already-taken effect once a phase's pool empties — a design resting on
   no-repeat alone would eventually be wrong.
-- `rerollAvailable` rides on `OpenChoicePayload` so the client knows whether to
-  draw the button, but it is **not authorisation**: `requestReroll` re-checks
-  ownership, spent-ness and a pending pick server-side.
+- `rerollState` rides on `OpenChoicePayload` so the client knows how to draw the
+  button, but it is **not authorisation**: `requestReroll` re-checks ownership,
+  spent-ness and a pending pick server-side. A client sent `SPENT` that asks
+  anyway is still refused.
+
+#### Second Guess's button stayed live after use — an ORDERING bug, not a missing field
+Reported as "the button remains clickable after a reroll, and clicking does
+nothing". The instinct is that the client was not being told the truth. **It was
+being told the truth one statement too early.**
+
+`requestReroll` did this:
+
+```java
+PickTrigger result = triggerPick(server);   // builds AND SENDS the payload
+if (result != OPENED) return false;
+rerollUsed = true;                          // ← too late; already on the wire
+```
+
+`triggerPick` builds `OpenChoicePayload` from the reroll state, which reads
+`rerollUsed`. So the replacement screen — **the one screen where it matters** —
+advertised a reroll that had just been spent. Every *later* pick was already
+correct, which is what made this look like a client rendering fault rather than a
+server one.
+
+Fix: spend first, refund on failure. The "not consumed if nothing opened"
+guarantee is preserved by the refund rather than by the late assignment, and the
+ordering is verifiable in bytecode — `putfield rerollUsed` (true) precedes
+`invokevirtual triggerPick`, with a second `putfield` (false) on the failure path.
+
+**The second half was a real payload change, though: a boolean could not express
+the state.** `rerollAvailable` conflated "never had Second Guess" with "had it and
+spent it", and those want opposite rendering — nothing at all vs. a visibly
+greyed-out button. It is now a three-state `RerollState` enum
+(`NOT_OWNED` / `AVAILABLE` / `SPENT`), sent **by name** like `EffectPhase`. This is
+the shape the `EffectDuration` note argues for: when one value carries several
+meanings, make it an enum so the compiler forces every call site to handle each
+case.
+
+Note the two accessors are deliberately different and must stay so:
+`rerollState()` answers a *rendering* question and goes on the wire;
+`isRerollAvailable()` answers an *authorisation* question and additionally
+requires `waitingOnChoice`. Collapsing them would make the wire value depend on
+when it was asked.
 
 #### Debug output has to reach the player, not just the log
 `/entropyhistory` was reported as a hard regression — "prints nothing in-game
@@ -1402,11 +1532,19 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 88 checks currently: the tuning constants as
+same numbers kept being re-derived. 132 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, the crop-schedule
-tracking rules, and `/entropygrant`'s contract.
+tracking rules, `/entropygrant`'s contract, Clumsy Digger's magnitude ceiling,
+Bad Reputation's whole price table, and `OpenChoicePayload`'s codec round-trip.
+
+**The payload round-trip is the model to copy for any future payload change.** It
+runs the real `StreamCodec` against `RegistryAccess.EMPTY` — no bootstrap needed,
+because every component codec is a string, varint or enum-by-name — and it checks
+**field by field with distinct values**, not with a whole-record `equals`. That
+matters concretely here: `entropy` and `entropyCap` are both ints and adjacent, so
+a swap would cancel out under equality and pass.
 
 It has already earned its keep once: an earlier session's first run failed on a
 hand-derived expected value for blighted wheat (the roll bound at speed 2.5 is
