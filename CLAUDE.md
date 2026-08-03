@@ -865,6 +865,74 @@ The three-way split was verified against the shipped tags, not assumed:
 **Known limit, deliberately not hidden:** Punch-enchantment knockback is applied
 by a separate call and is *not* suppressed. A Punch bow still moves the player.
 
+#### `@Shadow` does NOT resolve inherited fields — the crash-on-launch trap
+**This is a different failure mode from the subclass-override trap below, and it
+fails in the opposite direction: it does not silently do nothing, it hard-crashes
+the game on every world launch.** It compiled green and shipped.
+
+```
+InvalidMixinException: @Shadow field keyPresses was not located in the target
+class net.minecraft.client.player.KeyboardInput. No refMap loaded.
+```
+
+**The real hierarchy, javap-verified:**
+
+| Class | Declares |
+|---|---|
+| `ClientInput` | `public Input keyPresses`, `protected Vec2 moveVector`, `tick()`, `getMoveVector()`, `hasForwardImpulse()`, `makeJump()` |
+| `KeyboardInput extends ClientInput` | `private final Options options`, `calculateImpulse(ZZ)F`, `tick()` — **and no fields the mixin wanted** |
+
+So **both** shadowed fields were wrong, not just the one named in the crash;
+the exception simply reports the first failure and aborts. An earlier note in
+this file said `moveVector` lives on `ClientInput` "specifically", implying
+`keyPresses` did not — **that was wrong, they are both on `ClientInput`.**
+
+**The rule, read out of Mixin's own source rather than inferred from the message:
+`@Shadow` on a *field* resolves only against fields declared directly in the
+target class, and never walks the superclass chain.**
+`MixinPreProcessorStandard.attachFields` → `MixinTargetContext.findField` →
+`TargetClassContext.findAliasedField`, whose entire search is
+`for (FieldNode target : this.classNode.fields)` over the target's own declared
+fields. There is no traversal parameter and no inherited case. (`@Shadow` on
+*methods* is not the same — don't generalise this to methods.)
+
+**The fix: declare the mixin as extending the target's actual superclass.**
+
+```java
+@Mixin(KeyboardInput.class)
+public abstract class KeyboardInputMixin extends ClientInput {   // no @Shadow at all
+```
+
+Mixin explicitly supports this. `MixinInfo.Standard.validate` takes an early
+`continue` when the mixin's `superName` equals the target's superName — the
+fully-attached case, not even flagged "detached". The fields then work by plain
+Java inheritance with no annotation involved, which **also solves the
+cross-package `protected` problem** that made `moveVector` awkward in the first
+place: a subclass may touch a protected member through its own `this` from any
+package, whereas a cast to the target type cannot.
+
+Verified end to end in bytecode rather than assumed: javac emits
+`PUTFIELD KeyboardInputMixin.moveVector` (its own class as owner — the normal
+encoding for inherited field access), and `MixinTargetContext.transformFieldRef`
+rewrites exactly that case to the target, yielding
+`PUTFIELD KeyboardInput.moveVector` in the merged method. JVM resolution walks up
+to `ClientInput`, and the access is legal because the merged code lives in
+`KeyboardInput` — same package as the protected field.
+
+**Why the two working `@Shadow` fields in this project were never affected:**
+`AvoidEntityGoal.toAvoid` and `PanicGoal.mob` are both declared **directly on
+their mixin's target class**. That is the only configuration that works. Before
+adding a `@Shadow` field, confirm the declaring class with `javap` and target
+that class, or extend it.
+
+**"No refMap loaded" is benign here and is not a second problem.** It is only a
+status string appended to the message by `context.getReferenceMapper().getStatus()`.
+`CameraMixin` applied successfully at `14:36:27` in the very same launch that
+crashed on `KeyboardInputMixin` at `14:36:43`, under identical refmap conditions —
+which proves the refmap situation is not broken. A Loom dev run uses named
+mappings at runtime, so mixin names match source directly and no refmap is
+needed. **Do not chase it.**
+
 #### When a mixin applies cleanly and STILL changes nothing — read this first
 The mixin cluster shipped with javap-verified targets and 116 green headless
 checks, and two of its five effects did not work in game. Neither was a broken

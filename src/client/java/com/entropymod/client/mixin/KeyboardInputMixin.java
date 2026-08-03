@@ -2,11 +2,11 @@ package com.entropymod.client.mixin;
 
 import com.entropymod.client.ClientRunState;
 import com.entropymod.entropy.MovementScramble;
+import net.minecraft.client.player.ClientInput;
 import net.minecraft.client.player.KeyboardInput;
 import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.phys.Vec2;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -52,19 +52,42 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p><b>Players without either effect are unaffected:</b> {@code moveScramble()}
  * returns {@code ""} and {@code tickForcedJump()} returns false, and the method
  * returns before touching a field.
+ *
+ * <h2>Why this mixin extends {@link ClientInput} instead of using {@code @Shadow}</h2>
+ *
+ * <p><b>Both {@code keyPresses} and {@code moveVector} are declared on
+ * {@code ClientInput}, not on {@code KeyboardInput}</b> -- javap-verified;
+ * {@code KeyboardInput} itself declares only {@code options},
+ * {@code calculateImpulse} and {@code tick()}. An earlier version shadowed both
+ * fields and <b>crashed the game on every world launch</b> with
+ * "@Shadow field keyPresses was not located in the target class".
+ *
+ * <p><b>{@code @Shadow} on a field resolves ONLY against fields declared
+ * directly in the mixin's target class -- it never walks the superclass
+ * chain.</b> This is not a quirk of this version; it is Mixin's own
+ * {@code TargetClassContext.findAliasedField}, which iterates
+ * {@code classNode.fields} of the target and nothing else.
+ *
+ * <p>The fix is to declare the mixin as extending the target's <i>actual</i>
+ * superclass, which Mixin explicitly supports: {@code MixinInfo.Standard
+ * .validate} takes an early {@code continue} when the mixin's {@code superName}
+ * equals the target's, so this is the fully-attached case, not even a "detached"
+ * one. The fields are then plain Java inheritance -- no annotation involved --
+ * and {@code protected moveVector} is legally reachable through {@code this}
+ * across packages, which is what blocked a simple cast to the target type.
+ *
+ * <p>Verified end to end in bytecode rather than assumed: javac emits these as
+ * {@code GETFIELD/PUTFIELD KeyboardInputMixin.moveVector} (its own class as the
+ * owner, the normal encoding for inherited field access), and
+ * {@code MixinTargetContext.transformFieldRef} rewrites exactly that case --
+ * owner equal to the mixin's class ref -- to the target, giving
+ * {@code PUTFIELD KeyboardInput.moveVector} in the merged method. JVM field
+ * resolution then walks up to {@code ClientInput}, and the access is legal
+ * because the merged code lives in {@code KeyboardInput}, which is in the same
+ * package as the protected field.
  */
 @Mixin(KeyboardInput.class)
-public abstract class KeyboardInputMixin {
-
-	// Both inherited from ClientInput. keyPresses is public there, moveVector is
-	// protected -- which is why these are @Shadow rather than a cast to the target
-	// type: protected access across packages does not compile in mixin source,
-	// even though the merged result would be in-class.
-	@Shadow
-	public Input keyPresses;
-
-	@Shadow
-	protected Vec2 moveVector;
+public abstract class KeyboardInputMixin extends ClientInput {
 
 	@Inject(method = "tick", at = @At("RETURN"))
 	private void entropymod$scrambleAndForceJump(CallbackInfo ci) {
