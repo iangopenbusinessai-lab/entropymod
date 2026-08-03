@@ -53,6 +53,20 @@ final class Checks {
 		}
 	}
 
+	/**
+	 * Whether a constant is declared at all. Used to assert a retired constant has
+	 * genuinely been removed rather than merely set to a neutral value -- a
+	 * neutral value can be quietly re-wired, an absent field cannot.
+	 */
+	static boolean hasConstant(Class<?> owner, String name) {
+		try {
+			owner.getDeclaredField(name);
+			return true;
+		} catch (NoSuchFieldException e) {
+			return false;
+		}
+	}
+
 	static int summary() {
 		System.out.println();
 		System.out.println("---------------------------------------------");

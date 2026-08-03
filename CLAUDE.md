@@ -728,7 +728,7 @@ before writing another mixin.
 | `LivingEntityVisibilityMixin` | `LivingEntity.getVisibilityPercent(Entity)` | `@Inject` RETURN |
 | `PanicGoalMixin` | `PanicGoal.shouldPanic()` | `@Inject` RETURN |
 | `AvoidEntityGoalMixin` | `AvoidEntityGoal.canUse()` | `@Inject` RETURN |
-| `CropGrowthMixin` | `CropBlock.getGrowthSpeed` *(static)* | `@Inject` RETURN |
+| `CropGrowthMixin` | `CropBlock.getGrowthSpeed` *(static)* | `@Inject` RETURN — Blight Touched only now |
 | `ServerPlayerJumpMixin` | `ServerPlayer.jumpFromGround()` | `@Inject` TAIL |
 | `ItemStackDurabilityMixin` | `ItemStack.hurtAndBreak(I,ServerLevel,ServerPlayer,Consumer)` | `@ModifyVariable` |
 | `VillagerPricesMixin` | `Villager.updateSpecialPrices(Player)` *(private)* | `@Inject` TAIL |
@@ -910,7 +910,12 @@ It is done when a value has been observed to change in game. Prefer effects whos
 result is directly measurable, and when a magnitude is chosen, sanity-check what
 it means in blocks/hearts/seconds before shipping it.
 
-#### Crops: hook `getGrowthSpeed`, not `randomTick` (Green Thumb / Blight Touched)
+#### Crops: hook `getGrowthSpeed`, not `randomTick` (Blight Touched)
+**This hook is Blight Touched's alone now.** Green Thumb used to share it and no
+longer contributes anything to it — see "Green Thumb: when vanilla's own systems
+cannot reach the target" below for why, and for the pattern that replaced it.
+Everything in this section still applies to Blight Touched unchanged.
+
 Vanilla grows a crop with
 `random.nextInt((int)(25.0F / getGrowthSpeed(...)) + 1) == 0`, so scaling that
 speed is the whole effect: higher speed, smaller divisor, better odds.
@@ -937,74 +942,153 @@ covers wheat, carrots, potatoes, beetroot and torchflower (all via
   `(int)Infinity` is `Integer.MAX_VALUE`, and `nextInt(MAX_VALUE + 1)` overflows
   to `nextInt(Integer.MIN_VALUE)`, which **throws inside a block tick**.
   `EffectHooks.cropGrowthMultiplier` floors the result for exactly this reason.
-  Re-checked at the much larger 26x multiplier: the hazard is one-sided, and a
-  bigger multiplier moves *away* from it. `(int)(25/speed) + 1` is bounded below
-  by 1 for every positive speed, which is a legal `nextInt` bound.
+  **This matters more now than it used to:** with only Blight Touched left on the
+  hook, the multiplier is always ≤ 1.0, i.e. always on the dangerous side. Green
+  Thumb's old 26x used to dominate the composition and keep it far away.
 
 #### Crop growth timing — derived, not measured; don't re-derive it from scratch
 This is the kind of number a future balance pass would otherwise redo from
-zero. It is a **model validated against an external known-good figure** (vanilla
-row-planted wheat at ~24 minutes), and it is asserted by `./gradlew harness`, so
-a retune that breaks it fails loudly.
+zero. The probability model below is **validated against an external known-good
+figure** (vanilla row-planted wheat at ~24 minutes) and is asserted by
+`./gradlew harness`. It still governs Blight Touched, and it is what proved Green
+Thumb needed a different mechanism entirely.
 
-**Two independent probabilities decide crop speed, and only one of them is ours.**
+**Two independent probabilities decide vanilla crop speed, and only one of them
+is reachable from an effect.**
 
-1. **The random-tick rate — not ours.** `ServerLevel.tickChunk` draws
+1. **The random-tick rate — not reachable.** `ServerLevel.tickChunk` draws
    `random_tick_speed` positions per game tick from each 16³ section, uniformly
    over its 4096 blocks. The gamerule's *registered default is 3*, so one
    specific crop block expects a random tick every `4096/3 = 1365.33` ticks —
-   **68.27 seconds**. Nothing this mod does changes this.
-2. **The growth roll — ours.** `nextInt((int)(25.0F / speed) + 1) == 0`.
+   **68.27 seconds**. No per-effect code can change this.
+2. **The growth roll — reachable.** `nextInt((int)(25.0F / speed) + 1) == 0`.
 
 **The roll bound saturates at 1 once `speed > 25`**, because of the integer
 truncation: `(int)(25/25.1) == 0`, so `nextInt(1) == 0` is always true and the
 crop grows on *every* random tick. Above that, larger multipliers do **nothing at
-all** — the same saturation shape as Exposed's 1.25 detection multiplier, and the
-second time this project has hit one.
+all** — the same saturation shape as Exposed's 1.25 detection multiplier.
 
 Base speeds `getGrowthSpeed` produces: **10.0** row-planted on hydrated farmland,
 **5.0** for a fully-planted field (the crossing-neighbour halving), floor **1.0**
-for the worst real layout (dry, isolated, crops on both axes). So **26 is the
-smallest whole multiplier that saturates every layout** — 25 lands exactly on
-25.0, and `(int)(25/25)` is 1, which halves the rate. Green Thumb ships at 26.
+for the worst real layout (dry, isolated, crops on both axes). 26 was the
+smallest whole multiplier that saturated every layout.
 
-**The 90-second target for wheat is not reachable through this hook, at any
-multiplier.** Wheat needs 7 stage advances; even at one per random tick that is
-`7 × 68.27 = 477.9s`. 90s would need a stage every 257 ticks, 5.3× more often
-than random ticks arrive. The binding constraint is the *rate*, not the *chance*.
-Reaching it needs a second mechanism (extra random ticks near the player, or a
-direct growth tick) — deliberately not built here. For reference,
-`/gamerule random_tick_speed 16` lands wheat at 89.6s with the current multiplier.
+**Beetroot and torchflower both override `randomTick`** with an extra
+`nextInt(3) != 0` gate before delegating to `CropBlock`, so only two thirds of
+their random ticks reach the growth roll. This applies to the *natural* path
+only — a granted advance skips `randomTick` entirely and is not gated.
 
-**Expected time from freshly planted to mature.** Mean of a geometric
-distribution, so individual plants vary widely. Stage counts differ per crop, so
-one multiplier deliberately does *not* equalise them — that is expected, not a
-bug. Once saturated, the farmland layout no longer matters (dry and hydrated land
-on the same number).
+Vanilla stage counts, javap-verified via `getMaxAge()` and reused rather than
+re-derived: **wheat/carrots/potatoes 7, beetroot 3, torchflower 2, stems 7 (+ a
+fruit-placement step), pitcher crop 4.**
 
-| Crop | Stages | Extra gate | Green Thumb (26x) | Vanilla, packed field |
+#### Green Thumb: when vanilla's own systems cannot reach the target
+**This is the established pattern for any future effect whose target lies beyond
+what vanilla's tick or probability systems can deliver.** Read it before tuning a
+multiplier harder.
+
+**The ceiling that forced it.** Green Thumb scaled `getGrowthSpeed` and was tuned
+all the way to saturation — one stage per random tick, the most that hook can
+ever do. Wheat still took `7 × 68.27 = 478s`. A 90-second target needs a stage
+every 257 ticks, 5.3× more often than random ticks arrive at all. **The binding
+constraint was the rate, not the chance**, so no value of the multiplier could
+reach it. Getting there through the hook would have needed
+`/gamerule random_tick_speed 16` — a world setting, not an effect.
+
+**The pattern.** Stop tuning vanilla's parameters; drive the outcome on a
+schedule of your own — but still perform the change through **vanilla's own state
+transition**, so the result is indistinguishable from a natural (very lucky)
+tick. Both halves matter: the schedule is what beats the ceiling, and using
+vanilla's transition is what keeps block updates, client visuals and every
+subclass quirk correct for free.
+
+`GreenThumbGrowth` grants stage advances directly and no longer touches
+`cropGrowthMultiplier` at all. **Green Thumb declares no multiplier constant any
+more** — removed rather than set to 1.0, because a neutral constant can be
+quietly re-wired into the shared hook and double-applied, and a field that does
+not exist cannot. The harness asserts its absence.
+
+**Why uniform 90s is achievable now and was not before.** A granted advance is
+not rolled for, so the expected total is just `stages × interval`. Differing
+stage counts stop mattering: divide the same budget by each crop's `getMaxAge()`.
+
+| Crop | Stages | Interval | Total | |
 |---|---|---|---|---|
-| Wheat / carrots / potatoes | 7 | — | **7m 58s** | 47m 47s |
-| Beetroot | 3 | 2/3 per tick | **5m 07s** | 30m 43s |
-| Torchflower | 2 | 2/3 per tick | **3m 25s** | 20m 29s |
-| Pumpkin / melon stem (to first fruit) | 7 + 1 | — | **9m 06s** | 54m 37s |
-| Pitcher crop | 4 | — | **4m 33s** | 27m 18s |
+| Wheat / carrots / potatoes | 7 | 255t | 1785t | **89.3s** |
+| Beetroot | 3 | 600t | 1800t | **90.0s** |
+| Torchflower | 2 | 900t | 1800t | **90.0s** |
+| Pitcher crop | 4 | 450t | 1800t | **90.0s** |
+| Pumpkin / melon stem | 7 + fruit | 240t | 1680t + ~120t | **90.0s** |
 
-- **Beetroot and torchflower both override `randomTick`** with an extra
-  `nextInt(3) != 0` gate before delegating to `CropBlock` — so only two thirds of
-  their random ticks reach the growth roll, i.e. 1.5 random ticks per stage. Note
-  this is the subclass-override trap in a benign form: they *do* call `super`,
-  and hooking `getGrowthSpeed` sidesteps the question entirely.
-- **The stem row counts 8, not 7.** Seven successful rolls reach age 7; the
-  *eighth* is what places the fruit. That eighth roll is wasted if no adjacent
-  block can host a pumpkin/melon, so a cramped spot runs longer than the table.
-- Green Thumb is a **6× speedup** against a packed field and **3×** against rows.
-  The description moved from "twice as fast" to "as fast as the game allows".
-  Note the old wording was only ever true for one layout: at the previous 2.0
-  multiplier a packed field's bound went 6 → 3 (exactly 2×) but rows went 3 → 2
-  (1.5×). Because the bound is an integer, **speedup is a step function of the
-  multiplier and of the layout** — any future description quoting a ratio should
-  say which layout it means.
+Intervals are `budget / stages` floored onto the 5-tick advance grid — an
+interval the advance pass cannot observe would silently round up to the next grid
+step. Stage counts are read from `getMaxAge()` **at runtime**, not a hardcoded
+table, so a crop this build has never seen is timed correctly too.
+
+**The stem's last step cannot be granted, and it is the one real irregularity.**
+Reaching age 7 is seven ordinary advances, but producing the first fruit is not a
+stage change — it is a placement with light, support and free-space conditions,
+and **vanilla exposes no deterministic way to trigger it**. Even
+`performBonemeal` on a mature stem just calls `randomTick` and re-rolls. So the
+fruit step is retried at the scan cadence through vanilla's own `randomTick`,
+keeping every condition intact. At an ordinary base speed that is ~6 attempts ≈
+120 ticks, and the stem's stage budget is reduced by exactly that so the total
+still lands on 90s — a number **derived from the same validated roll model**, not
+picked. If nothing can host a fruit it simply keeps trying, at one cheap roll per
+scan.
+
+**Which vanilla transition each crop uses** — all public, so no mixin is needed:
+
+| Type | Advance | Why this one |
+|---|---|---|
+| `CropBlock` | `setBlock(pos, getStateForAge(age+1), UPDATE_CLIENTS)` | Literally `randomTick`'s success branch. `getStateForAge` is **virtual**, so beetroot's shorter age property and torchflower's conversion into the flower are vanilla's problem, not ours |
+| `StemBlock` age < 7 | `setBlock(pos, state.setValue(AGE, age+1), UPDATE_CLIENTS)` | The same branch in `StemBlock.randomTick` |
+| `StemBlock` age 7 | `state.randomTick(...)` | The fruit step; see above |
+| `PitcherCropBlock` | `performBonemeal(...)` | Resolves the lower half itself and grows by **exactly 1** — the only crop whose bonemeal is a single stage |
+
+Three traps this avoided, each checked rather than assumed:
+
+- **`AttachedStemBlock extends VegetationBlock`, not `StemBlock`.** So a stem that
+  has already fruited is not matched and drops out of tracking by itself. Had it
+  been a subclass, `state.getValue(StemBlock.AGE)` would have thrown on a block
+  with no age property.
+- **A pitcher crop is two blocks, and a radius scan finds both** — advancing it
+  twice per interval. `PitcherCropBlock.isRandomlyTicking(state)` is vanilla's own
+  "is there anything to do here" test (true only for the LOWER half, and only
+  below max age), so using it as the eligibility predicate is what prevents that.
+- **`BlockPos.betweenClosed` yields a mutable cursor.** Anything stored from the
+  sweep must be `.immutable()` or every tracked key aliases one position.
+
+**Cost, stated so it is inspectable:**
+
+- **Rescan: O(players × 4913 block lookups) every 20 ticks** — a 17×17×17 box per
+  player, amortising to ~246 block-state reads per player per tick. Vanilla's own
+  random ticking reads ~1300 block states per second in a *single* loaded section.
+- **Advance pass: O(tracked crops) every 5 ticks**, and the tracked set holds only
+  immature crop blocks actually in range. Each entry costs one long compare; only
+  entries genuinely due pay for a block read and a nearest-player query.
+- **Nothing runs at all when no player holds the effect** — the acquired set is
+  checked once per pass, before anything is scanned.
+
+**`CropSchedule` is deliberately free of Minecraft imports**, the same discipline
+`AcquiredEffects` and `EntropyPalette` follow. The two rules easiest to get wrong
+— a crop that leaves the radius stops being advanced, and a fully-grown crop
+stops being tracked — are therefore driven by the harness against the real class.
+Both fall out of one mechanism: `refresh` keeps only the keys the caller reports
+as eligible, so out-of-range, harvested and matured crops are forgotten by the
+same path with no separate expiry to keep in sync. Eligibility is **re-verified
+at the moment of each advance**, never trusted from the scan.
+
+Scheduling state is **not persisted and is cleared on `SERVER_STOPPED`** — it is
+about a player standing in a field right now, not part of the run, and in
+singleplayer the next world is one trip through the main menu away.
+
+**Blight Touched interaction:** the two no longer compose through one multiplier.
+Green Thumb's advances fire on schedule regardless, and Blight still slows the
+natural random-tick path. That is close to the old behaviour in practice — at
+26× × 0.5 the roll was *still* saturated, so Blight was fully masked then too.
+The one place it now bites is the stem's fruit step, which is genuinely
+probabilistic: blighted, that takes ~11 attempts instead of ~6.
 
 #### Leaky Pockets: 4% → 7% per jump
 Retuned after play testing. At 4% the mean gap was 25 jumps, rare enough that the
@@ -1223,9 +1307,15 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 48 checks currently: the tuning constants as
-actually compiled, the crop-growth derivation and its per-crop table, the
-growth-roll overflow guard, and `/entropygrant`'s contract.
+same numbers kept being re-derived. 64 checks currently: the tuning constants as
+actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
+and its per-crop intervals, Blight Touched's untouched contribution to the shared
+hook, the crop-schedule tracking rules, the growth-roll overflow guard, and
+`/entropygrant`'s contract.
+
+It has already earned its keep once: this session's first run failed on a
+hand-derived expected value for blighted wheat (the roll bound at speed 2.5 is
+11, not 12). The model was right and the number written next to it was not.
 
 Two things about it worth keeping:
 

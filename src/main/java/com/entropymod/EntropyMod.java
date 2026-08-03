@@ -4,6 +4,7 @@ import com.entropymod.command.EntropyCommands;
 import com.entropymod.entropy.EffectBehaviors;
 import com.entropymod.entropy.EntropyAttributes;
 import com.entropymod.entropy.EntropyManager;
+import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.network.ChoiceMadePayload;
 import com.entropymod.network.HistoryRequestPayload;
 import com.entropymod.network.HistoryResponsePayload;
@@ -12,6 +13,7 @@ import com.entropymod.network.RerollRequestPayload;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityLevelChangeEvents;
 import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
@@ -110,9 +112,21 @@ public class EntropyMod implements ModInitializer {
 
 		// Every server tick, let the EntropyManager check whether it's time
 		// for the next pick. This is the heartbeat of the whole mod.
+		//
+		// Green Thumb rides along here rather than on a hook, because its whole
+		// point is a growth schedule independent of vanilla's random ticking --
+		// see GreenThumbGrowth for why the multiplier hook could not reach 90s.
+		// It returns immediately on ticks that are neither a rescan nor an advance
+		// pass, and again if nobody holds the effect.
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
 			EntropyManager.get(server).tick(server);
+			GreenThumbGrowth.tick(server);
 		});
+
+		// Bonus-growth scheduling is transient, not part of the run, so it is not
+		// persisted -- but it must not survive into the next world either, which in
+		// singleplayer is one trip through the main menu away.
+		ServerLifecycleEvents.SERVER_STOPPED.register(server -> GreenThumbGrowth.reset());
 
 		LOGGER.info("Entropy Mod ready. Default interval: {} ticks ({} min), cap: {}",
 				EntropyManager.DEFAULT_INTERVAL_TICKS,

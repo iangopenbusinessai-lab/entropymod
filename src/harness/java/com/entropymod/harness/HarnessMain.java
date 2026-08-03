@@ -1,12 +1,18 @@
 package com.entropymod.harness;
 
+import com.entropymod.entropy.AcquiredEffects;
 import com.entropymod.entropy.EffectDefinition;
+import com.entropymod.entropy.EffectHooks;
 import com.entropymod.entropy.EffectRegistry;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.entropy.behavior.BlightTouchedBehavior;
 import com.entropymod.entropy.behavior.GreenThumbBehavior;
 import com.entropymod.entropy.behavior.LeakyPocketsBehavior;
 import com.entropymod.entropy.behavior.SureFootingBehavior;
+import com.entropymod.entropy.growth.CropSchedule;
+import com.entropymod.entropy.growth.GreenThumbGrowth;
+
+import java.util.Set;
 
 import static com.entropymod.harness.Checks.check;
 import static com.entropymod.harness.Checks.checkNear;
@@ -30,8 +36,10 @@ public final class HarnessMain {
 	public static void main(String[] args) {
 		tuningConstants();
 		growthModelSanity();
-		greenThumbDerivation();
-		greenThumbPerCropTimings();
+		retiredMultiplierCeiling();
+		activeGrowthSchedule();
+		blightTouchedUnregressed();
+		scheduleTracking();
 		overflowGuard();
 		grantContract();
 		System.exit(Checks.summary());
@@ -49,12 +57,16 @@ public final class HarnessMain {
 
 		checkNear(constant(LeakyPocketsBehavior.class, "CHANCE"), 0.07, 1e-7,
 				"Leaky Pockets fires on 7% of jumps");
-		checkNear(constant(GreenThumbBehavior.class, "MULTIPLIER"), 26.0, 1e-7,
-				"Green Thumb scales crop growth speed by 26x");
 		checkNear(constant(GreenThumbBehavior.class, "RADIUS"), 8.0, 1e-7,
 				"Green Thumb radius is unchanged at 8 blocks");
 		checkNear(constant(BlightTouchedBehavior.class, "MULTIPLIER"), 0.5, 1e-7,
 				"Blight Touched is unchanged at 0.5x");
+
+		// Removed, not neutralised. A constant set to 1.0 can be quietly re-wired
+		// into the shared hook and double-applied on top of the active mechanism;
+		// a field that does not exist cannot.
+		check(!Checks.hasConstant(GreenThumbBehavior.class, "MULTIPLIER"),
+				"Green Thumb no longer declares a growth-speed multiplier at all");
 
 		double meanJumps = 1.0 / constant(LeakyPocketsBehavior.class, "CHANCE");
 		checkNear(meanJumps, 14.3, 0.1, "Leaky Pockets spills once per ~14 jumps on average");
@@ -86,104 +98,196 @@ public final class HarnessMain {
 	}
 
 	/**
-	 * Why 26 and not something else, and the ceiling that made the 90-second
-	 * target unreachable through this lever.
-	 */
-	private static void greenThumbDerivation() {
-		section("Green Thumb derivation");
-
-		float m = (float) constant(GreenThumbBehavior.class, "MULTIPLIER");
-
-		// 1. It saturates: the roll bound bottoms out at 1 for every real layout.
-		for (float base : new float[]{
-				CropGrowthModel.BASE_SPEED_WORST_FARMLAND, 2.0f, 3.0f,
-				CropGrowthModel.BASE_SPEED_PACKED_FIELD, 8.0f, CropGrowthModel.BASE_SPEED_ROWS}) {
-			check(CropGrowthModel.saturated(base * m),
-					"saturated at base speed " + base + " (bound " + CropGrowthModel.rollBound(base * m) + ")");
-		}
-
-		// 2. It is the SMALLEST whole multiplier that does. 25 lands exactly on
-		//    25.0, and (int)(25/25) is 1, which halves the rate on the worst layout.
-		check(!CropGrowthModel.saturated(CropGrowthModel.BASE_SPEED_WORST_FARMLAND * 25.0f),
-				"25x does NOT saturate the worst farmland layout -- 26 is minimal");
-
-		// 3. Above it, nothing changes. This is a saturation point, not a slider.
-		check(CropGrowthModel.rollBound(CropGrowthModel.BASE_SPEED_WORST_FARMLAND * m)
-						== CropGrowthModel.rollBound(CropGrowthModel.BASE_SPEED_WORST_FARMLAND * 1000.0f),
-				"1000x behaves identically to 26x -- larger values buy nothing");
-
-		// 4. The ceiling. Even at one stage per random tick, wheat cannot reach the
-		//    90s (1800 tick) target, because the binding constraint is the
-		//    random-tick RATE, which no multiplier touches.
-		double fastestWheat = CropGrowthModel.expectedSeconds(7, 1.0,
-				CropGrowthModel.BASE_SPEED_WORST_FARMLAND, m);
-		checkNear(fastestWheat, 477.87, 0.1,
-				"fastest possible wheat through this hook is ~478s, not 90s");
-		check(fastestWheat > 90.0 * 5,
-				"the 90s target is more than 5x beyond what this lever can reach");
-
-		// 5. What it would take: the rate, not the chance.
-		double neededRate = 7.0 * CropGrowthModel.SECTION_BLOCKS / 1800.0;
-		checkNear(neededRate, 15.93, 0.01,
-				"90s wheat would need random_tick_speed ~16 at this multiplier");
-	}
-
-	/**
-	 * The per-crop table recorded in CLAUDE.md and in
-	 * {@link GreenThumbBehavior}'s javadoc. Different crops have different stage
-	 * counts, so one multiplier deliberately does not equalise them -- these
-	 * numbers are the point, not a rounding of wheat's.
-	 */
-	private static void greenThumbPerCropTimings() {
-		section("Green Thumb per-crop expected time to maturity");
-
-		float m = (float) constant(GreenThumbBehavior.class, "MULTIPLIER");
-		double[] expected = {477.87, 307.2, 204.8, 546.13, 273.07};
-
-		for (int i = 0; i < CropGrowthModel.COVERED.length; i++) {
-			CropGrowthModel.Crop crop = CropGrowthModel.COVERED[i];
-			// Saturated, so the base layout no longer matters -- assert that too.
-			double packed = CropGrowthModel.expectedSeconds(crop.stages(), crop.gate(),
-					CropGrowthModel.BASE_SPEED_PACKED_FIELD, m);
-			double dry = CropGrowthModel.expectedSeconds(crop.stages(), crop.gate(),
-					CropGrowthModel.BASE_SPEED_WORST_FARMLAND, m);
-
-			checkNear(packed, expected[i], 0.5,
-					crop.name() + " -> " + CropGrowthModel.asMinutesSeconds(packed));
-			checkNear(dry, packed, 1e-9,
-					crop.name() + ": dry and hydrated land on the same time once saturated");
-		}
-
-		// And the vanilla comparison the table quotes, so a future retune can see
-		// what was actually gained.
-		double vanillaWheat = CropGrowthModel.expectedSeconds(7, 1.0,
-				CropGrowthModel.BASE_SPEED_PACKED_FIELD, 1.0f);
-		checkNear(vanillaWheat, 2867.2, 0.5,
-				"vanilla packed-field wheat is " + CropGrowthModel.asMinutesSeconds(vanillaWheat));
-		checkNear(vanillaWheat / expected[0], 6.0, 0.01,
-				"Green Thumb is a 6x speedup over a packed field, 3x over rows");
-	}
-
-	/**
-	 * Re-checks the divide-by-zero hazard at the new, much larger multiplier.
+	 * Why the multiplier hook was retired.
 	 *
-	 * <p>The hazard runs the other way -- it is small speeds, not large ones, that
-	 * break -- but "a bigger number is obviously safe" is exactly the assumption
-	 * worth testing rather than asserting.
+	 * <p>Kept rather than deleted: this is the evidence that the active mechanism
+	 * is necessary rather than merely preferred, and it is what stops a future
+	 * session "simplifying" Green Thumb back onto the shared hook. It asserts the
+	 * ceiling still holds at the most generous multiplier the hook can accept.
+	 */
+	private static void retiredMultiplierCeiling() {
+		section("Why the growth-speed multiplier was retired");
+
+		// The most the hook can ever do: saturate the roll so every random tick
+		// grows the crop. 26x was the smallest multiplier that reached this, and
+		// nothing above it changes anything.
+		float saturating = 26.0f;
+		check(CropGrowthModel.saturated(CropGrowthModel.BASE_SPEED_WORST_FARMLAND * saturating),
+				"26x saturates the roll even on the worst farmland layout");
+		check(CropGrowthModel.rollBound(CropGrowthModel.BASE_SPEED_WORST_FARMLAND * saturating)
+						== CropGrowthModel.rollBound(CropGrowthModel.BASE_SPEED_WORST_FARMLAND * 1000.0f),
+				"1000x behaves identically -- the hook is a saturation point, not a slider");
+
+		// And saturated is still 5.3x too slow, because the binding constraint is
+		// the random-tick RATE, which the hook does not touch.
+		double fastestWheat = CropGrowthModel.expectedSeconds(7, 1.0,
+				CropGrowthModel.BASE_SPEED_WORST_FARMLAND, saturating);
+		checkNear(fastestWheat, 477.87, 0.1,
+				"fully saturated, wheat still takes ~478s through the hook");
+		check(fastestWheat > 5 * (GreenThumbGrowth.TARGET_TICKS / 20.0),
+				"that is more than 5x the 90s target -- unreachable at any multiplier");
+
+		double neededRate = 7.0 * CropGrowthModel.SECTION_BLOCKS / GreenThumbGrowth.TARGET_TICKS;
+		checkNear(neededRate, 15.93, 0.01,
+				"reaching 90s through the hook would need random_tick_speed ~16, a gamerule not an effect");
+	}
+
+	/**
+	 * The active mechanism's per-crop intervals, derived from the real shipped
+	 * {@link GreenThumbGrowth#intervalForStages} rather than a copy of it.
+	 *
+	 * <p>Stage counts are the ones already established in CLAUDE.md's table and
+	 * verified in bytecode there ({@code getMaxAge()} of 7, 3, 2, 7 and 4) -- not
+	 * re-derived here.
+	 */
+	private static void activeGrowthSchedule() {
+		section("Active bonus-growth schedule (target " + GreenThumbGrowth.TARGET_TICKS + " ticks)");
+
+		int target = GreenThumbGrowth.TARGET_TICKS;
+		int stemBudget = target - GreenThumbGrowth.STEM_FRUIT_BUDGET_TICKS;
+
+		CropGrowthModel.ActiveCrop[] crops = {
+				new CropGrowthModel.ActiveCrop("Wheat / carrots / potatoes", 7, target, 0),
+				new CropGrowthModel.ActiveCrop("Beetroot", 3, target, 0),
+				new CropGrowthModel.ActiveCrop("Torchflower", 2, target, 0),
+				new CropGrowthModel.ActiveCrop("Pitcher crop", 4, target, 0),
+				new CropGrowthModel.ActiveCrop("Pumpkin / melon stem", 7, stemBudget,
+						GreenThumbGrowth.STEM_FRUIT_BUDGET_TICKS),
+		};
+		int[] expectedIntervals = {255, 600, 900, 450, 240};
+
+		for (int i = 0; i < crops.length; i++) {
+			CropGrowthModel.ActiveCrop crop = crops[i];
+			int interval = GreenThumbGrowth.intervalForStages(crop.stages(), crop.budgetTicks());
+			int total = CropGrowthModel.activeTotalTicks(crop, interval);
+
+			check(interval == expectedIntervals[i],
+					crop.name() + ": " + crop.stages() + " stages -> " + interval + "t interval");
+			checkNear(total / 20.0, 90.0, 1.0,
+					crop.name() + ": total " + total + "t = " + (total / 20.0) + "s");
+
+			// Every interval must land on the grid the advance pass actually runs on,
+			// or the real cadence silently rounds up to the next grid step.
+			check(interval % GreenThumbGrowth.ADVANCE_INTERVAL_TICKS == 0,
+					crop.name() + ": interval is a whole number of advance passes");
+		}
+
+		// The stem's fruit allowance is derived from the SAME validated roll model,
+		// not picked. Placing the fruit is not a stage change and cannot be granted,
+		// so it is retried at the scan cadence until vanilla's own roll succeeds.
+		int expectedAttempts = CropGrowthModel.rollBound(CropGrowthModel.BASE_SPEED_PACKED_FIELD);
+		check(expectedAttempts == 6, "an ordinary stem needs ~6 fruit attempts (roll bound at base speed 5)");
+		check(expectedAttempts * GreenThumbGrowth.RESCAN_INTERVAL_TICKS
+						== GreenThumbGrowth.STEM_FRUIT_BUDGET_TICKS,
+				"...which is exactly the " + GreenThumbGrowth.STEM_FRUIT_BUDGET_TICKS
+						+ "t the stem's stage budget gives up");
+
+		// The property the old mechanism could not deliver at all.
+		check(true, "uniform ~90s across differing stage counts -- what the multiplier could not do");
+	}
+
+	/**
+	 * Blight Touched must be completely unaffected by Green Thumb leaving the
+	 * shared hook.
+	 *
+	 * <p>Driven through the real {@code EffectHooks.cropGrowthMultiplierFor} with
+	 * real {@link AcquiredEffects}, not a reimplementation of the composition rule
+	 * -- that is the point of the method having been split out.
+	 */
+	private static void blightTouchedUnregressed() {
+		section("Blight Touched unregressed on the shared hook");
+
+		checkNear(EffectHooks.cropGrowthMultiplierFor(setOf()), 1.0, 1e-7,
+				"no effects -> 1.0, vanilla growth untouched");
+		checkNear(EffectHooks.cropGrowthMultiplierFor(setOf(BlightTouchedBehavior.ID)), 0.5, 1e-7,
+				"Blight Touched alone -> 0.5, exactly as before");
+		checkNear(EffectHooks.cropGrowthMultiplierFor(setOf(GreenThumbBehavior.ID)), 1.0, 1e-7,
+				"Green Thumb alone -> 1.0, it contributes nothing to this hook now");
+		checkNear(EffectHooks.cropGrowthMultiplierFor(
+						setOf(GreenThumbBehavior.ID, BlightTouchedBehavior.ID)), 0.5, 1e-7,
+				"both -> 0.5: Blight still applies, and is no longer masked by Green Thumb's 26x");
+
+		// Its slow-growth numbers through the hook are therefore unchanged.
+		double blightedWheat = CropGrowthModel.expectedSeconds(7, 1.0,
+				CropGrowthModel.BASE_SPEED_PACKED_FIELD,
+				(float) constant(BlightTouchedBehavior.class, "MULTIPLIER"));
+		// Base speed 5.0 x 0.5 = 2.5, so the roll bound is (int)(25/2.5) + 1 = 11.
+		checkNear(blightedWheat, 5256.53, 1.0,
+				"blighted packed-field wheat is still " + CropGrowthModel.asMinutesSeconds(blightedWheat));
+	}
+
+	/**
+	 * The two tracking rules, driven against the real {@link CropSchedule}.
+	 *
+	 * <p>The service itself needs a {@code ServerLevel} and cannot run headlessly,
+	 * which is exactly why the scheduling rules were split into a Minecraft-free
+	 * class -- these are the rules most likely to be got wrong and they are now
+	 * directly checkable.
+	 */
+	private static void scheduleTracking() {
+		section("Crop schedule: leaving the radius, and reaching max age");
+
+		CropSchedule<String> schedule = new CropSchedule<>();
+
+		schedule.refresh(Set.of("a", "b"), 0, key -> 100);
+		check(schedule.size() == 2, "two crops in range are tracked");
+		check(schedule.due(50).isEmpty(), "a newly-seen crop waits a full interval, not advanced on discovery");
+		check(schedule.due(100).size() == 2, "...and is due exactly one interval later");
+
+		// The player walks away from b before its advance lands.
+		schedule.refresh(Set.of("a"), 100, key -> 100);
+		check(!schedule.isTracking("b"), "a crop that left the radius stops being tracked");
+		check(schedule.isTracking("a"), "...and the one still in range is kept");
+		check(schedule.due(100).contains("a"),
+				"a rescan does not push an existing crop's due time back (standing still must not starve it)");
+
+		// a advances, so it is rescheduled rather than dropped.
+		schedule.reschedule("a", 100, 100);
+		check(schedule.due(150).isEmpty(), "after an advance the next one is a full interval out");
+		check(schedule.due(200).contains("a"), "...and lands on schedule");
+
+		// a reaches max age: the scan no longer reports it as eligible.
+		schedule.refresh(Set.of(), 200, key -> 100);
+		check(schedule.size() == 0, "a fully-grown crop drops out of tracking, not rescheduled forever");
+
+        // Re-verification failure at advance time drops it outright.
+		schedule.refresh(Set.of("c"), 300, key -> 100);
+		schedule.drop("c");
+		check(!schedule.isTracking("c"), "a crop failing re-verification at advance time is dropped");
+
+		schedule.refresh(Set.of("d"), 400, key -> 100);
+		schedule.clear();
+		check(schedule.size() == 0, "clear() drops everything (server stop must not leak into the next world)");
+	}
+
+	/** An {@link AcquiredEffects} holding exactly these ids. */
+	private static AcquiredEffects setOf(String... ids) {
+		AcquiredEffects acquired = new AcquiredEffects();
+		for (String id : ids) {
+			acquired.add(id);
+		}
+		return acquired;
+	}
+
+	/**
+	 * The divide-by-zero hazard in vanilla's growth roll.
+	 *
+	 * <p>Now that only Blight Touched feeds this hook, the multiplier can only ever
+	 * be at or below 1.0 -- i.e. always on the dangerous side. Retaining this check
+	 * matters more than it did when Green Thumb's 26x dominated the composition.
 	 */
 	private static void overflowGuard() {
-		section("Growth-roll overflow guard at the larger multiplier");
+		section("Growth-roll overflow guard");
 
-		float green = (float) constant(GreenThumbBehavior.class, "MULTIPLIER");
 		float blight = (float) constant(BlightTouchedBehavior.class, "MULTIPLIER");
-		float floor = (float) constant(com.entropymod.entropy.EffectHooks.class, "MIN_CROP_MULTIPLIER");
+		float floor = (float) constant(EffectHooks.class, "MIN_CROP_MULTIPLIER");
 
 		// The failure mode being guarded against, demonstrated so it is not folklore:
 		// a zero multiplier really does produce a negative nextInt bound, which throws.
 		check(CropGrowthModel.rollBound(0.0f) < 0,
 				"multiplier 0 would overflow to a negative nextInt bound (this is why the floor exists)");
 
-		float[] multipliers = {floor, blight, 1.0f, green * blight, green, green * green};
+		float[] multipliers = {floor, blight * blight, blight, 1.0f};
 		float[] baseSpeeds = {0.5f, CropGrowthModel.BASE_SPEED_WORST_FARMLAND, 2.0f,
 				CropGrowthModel.BASE_SPEED_PACKED_FIELD, CropGrowthModel.BASE_SPEED_ROWS};
 
@@ -199,8 +303,9 @@ public final class HarnessMain {
 		}
 		check(allSafe, "every multiplier/layout pair yields a nextInt bound of at least 1");
 
-		check(CropGrowthModel.rollBound(CropGrowthModel.BASE_SPEED_WORST_FARMLAND * green) == 1,
-				"the larger multiplier moves AWAY from the hazard: bound is at its floor of 1");
+		// The live worst case: the floor applied to the worst farmland layout.
+		check(CropGrowthModel.rollBound(CropGrowthModel.BASE_SPEED_WORST_FARMLAND * floor) > 0,
+				"even the floored multiplier on the worst layout yields a legal nextInt bound");
 		check(floor > 0.0f, "EffectHooks floors the combined multiplier above zero");
 	}
 

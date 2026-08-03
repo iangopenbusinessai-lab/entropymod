@@ -104,6 +104,35 @@ final class CropGrowthModel {
 			new Crop("Pitcher crop", 4, 1.0),
 	};
 
+	// ------------------------------------------------------------------
+	// The ACTIVE mechanism (GreenThumbGrowth), which does not use any of the
+	// probability machinery above -- that is the whole point of it.
+	//
+	// A granted advance is not rolled for, so the expected total is simply
+	// stages x interval. Two consequences worth stating because they are what
+	// makes uniform 90s reachable where the multiplier could not:
+	//
+	//   * The 68.27s random-tick rate does not apply. Advances arrive on this
+	//     mod's own schedule.
+	//   * Beetroot's and torchflower's 2/3 randomTick gate does not apply either.
+	//     That gate lives in their randomTick override, and a granted advance goes
+	//     straight to the state transition instead.
+	// ------------------------------------------------------------------
+
+	/**
+	 * One covered crop under the active mechanism.
+	 *
+	 * @param stages      stage advances that can be granted directly
+	 * @param budgetTicks the tick budget those advances are divided into
+	 * @param extraTicks  time outside the granted advances (the stem's fruit step)
+	 */
+	record ActiveCrop(String name, int stages, int budgetTicks, int extraTicks) {}
+
+	/** Expected total ticks from freshly planted to mature under the active mechanism. */
+	static int activeTotalTicks(ActiveCrop crop, int intervalTicks) {
+		return crop.stages() * intervalTicks + crop.extraTicks();
+	}
+
 	/** Base growth speed of a fully-planted field on hydrated farmland: 1 + 3 + 8*(3/4), halved for crops on both axes. */
 	static final float BASE_SPEED_PACKED_FIELD = 5.0f;
 
