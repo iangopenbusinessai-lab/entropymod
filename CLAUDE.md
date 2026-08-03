@@ -1894,9 +1894,147 @@ a `SavedData` and a run now survives a restart.
 
 ---
 
+## Planned Architecture: Gamified Run Lifecycle
+
+**Status: DESIGN CONFIRMED, NOTHING BUILT.** Decided collaboratively and recorded
+here so it does not live only in chat history. Every "will" below is a decision,
+not a description — none of it exists in code yet. Read this before touching
+`EntropyManager`'s tick loop, `ChoiceScreen`, or anything to do with how a run
+begins or ends.
+
+### Run states
+
+```
+NOT_STARTED  ->  IN_PROGRESS  ->  ENDED
+```
+
+**Today the entropy loop runs unconditionally from server start.** There is no
+gate: `EntropyManager.tick` counts and fires from the first tick a world is
+loaded. This introduces a real one.
+
+- **`NOT_STARTED`** — the loop must **not** advance entropy and must **not**
+  trigger picks. This is a hard gate, not a cosmetic one.
+- **`IN_PROGRESS`** — the loop runs as it does today.
+- **`ENDED`** — the run is over; see the three paths below.
+
+The state is run state, so it belongs in the existing `SavedData` codec beside
+entropy and pick count, with the same `optionalFieldOf` discipline every other
+field follows (an older save must still load).
+
+### The start panel
+
+Shown on **first player spawn in a fresh world**, i.e. while state is
+`NOT_STARTED`.
+
+- **Modal, same pattern as `ChoiceScreen`** — blocks until dismissed, no escape
+  hatch. The proven GUI shape gets reused rather than reinvented, including its
+  hard constraint: because there is no escape, **the layout must never clip at any
+  GUI scale**. See `ChoiceScreen`'s responsive-layout notes.
+- **It is where world/run settings live**: interval length, entropy cap, and any
+  future setting. This finally gives Open Question 4 (config surface) a home.
+- **Deliberately NOT integrated into vanilla's world-creation flow.** That was
+  considered and **explicitly rejected**: vanilla's world-creation UI is a much
+  larger and completely uninvestigated piece of screen code, and hooking it would
+  be a project of its own. This is a considered trade, not an oversight — do not
+  "improve" it into the world-creation screen without revisiting the decision.
+- **Clicking "Start" locks in the chosen settings and transitions to
+  `IN_PROGRESS`.** That transition is the moment the entropy tick loop begins for
+  real.
+
+### The three paths to ENDED
+
+| # | Trigger | Outcome | Build status |
+|---|---|---|---|
+| 1 | Entropy reaches the configured cap | **Loss** | partially exists — `gameOver` today |
+| 2 | Ender Dragon defeated | **Win** | **not built at all** |
+| 3 | Death while Become Hardcore is held | **Loss** | effect not built |
+
+**Path 2 is the first real implementation of dragon-death detection.** It has only
+ever been Open Question 1 — there is no listener anywhere in the codebase today.
+Q1's sub-question is still live and must be answered when this is built: whether a
+re-fight of a resurrected dragon can re-trigger a win, or only the first kill
+counts.
+
+**Path 3 revises Become Hardcore, and this is the significant change.**
+
+The Part 1 investigation (`043f5ad`, branch `investigate-become-hardcore`)
+established that real vanilla hardcore *is* reachable — the flag is mutable, read
+live at death, and persists to `level.dat`. **That approach is now rejected for
+this effect.** Become Hardcore will instead be:
+
+- **A mod-tracked flag**, held like any other acquired effect.
+- **On death, vanilla death and respawn proceed completely normally.** No
+  `setGameMode(SPECTATOR)`, no touching `PrimaryLevelData.settings`, no
+  interaction with vanilla's hardcore mechanism whatsoever.
+- **The mod separately marks the run `ENDED` (loss) and surfaces the end screen.**
+
+**Why the simplification was chosen:** it never touches the irreversible real
+hardcore mechanism. The investigation's own finding was that flipping the real
+flag writes to `level.dat` and **cannot be undone by the mod at all** — not by
+clearing `AcquiredEffects`, not by removing the mod. Routing the outcome through
+mod state instead keeps the "run" concept entirely inside the mod's own model,
+where it can be reasoned about and reverted.
+
+**The original investigation's findings remain valid and are deliberately
+preserved** as a reference — see "Become Hardcore — INVESTIGATED, NOT BUILT" in
+Part 1. Everything it records about where the flag lives, that it is read live in
+`ServerGamePacketListenerImpl.handleClientCommand`, and what vanilla's hardcore
+death actually consists of is still accurate. It is simply **not the approach
+this effect will use.** Do not treat that section as the implementation plan.
+
+### The end screen
+
+Shown on transition to `ENDED`. Displays:
+
+- **Win or loss, and which of the three conditions triggered it** — the three are
+  distinguishable and the screen must say which fired, not just "you lost".
+- **Final entropy value.**
+- **Total picks made** — reuses the existing `PickRecord` / history system.
+  **No new tracking is needed here**; the count is the history's length.
+- **The full pick history** — also already persisted, and this finally gives it a
+  real screen instead of the `/entropyhistory` chat dump.
+- **Total death count across the whole run** — **NEW.** Incremented on every
+  player death regardless of cause. **This does not exist anywhere in the codebase
+  today** and needs a new counter, persisted alongside the rest of the run state.
+  Note it counts *all* deaths, not only a Become Hardcore death, so it is
+  independent of path 3.
+
+### Post-end world state
+
+**No lock. The world stays fully playable after the end screen.**
+
+Acknowledged as having little practical purpose given the mod's fast-paced design
+intent — but enforcement logic was explicitly judged not worth building. Recorded
+so a later session does not add it as an "obvious missing piece".
+
+### Noted for a future session — NOT decided
+
+Once `ENDED` genuinely exists as a state, **every per-tick system in the mod
+should probably check "is the run still `IN_PROGRESS`" before doing anything**:
+the entropy loop, `GreenThumbGrowth`'s growth ticks, `BlightTouchedTrample`'s
+per-player trample check, and any future per-tick effect.
+
+This is **flagged as a likely requirement, not a firm decision**, and is
+**explicitly out of scope** for whichever session implements the architecture
+above — unless it is raised again first.
+
+### What this does to Open Questions 1 and 12
+
+Both are **design decided, implementation pending** — see their entries in
+Part 3. Neither is resolved, and neither should be marked resolved until the
+architecture above is actually built.
+
+---
+
 ## Part 3: Open Questions — need your call before the next build session
 
-### 1. Win detection — how does the mod know you beat the dragon?
+### 1. Win detection — DESIGN DECIDED, IMPLEMENTATION PENDING
+**Not resolved.** The *framing* is settled by "Planned Architecture: Gamified Run
+Lifecycle" above — dragon death is path 2 of three into the `ENDED` state, and is
+a win. But **nothing is built**: there is still no dragon-death listener anywhere
+in the codebase, and this stays open until there is. Sub-question (c) below is
+also still genuinely open and must be answered when it is built.
+
 Right now there's no code path that checks for Ender Dragon death at all.
 Options:
 - (a) Listen for the vanilla dragon-death event server-side, and when it
@@ -2026,7 +2164,19 @@ severities, and merging them is what produced the problem this section exists to
 record. The anti-stacking category question (both would be `TOOL`/`GEAR`) is part
 of the design decision.
 
-### 12. Does dying under Become Hardcore end the entropy run? — OPEN
+### 12. Does dying under Become Hardcore end the entropy run? — DESIGN DECIDED, IMPLEMENTATION PENDING
+**Not resolved.** The answer is now option (a) below, arrived at from a different
+direction than this question anticipated: see "Planned Architecture: Gamified Run
+Lifecycle" above. Death while Become Hardcore is held ends the run as a loss —
+**but via mod-tracked state, not via vanilla hardcore at all.** Vanilla death and
+respawn proceed completely normally, so the "dead spectator" scenario this
+question was framed around no longer arises. **Nothing is built**, so this stays
+open.
+
+The framing below predates that decision and assumes the real-hardcore approach;
+it is kept because its analysis of the two end states not knowing about each other
+is what motivated the run-lifecycle design in the first place.
+
 Raised by the Become Hardcore investigation (Part 1), which established that the
 effect is buildable and that vanilla's hardcore death leaves the player
 permanently in Spectator.
