@@ -114,7 +114,21 @@ public final class EffectRegistry {
 		register("bad_reputation", "Bad Reputation", "Villagers charge you more",
 				EffectCategory.DEBUFF, EffectPhase.BAD, 0, 25, true);
 
-		// TODO: Tiers 2-4 + odd/signature effects go here, same pattern.
+		// --- TIER 2 BAD (entropy 25-50) ---
+		// The first client-side effects in the project: all three act on systems that
+		// only exist on the client (KeyboardInput, Camera), which is why they need
+		// ClientEffectsPayload. See CLAUDE.md.
+		register("randomized_controls", "Randomized Movement Controls",
+				"Your movement keys are permanently rewired to a random order",
+				EffectCategory.MOVEMENT, EffectPhase.BAD, 25, 50, true);
+		register("upside_down_camera", "Upside-Down Camera",
+				"Your view is permanently upside-down",
+				EffectCategory.DEBUFF, EffectPhase.BAD, 25, 50, true);
+		register("random_jump", "Random Jump",
+				"You jump on your own every 5-30 seconds",
+				EffectCategory.UTILITY, EffectPhase.BAD, 25, 50, true);
+
+		// TODO: Tiers 3-4 + odd/signature effects go here, same pattern.
 		// See entropy-modpack-effects.md for the full list to port over.
 	}
 

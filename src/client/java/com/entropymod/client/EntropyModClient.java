@@ -5,6 +5,7 @@ import com.entropymod.client.gui.ChoiceScreen;
 import com.entropymod.entropy.EffectPhase;
 import com.entropymod.entropy.RerollState;
 import com.entropymod.entropy.EntropyManager;
+import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.HistoryRequestPayload;
 import com.entropymod.network.HistoryResponsePayload;
 import com.entropymod.network.OpenChoicePayload;
@@ -46,6 +47,16 @@ public class EntropyModClient implements ClientModInitializer {
 					payload.choice2().id(), payload.choice2().name(), payload.choice2().description(),
 					payload.choice3().id(), payload.choice3().name(), payload.choice3().description()
 			));
+		});
+
+		// Which effects the run holds. Required by every client-side effect --
+		// nothing before Tier 2 needed it, so the client was never told. Arrives on
+		// join and after any acquisition, so a granted effect takes hold at once
+		// rather than waiting for the next pick.
+		ClientPlayNetworking.registerGlobalReceiver(ClientEffectsPayload.TYPE, (payload, context) -> {
+			ClientRunState.update(payload.effectIds(), payload.moveScramble());
+			EntropyMod.LOGGER.info("Client effects synced: {} effect(s), scramble '{}'",
+					payload.effectIds().size(), payload.moveScramble());
 		});
 
 		// Interim surface for the pick history, until a real screen exists.
@@ -92,7 +103,12 @@ public class EntropyModClient implements ClientModInitializer {
 
 		// Cached entropy is per-world; drop it on disconnect so the next world
 		// doesn't inherit the previous run's numbers.
-		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> EntropyHud.reset());
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+			EntropyHud.reset();
+			// Same reason: a cached acquired set must not leak into the next world,
+			// or its client-side effects would still be scrambling a fresh run.
+			ClientRunState.reset();
+		});
 
 		// PREVIEW-ONLY command -- FAKE DATA, client-side, never touches the server.
 		//   /entropypreview

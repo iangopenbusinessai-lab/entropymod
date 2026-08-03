@@ -7,6 +7,7 @@ import com.entropymod.entropy.EntropyManager;
 import com.entropymod.entropy.growth.BlightTouchedTrample;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.network.ChoiceMadePayload;
+import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.HistoryRequestPayload;
 import com.entropymod.network.HistoryResponsePayload;
 import com.entropymod.network.OpenChoicePayload;
@@ -48,6 +49,9 @@ public class EntropyMod implements ModInitializer {
 		PayloadTypeRegistry.serverboundPlay().register(HistoryRequestPayload.TYPE, HistoryRequestPayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(HistoryResponsePayload.TYPE, HistoryResponsePayload.CODEC);
 		PayloadTypeRegistry.serverboundPlay().register(RerollRequestPayload.TYPE, RerollRequestPayload.CODEC);
+		// Tier 2's client-side effects need to know which effects the run holds --
+		// see ClientEffectsPayload. Nothing before Tier 2 required this.
+		PayloadTypeRegistry.clientboundPlay().register(ClientEffectsPayload.TYPE, ClientEffectsPayload.CODEC);
 
 		// Effect ids are matched between EffectRegistry and EffectBehaviors by string,
 		// which the compiler cannot check. Report mismatches once, at startup.
@@ -152,7 +156,12 @@ public class EntropyMod implements ModInitializer {
 		if (server == null) {
 			return;
 		}
-		EntropyManager.get(server).reapplyAll(server, player);
+		EntropyManager manager = EntropyManager.get(server);
+		manager.reapplyAll(server, player);
+		// Sent unconditionally, including for an empty run: the client must be told
+		// "you have nothing" too, or a stale cache from a previous world would
+		// survive into this one.
+		manager.syncTo(player);
 	}
 
 	public static Identifier id(String path) {

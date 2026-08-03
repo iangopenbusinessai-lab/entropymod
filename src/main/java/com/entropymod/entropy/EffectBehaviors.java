@@ -65,6 +65,11 @@ public final class EffectBehaviors {
 		register(ClumsyDiggerBehavior.ID, new ClumsyDiggerBehavior());
 		register(BadReputationBehavior.ID, new BadReputationBehavior());
 
+		// ---------- TIER 2 BAD ----------
+		register(RandomizedControlsBehavior.ID, new RandomizedControlsBehavior());
+		register(UpsideDownCameraBehavior.ID, new UpsideDownCameraBehavior());
+		register(RandomJumpBehavior.ID, new RandomJumpBehavior());
+
 		// TODO: Tiers 2-4 + odd/signature effects, same one-line-per-effect pattern.
 	}
 

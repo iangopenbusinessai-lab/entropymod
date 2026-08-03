@@ -2,6 +2,7 @@ package com.entropymod.entropy;
 
 import com.entropymod.EntropyMod;
 import com.entropymod.entropy.behavior.SecondGuessBehavior;
+import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.OpenChoicePayload;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
@@ -64,7 +65,8 @@ public class EntropyManager extends SavedData {
 			Codec.STRING.listOf().optionalFieldOf("acquired", List.of())
 					.forGetter(m -> List.copyOf(m.acquired.ids())),
 			PickRecord.CODEC.listOf().optionalFieldOf("history", List.of()).forGetter(m -> m.history),
-			Codec.BOOL.optionalFieldOf("reroll_used", false).forGetter(m -> m.rerollUsed)
+			Codec.BOOL.optionalFieldOf("reroll_used", false).forGetter(m -> m.rerollUsed),
+			Codec.STRING.optionalFieldOf("move_scramble", "").forGetter(m -> m.moveScramble)
 	).apply(instance, EntropyManager::new));
 
 	private static final SavedDataType<EntropyManager> TYPE = new SavedDataType<>(
@@ -100,6 +102,17 @@ public class EntropyManager extends SavedData {
 	 */
 	private boolean rerollUsed = false;
 
+	/**
+	 * Randomized Movement Controls' permutation, or "" while unassigned.
+	 *
+	 * <p>Persisted for the same reason as {@link #rerollUsed}: it is state that
+	 * belongs to the <em>run</em>, and a scramble that changed on respawn would be
+	 * a different (and unlearnable) effect. Assigned exactly once, by
+	 * {@code RandomizedControlsBehavior} on first apply, and never rewritten --
+	 * see {@link #assignMoveScrambleIfAbsent}.
+	 */
+	private String moveScramble = "";
+
 	// Config, settable at world creation (wire up to a config screen later).
 	private int intervalTicks = DEFAULT_INTERVAL_TICKS;
 	private int entropyCap = DEFAULT_ENTROPY_CAP;
@@ -119,7 +132,8 @@ public class EntropyManager extends SavedData {
 
 	/** Codec constructor. */
 	private EntropyManager(int entropy, int pickCount, boolean gameOver, int entropyCap, int intervalTicks,
-						   List<String> acquiredIds, List<PickRecord> history, boolean rerollUsed) {
+						   List<String> acquiredIds, List<PickRecord> history, boolean rerollUsed,
+						   String moveScramble) {
 		this.entropy = entropy;
 		this.pickCount = pickCount;
 		this.gameOver = gameOver;
@@ -128,6 +142,9 @@ public class EntropyManager extends SavedData {
 		acquiredIds.forEach(this.acquired::add);
 		this.history.addAll(history);
 		this.rerollUsed = rerollUsed;
+		// A malformed value from a hand-edited or newer save degrades to vanilla
+		// controls rather than reaching input handling and throwing every tick.
+		this.moveScramble = MovementScramble.isValid(moveScramble) ? moveScramble : "";
 	}
 
 	// ------------------------------------------------------------------
@@ -306,6 +323,56 @@ public class EntropyManager extends SavedData {
 		return true;
 	}
 
+	/**
+	 * The movement scramble for this run, or {@code ""} if never assigned.
+	 * Sent to the client on {@code ClientEffectsPayload}; input handling is
+	 * client-side, so the client is where it is actually used.
+	 */
+	public String getMoveScramble() {
+		return moveScramble;
+	}
+
+	/**
+	 * Assigns the movement scramble once, and only once.
+	 *
+	 * <p><b>Idempotent by construction</b>, which is what makes it safe to call
+	 * from {@code EffectBehavior.apply} -- that runs again on every respawn,
+	 * rejoin and dimension change, and re-rolling there would give the player a
+	 * different scramble every death. Returns true only on the assigning call.
+	 */
+	public boolean assignMoveScrambleIfAbsent() {
+		if (MovementScramble.isValid(moveScramble)) {
+			return false;
+		}
+		moveScramble = MovementScramble.random(random);
+		setDirty();
+		EntropyMod.LOGGER.info("Randomized Movement Controls: scramble for this run is {} (input order {})",
+				moveScramble, MovementScramble.ORDER);
+		return true;
+	}
+
+	/**
+	 * Sends one player the client-side view of the run: which effects are held and
+	 * the movement scramble.
+	 *
+	 * <p><b>This is new infrastructure, and every client-side effect needs it.</b>
+	 * Before Tier 2 every effect was server-authoritative, so the client had no
+	 * reason to know the acquired set and was never told. Randomized Controls,
+	 * Upside-Down Camera and Random Jump all act on client-only systems (input
+	 * handling and the camera), so they cannot work without it.
+	 */
+	public void syncTo(ServerPlayer player) {
+		ServerPlayNetworking.send(player, new ClientEffectsPayload(
+				List.copyOf(acquired.ids()), moveScramble));
+	}
+
+	/** Sends {@link #syncTo} to everyone. Called after any change to the acquired set. */
+	public void syncToAll(MinecraftServer server) {
+		for (ServerPlayer player : PlayerLookup.all(server)) {
+			syncTo(player);
+		}
+	}
+
 	/** Called by the server-side network receiver when a player submits their pick. */
 	public void onChoiceMade(MinecraftServer server, String chosenEffectId) {
 		if (!waitingOnChoice) {
@@ -329,6 +396,9 @@ public class EntropyManager extends SavedData {
 		}
 
 		applyToAll(server, chosen, EffectContext.Reason.PICKED);
+		// The client's view of the acquired set has to move with the server's, or a
+		// client-side effect stays inert until the next relog.
+		syncToAll(server);
 
 		// The announcement lives here, not in the behaviors: it is a statement about
 		// the RUN ("you chose this"), and behaviors also run on every respawn, where
@@ -395,6 +465,7 @@ public class EntropyManager extends SavedData {
 		}
 		setDirty();
 		applyToAll(server, definition, EffectContext.Reason.PICKED);
+		syncToAll(server);
 		// Deliberately does not log entropy/pickCount: this method's bytecode
 		// referencing neither field at all is the check that it cannot move them.
 		EntropyMod.LOGGER.info("Granted '{}' via debug command -- run counters untouched. Acquired {} effect(s): {}",

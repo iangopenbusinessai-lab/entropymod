@@ -3,7 +3,9 @@
 	"package": "com.entropymod.client.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"client": [
-		"EntropyModClientMixin"
+		"EntropyModClientMixin",
+		"CameraMixin",
+		"KeyboardInputMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

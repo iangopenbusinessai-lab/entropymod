@@ -6,11 +6,15 @@ import com.entropymod.entropy.EffectHooks;
 import com.entropymod.entropy.EffectRegistry;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.entropy.EffectPhase;
+import com.entropymod.entropy.MovementScramble;
 import com.entropymod.entropy.RerollState;
 import com.entropymod.entropy.behavior.BadReputationBehavior;
 import com.entropymod.entropy.behavior.BlightTouchedBehavior;
 import com.entropymod.entropy.behavior.ClumsyDiggerBehavior;
+import com.entropymod.entropy.behavior.RandomJumpBehavior;
+import com.entropymod.entropy.behavior.RandomizedControlsBehavior;
 import com.entropymod.entropy.behavior.SecondGuessBehavior;
+import com.entropymod.entropy.behavior.UpsideDownCameraBehavior;
 import com.entropymod.entropy.behavior.GreenThumbBehavior;
 import com.entropymod.entropy.behavior.LeakyPocketsBehavior;
 import com.entropymod.entropy.behavior.SureFootingBehavior;
@@ -19,6 +23,7 @@ import com.entropymod.entropy.growth.CropSchedule;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.entropy.growth.TramplePath;
 import com.entropymod.network.EntropyCodecs;
+import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.OpenChoicePayload;
 import io.netty.buffer.Unpooled;
 import net.minecraft.core.RegistryAccess;
@@ -65,6 +70,7 @@ public final class HarnessMain {
 		badReputationPrices();
 		rerollStateDerivation();
 		openChoicePayloadRoundTrip();
+		tier2ClientEffects();
 		System.exit(Checks.summary());
 	}
 
@@ -865,6 +871,128 @@ public final class HarnessMain {
 		EntropyCodecs.REROLL_STATE.encode(named, RerollState.SPENT);
 		check(named.toString(java.nio.charset.StandardCharsets.UTF_8).contains("SPENT"),
 				"RerollState goes on the wire by name, not by ordinal");
+	}
+
+
+	/**
+	 * Tier 2's three client-side effects.
+	 *
+	 * <p>These are the first effects whose behaviour lives on the client, so the
+	 * things worth checking headlessly are different from every prior effect: the
+	 * permutation model, the fact that the scramble is assigned exactly once and
+	 * survives, and that the payload carrying it to the client round-trips.
+	 *
+	 * <p>What this cannot prove, and what needs the in-game session: that the
+	 * mixins inject, that the camera roll reads as upside-down rather than broken,
+	 * and that a forced jump behaves in water and on ladders.
+	 */
+	private static void tier2ClientEffects() {
+		section("Tier 2: movement scramble, camera, random jump");
+
+		// --- the permutation model ---
+		check(MovementScramble.isValid("FBLR"), "the identity is a valid permutation");
+		check(MovementScramble.isValid("LFRB"), "a shuffled permutation is valid");
+		check(!MovementScramble.isValid("FFLR"), "a repeated direction is rejected");
+		check(!MovementScramble.isValid("FBL"), "a short string is rejected");
+		check(!MovementScramble.isValid("FBLX"), "an unknown direction is rejected");
+		check(!MovementScramble.isValid(null), "null is rejected, not thrown on");
+		check(!MovementScramble.isValid(""), "the unassigned value is not a valid scramble");
+
+		// Identity must be a no-op, and an invalid scramble must degrade to vanilla
+		// rather than throw -- this runs inside input handling every client tick.
+		boolean[] pressed = {true, false, false, false};
+		check(java.util.Arrays.equals(MovementScramble.apply("FBLR", pressed), pressed),
+				"the identity permutation changes nothing");
+		check(java.util.Arrays.equals(MovementScramble.apply("garbage", pressed), pressed),
+				"an invalid scramble degrades to vanilla controls, it does not throw");
+
+		// "LFRB": pressing forward sends you left, back sends you forward, and so on.
+		boolean[] out = MovementScramble.apply("LFRB", new boolean[] {true, false, false, false});
+		check(!out[0] && !out[1] && out[2] && !out[3],
+				"under LFRB, pressing forward moves you left");
+		out = MovementScramble.apply("LFRB", new boolean[] {false, true, false, false});
+		check(out[0] && !out[1] && !out[2] && !out[3],
+				"...and pressing back moves you forward");
+
+		// Every generated scramble must be legal and never the identity -- a 1-in-24
+		// no-op curse is indistinguishable from a broken one.
+		java.util.Random random = new java.util.Random(1234);
+		boolean allValid = true;
+		boolean anyIdentity = false;
+		java.util.Set<String> distinct = new java.util.HashSet<>();
+		for (int i = 0; i < 2000; i++) {
+			String s = MovementScramble.random(random);
+			if (!MovementScramble.isValid(s)) {
+				allValid = false;
+			}
+			if (s.equals(MovementScramble.IDENTITY)) {
+				anyIdentity = true;
+			}
+			distinct.add(s);
+		}
+		check(allValid, "2000 generated scrambles are all valid permutations");
+		check(!anyIdentity, "...and none is the identity (a no-op curse would look broken)");
+		check(distinct.size() == 23, "...covering all 23 non-identity permutations");
+
+		// Vanilla's impulse maths, reproduced because calculateImpulse is private.
+		check(MovementScramble.impulse(false, false) == 0.0f, "no keys -> 0 impulse");
+		check(MovementScramble.impulse(true, true) == 0.0f, "both keys -> 0 impulse (they cancel)");
+		check(MovementScramble.impulse(true, false) == 1.0f, "positive key -> +1");
+		check(MovementScramble.impulse(false, true) == -1.0f, "negative key -> -1");
+
+		// --- assigned once, then never again ---
+		EntropyManager manager = new EntropyManager();
+		check(manager.getMoveScramble().isEmpty(), "a fresh run has no scramble");
+
+		check(manager.assignMoveScrambleIfAbsent(), "the first assignment happens");
+		String assigned = manager.getMoveScramble();
+		check(MovementScramble.isValid(assigned), "...and produces a valid permutation");
+
+		// This is the property the whole persistence design exists for: apply() runs
+		// again on every respawn, rejoin and dimension change.
+		check(!manager.assignMoveScrambleIfAbsent(),
+				"a second assignment is refused, not silently re-rolled");
+		boolean stable = true;
+		for (int i = 0; i < 100; i++) {
+			manager.assignMoveScrambleIfAbsent();
+			if (!manager.getMoveScramble().equals(assigned)) {
+				stable = false;
+			}
+		}
+		check(stable, "100 further applies leave the scramble byte-identical (respawn/relog safety)");
+
+		// --- the ids the client keys on must resolve ---
+		for (String id : new String[] {RandomizedControlsBehavior.ID, UpsideDownCameraBehavior.ID,
+				RandomJumpBehavior.ID}) {
+			check(EffectRegistry.byId(id) != null, id + " is registered as a real effect");
+			check(EffectRegistry.byId(id).minEntropy() == 25 && EffectRegistry.byId(id).maxEntropy() == 50,
+					id + " is Tier 2 (entropy 25-50)");
+		}
+
+		// Random Jump's interval, in the units the brief specified.
+		check(RandomJumpBehavior.MIN_INTERVAL_TICKS == 100 && RandomJumpBehavior.MAX_INTERVAL_TICKS == 600,
+				"Random Jump fires every 5-30 seconds (100-600 ticks)");
+
+		// --- the payload that carries all of this to the client ---
+		ClientEffectsPayload sent = new ClientEffectsPayload(
+				List.of(RandomizedControlsBehavior.ID, UpsideDownCameraBehavior.ID), "RLBF");
+		RegistryFriendlyByteBuf buf =
+				new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+		ClientEffectsPayload.CODEC.encode(buf, sent);
+		ClientEffectsPayload got = ClientEffectsPayload.CODEC.decode(buf);
+		check(got.effectIds().equals(List.of(RandomizedControlsBehavior.ID, UpsideDownCameraBehavior.ID)),
+				"effect ids survive the wire in order");
+		check(got.moveScramble().equals("RLBF"), "the scramble survives the wire, not swapped with the ids");
+		check(buf.readableBytes() == 0, "the buffer is fully consumed");
+
+		// An empty run must round-trip too: that is what a player with no effects,
+		// and the clear-on-join case, actually send.
+		RegistryFriendlyByteBuf empty =
+				new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+		ClientEffectsPayload.CODEC.encode(empty, new ClientEffectsPayload(List.of(), ""));
+		ClientEffectsPayload emptyGot = ClientEffectsPayload.CODEC.decode(empty);
+		check(emptyGot.effectIds().isEmpty() && emptyGot.moveScramble().isEmpty(),
+				"an empty run round-trips (the client must be told 'you have nothing' too)");
 	}
 
 	private HarnessMain() {}

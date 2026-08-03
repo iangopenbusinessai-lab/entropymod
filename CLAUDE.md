@@ -1614,6 +1614,149 @@ world-creation-time precondition exists that a later flip could fail to satisfy.
   This is the first debug grant with permanent consequences outside the mod's own
   state. Whatever else happens, that command needs a guard or a very loud warning.
 
+#### Client-side effects need infrastructure that did not exist — read this first
+**Before Tier 2 the client had no idea which effects the run held**, and there was
+no reason for it to: every effect was server-authoritative (attributes, or mixins
+on server classes). Tier 2's three effects all act on systems that exist *only* on
+the client — `KeyboardInput` and `Camera` — so none of them could work at all
+without a new channel.
+
+`ClientEffectsPayload` (S2C) carries the acquired effect ids plus the movement
+scramble. Sent by `EntropyManager.syncTo` / `syncToAll` from exactly three places:
+player join, `onChoiceMade`, and `grantEffect`.
+
+- **Deliberately not ridden along on `OpenChoicePayload`.** That only fires when a
+  pick opens, so a `/entropygrant`-ed client effect would sit inert until the next
+  interval — precisely the "is it broken or just slow" ambiguity this project has
+  already been burned by twice.
+- **Sent unconditionally on join, including for an empty run.** The client has to
+  be told "you have nothing" too, or a cached set from a previous world survives
+  into the next one.
+- **It is state, not authorisation.** These effects change what the player's own
+  inputs and camera do; the resulting movement still goes through vanilla's
+  ordinary client-to-server validation.
+- `ClientRunState` is a cache with the same discipline as `EntropyHud`: cleared on
+  `DISCONNECT`, and every reader degrades to vanilla behaviour when it is empty.
+
+#### Input handling: `KeyboardInput.tick()` is the whole story
+Verified in bytecode. `KeyboardInput.tick()` does exactly two things:
+
+```java
+this.keyPresses = new Input(up, down, left, right, jump, shift, sprint); // from KeyMappings
+this.moveVector = new Vec2(calculateImpulse(left, right),
+                           calculateImpulse(forward, backward)).normalized();
+```
+
+So an `@Inject` at RETURN that rewrites both fields is indistinguishable from the
+player having pressed different keys — everything downstream follows from those
+two values.
+
+- **Both fields must be rewritten, not just `keyPresses`.** They are derived
+  together and then read independently: `moveVector` drives movement,
+  `keyPresses` drives sprint/sneak logic and is what gets sent to the server.
+  Permuting one alone desyncs them.
+- `calculateImpulse(a, b)` is `a == b ? 0 : (a ? 1 : -1)` — private static, so it
+  is reproduced in `MovementScramble.impulse`.
+- **`Vec2`'s argument order is (strafe, forward).** Swapping that pair silently
+  rotates all movement 90°, which would read as a bizarre scramble rather than a
+  bug.
+- `keyPresses` is public but `moveVector` is `protected` on the superclass
+  `ClientInput`, so the mixin uses `@Shadow` for both — protected access across
+  packages does not compile in mixin source even though the merged result is
+  in-class.
+- Class locations that are not guessable: **`ClientInput` and `KeyboardInput` are
+  in `net.minecraft.client.player`**, not a `client.input` package (that package
+  exists but holds only event/modifier types). The `Input` record itself is
+  **common**, at `net.minecraft.world.entity.player.Input`.
+
+#### Triggering a jump: use vanilla's own synthetic key-press
+**`ClientInput.makeJump()` exists and is exactly this** — it rebuilds `keyPresses`
+with `jump = true`, and `LocalPlayer.aiStep` calls it for auto-jump. So faking the
+press is vanilla's own idiom, not a hack, and velocity injection is unnecessary.
+
+Random Jump sets the same bit from `KeyboardInputMixin` rather than calling
+`makeJump()` from a separate tick hook, because **timing is load-bearing**:
+`LocalPlayer.aiStep` calls `input.tick()` and *then* reads
+`input.keyPresses.jump()` later in the same method. Any other per-tick hook is
+either overwritten by `tick()` or lands a tick late.
+
+**The edge cases are handled by vanilla, and this was verified rather than
+assumed.** `LivingEntity.aiStep`'s jump block dispatches on the player's actual
+situation:
+
+| Situation | What vanilla does | Result |
+|---|---|---|
+| In lava | `jumpInLiquid(FluidTags.LAVA)` | bob upward, as if holding space |
+| In water | `jumpInLiquid(FluidTags.WATER)` | **swim up** — not a jump, not a no-op |
+| On ground | `jumpFromGround()` | the real jump: correct height, sprint boost, exhaustion |
+| Mid-air | nothing | the ground branch is gated on `onGround()` — **cannot double-jump** |
+| On a ladder/vine | nothing | climbing is not `onGround()`; climb handling is in `travel`, untouched |
+
+`noJumpDelay` still rate-limits to one jump per 10 ticks, and the forced press
+ORs with the player's own key so it can never *cancel* a jump they were making.
+
+#### Upside-Down Camera — VERDICT: ship. One argument, and targeting is unaffected
+The stop condition did not fire. Evidence, all from bytecode:
+
+**`Camera.setRotation(yRot, xRot)`** — whose single call site is
+`Camera.alignWithEntity(float)` — is:
+
+```java
+this.rotation.rotationYXZ(PI - yRot*DEG2RAD, -xRot*DEG2RAD, 0.0f);
+FORWARDS.rotate(rotation, forwards);
+UP.rotate(rotation, up);
+LEFT.rotate(rotation, left);
+```
+
+**The third argument of `rotationYXZ` is roll, and vanilla hardcodes it to zero.**
+There is already a roll slot in the camera's own quaternion; the effect just fills
+it. A single `@Redirect` on that call is the entire implementation, and every
+derived value — the forward/up/left basis, `cachedViewRotMatrix`,
+`cachedViewRotProjMatrix`, and the cull frustum — is recomputed by vanilla's own
+unchanged code from the quaternion.
+
+**Why it is playable, not broken.** `rotationYXZ(y, x, z)` is `Ry·Rx·Rz`, and
+`Camera.FORWARDS` is `(0, 0, -1)` — which lies *on* the Z axis, so `Rz` leaves it
+unchanged while `UP` and `LEFT` flip. This is a pure roll about the view axis, and
+the consequence that matters is:
+
+- **The centre of the screen still points at the same block.** Crosshair
+  targeting, mining, attacking and item use are unaffected — the raycast comes
+  from the *entity's* view vector, not the camera's roll. Nothing becomes
+  unreachable or untargetable.
+- **The HUD is unaffected**, being screen-space, so health, hunger and the hotbar
+  stay upright and readable.
+- Mouse look still works with both axes reading inverted, which is coherent for an
+  upside-down view rather than broken.
+
+So it is "hard but functional", which is the intended chaos, not "unplayable".
+**Residual risk, stated plainly:** motion sickness is a real possibility that no
+amount of bytecode reading can settle, and the effect is permanent with no removal
+mechanism. **The revert is one constant** — `CameraMixin.ROLL_RADIANS` to `0.0f`
+makes it a no-op with no other code change. If in-game testing says sickening
+rather than disorienting, that is the lever.
+
+#### The movement scramble is run state, and is persisted like Second Guess's flag
+`MovementScramble` is a 4-character string over `F B L R`, where `charAt(i)` is
+where input direction `i` actually sends you (`"FBLR"` is the identity). It lives
+in `EntropyManager`'s existing codec as one `optionalFieldOf("move_scramble", "")`
+— the same one-store rule Second Guess follows.
+
+- **Assigned exactly once**, by `assignMoveScrambleIfAbsent`, which is idempotent
+  *by construction* so it is safe to call from `apply()` — that runs again on every
+  respawn, rejoin and dimension change, and a re-roll there would hand the player a
+  different scramble on every death.
+- **The identity is excluded from the roll.** 1 run in 24 would otherwise acquire a
+  curse that does nothing, which is indistinguishable from it being broken. 23
+  permutations remain, and the harness asserts all 23 are reachable and none is the
+  identity.
+- **A malformed value degrades to vanilla controls rather than throwing** — this is
+  read inside input handling every client tick, so a load-time or wire-level
+  garbage value must not be able to crash movement.
+- `RandomizedControlsBehavior` is **the first effect with a non-empty `apply` that
+  is not an attribute**, so it implements `EffectBehavior` directly rather than
+  extending `HookEffectBehavior` (whose `apply` is final and empty).
+
 #### Debug output has to reach the player, not just the log
 `/entropyhistory` was reported as a hard regression — "prints nothing in-game
 despite picks having been made" — and was suspected to be a `SavedData` migration
@@ -1763,10 +1906,11 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 175 checks currently: the tuning constants as
+same numbers kept being re-derived. 209 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
-Blight Touched's path sweep and its off-by-default gate, the crop-schedule
+Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble
+model and its assign-once persistence, the crop-schedule
 tracking rules, `/entropygrant`'s contract, Clumsy Digger's whole per-tier
 durability table and its tools-only scope gate, Bad Reputation's whole price
 table, and `OpenChoicePayload`'s codec round-trip.
