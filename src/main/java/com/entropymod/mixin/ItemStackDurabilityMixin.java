@@ -18,8 +18,14 @@ import java.util.function.Consumer;
  * Consumer)}, verified as the single choke point for durability loss: the
  * {@code (int, LivingEntity, EquipmentSlot)} and
  * {@code (int, LivingEntity, InteractionHand)} overloads both funnel into it. One
- * hook therefore covers mining, attacking, shears, flint and steel and armour
- * damage without needing a hook per action.
+ * hook therefore reaches every action that costs durability without needing a
+ * hook per action.
+ *
+ * <p><b>Which means the hook is broader than the effect, and the difference is
+ * not this mixin's to resolve.</b> Armour and the elytra lose durability through
+ * this same method. The item filter lives in {@code ClumsyDiggerBehavior} behind
+ * {@code EffectHooks}, keeping this mixin to the one-line, decides-nothing shape
+ * the rest of them follow.
  *
  * <p>The {@code ServerPlayer} parameter is <b>nullable</b> -- mob-held equipment
  * loses durability through the same method -- and that null is precisely the gate
@@ -30,9 +36,10 @@ import java.util.function.Consumer;
  * original value.
  *
  * <p><b>The extra damage is proportional to the stack's own max durability</b>,
- * so this hook now reads {@code getMaxDamage()} and passes it through. See
- * {@code ClumsyDiggerBehavior} for the formula and for why hitting better tools
- * harder is the intent rather than a bug.
+ * so the whole stack is passed through rather than just the amount. See
+ * {@code ClumsyDiggerBehavior} for the formula, for the tag that scopes it to
+ * mining tools, and for why hitting better tools harder is the intent rather
+ * than a bug.
  */
 @Mixin(ItemStack.class)
 public abstract class ItemStackDurabilityMixin {
@@ -47,12 +54,12 @@ public abstract class ItemStackDurabilityMixin {
 		if (player == null) {
 			return amount;
 		}
-		// The stack's own max durability scales the penalty -- better tools lose
-		// more, deliberately. Safe to read here: getMaxDamage() is a data-component
-		// lookup with no side effects, and it returns 0 for non-damageable items,
-		// which the hook turns into no extra damage.
+		// The whole stack goes through, not just its durability: the hook decides
+		// BOTH whether this item is in scope (mining tools only -- armour and the
+		// elytra reach this same method) and how much extra to apply, which scales
+		// with the stack's own max durability.
 		ItemStack stack = (ItemStack) (Object) this;
 		return amount + EffectHooks.rollClumsyDiggerExtraDamage(
-				player, player.getRandom(), stack.getMaxDamage());
+				player, player.getRandom(), stack);
 	}
 }

@@ -21,6 +21,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 
 /**
@@ -199,17 +200,25 @@ public final class EffectHooks {
 	 * {@code run/logs/debug-N.log.gz} and count. It costs nothing for players
 	 * without the effect, since both returns above it are taken first.
 	 */
-	public static int rollClumsyDiggerExtraDamage(Player player, RandomSource random, int maxDamage) {
+	public static int rollClumsyDiggerExtraDamage(Player player, RandomSource random, ItemStack stack) {
 		AcquiredEffects acquired = acquired(player);
 		if (acquired == null || !acquired.contains(ClumsyDiggerBehavior.ID)) {
+			return 0;
+		}
+		// Scope gate, BEFORE the roll. The hook fires for every source of durability
+		// loss including armour and the elytra, which this effect must not touch --
+		// and gating ahead of the roll is also what keeps the DEBUG line below a
+		// truthful record of tool procs only.
+		if (!ClumsyDiggerBehavior.appliesTo(stack)) {
 			return 0;
 		}
 		if (random.nextFloat() >= ClumsyDiggerBehavior.CHANCE) {
 			return 0;
 		}
-		int extra = ClumsyDiggerBehavior.extraDamageFor(maxDamage);
-		EntropyMod.LOGGER.debug("Clumsy Digger: +{} durability damage (tool max {}) for {}",
-				extra, maxDamage, player.getName().getString());
+		int extra = ClumsyDiggerBehavior.extraDamageFor(stack.getMaxDamage());
+		EntropyMod.LOGGER.debug("Clumsy Digger: +{} durability damage to {} (max {}) for {}",
+				extra, stack.getItemName().getString(), stack.getMaxDamage(),
+				player.getName().getString());
 		return extra;
 	}
 

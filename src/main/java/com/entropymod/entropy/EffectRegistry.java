@@ -109,7 +109,7 @@ public final class EffectRegistry {
 				EffectCategory.UTILITY, EffectPhase.BAD, 0, 25, true);
 		register("leaky_pockets", "Leaky Pockets", "Jumping sometimes spills an item from your inventory",
 				EffectCategory.GEAR, EffectPhase.BAD, 0, 25, true);
-		register("clumsy_digger", "Clumsy Digger", "Your tools sometimes take extra wear",
+		register("clumsy_digger", "Clumsy Digger", "Your mining tools wear out far faster -- the better the tool, the worse",
 				EffectCategory.TOOL, EffectPhase.BAD, 0, 25, true);
 		register("bad_reputation", "Bad Reputation", "Villagers charge you more",
 				EffectCategory.DEBUFF, EffectPhase.BAD, 0, 25, true);

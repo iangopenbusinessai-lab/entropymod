@@ -61,6 +61,7 @@ public final class HarnessMain {
 		scheduleTracking();
 		grantContract();
 		clumsyDiggerMagnitude();
+		clumsyDiggerScope();
 		badReputationPrices();
 		rerollStateDerivation();
 		openChoicePayloadRoundTrip();
@@ -601,24 +602,120 @@ public final class HarnessMain {
 		check(ClumsyDiggerBehavior.extraDamageFor(1) == 1,
 				"a 1-durability item still takes at least 1 -- rounding cannot exempt it");
 
-		// The hook is ItemStack.hurtAndBreak, which is EVERY source of durability
-		// loss -- not just mining. These two are the collateral worth seeing, and
-		// they are driven through the same real formula. Durabilities are
-		// javap-verified: netherite ArmorMaterial durability 37 x ArmorType.CHESTPLATE
-		// multiplier 16 = 592, and Items.ELYTRA is registered with durability(432).
-		System.out.printf("        %-22s %8s %8s %10s %10s%n",
-				"non-tool (same hook)", "maxDur", "+dmg", "uses", "% shorter");
-		for (Object[] item : new Object[][] {{"Netherite chestplate", 592}, {"Elytra", 432}}) {
-			int max = (Integer) item[1];
-			System.out.printf("        %-22s %8d %8d %10.1f %9.1f%%%n",
-					item[0], max, ClumsyDiggerBehavior.extraDamageFor(max),
-					ClumsyDiggerBehavior.blocksSurvived(max),
-					100.0 * (1.0 - ClumsyDiggerBehavior.blocksSurvived(max) / max));
+	}
+
+	/**
+	 * The scope gate: mining tools only, armour and elytra completely untouched.
+	 *
+	 * <p>Checked against the <b>real shipped tag data</b>, read out of the
+	 * Minecraft jar on the classpath and resolved through its nested
+	 * {@code #minecraft:...} references. That is what makes this a check rather
+	 * than a restatement of the constant -- the claim being verified is about what
+	 * {@code #minecraft:enchantable/mining} actually contains, which is data, not
+	 * code.
+	 *
+	 * <p>Evaluating {@code stack.typeHolder().is(tag)} for real would need a
+	 * bootstrapped registry and a loaded tag set, which the harness deliberately
+	 * does not have. Resolving the same JSON vanilla itself loads is the faithful
+	 * substitute, and it catches the failure that matters: the tag turning out to
+	 * include something it should not.
+	 */
+	private static void clumsyDiggerScope() {
+		section("Clumsy Digger scope: mining tools only");
+
+		Set<String> affected = resolveItemTag("enchantable/mining");
+		Set<String> anythingDamageable = resolveItemTag("enchantable/durability");
+
+		// The four tool families the effect is meant to cover, one real item each.
+		for (String tool : new String[] {
+				"minecraft:wooden_pickaxe", "minecraft:netherite_pickaxe",
+				"minecraft:diamond_axe", "minecraft:iron_shovel", "minecraft:golden_hoe"}) {
+			check(affected.contains(tool), "covered: " + tool);
 		}
-		check(ClumsyDiggerBehavior.blocksSurvived(592) < 60,
-				"a netherite chestplate survives <60 damage events -- armour rides the same hook");
-		check(ClumsyDiggerBehavior.blocksSurvived(432) < 60,
-				"an elytra survives <60 seconds of flight -- flagged, not hidden");
+
+		// The regression gate this session exists for.
+		for (String exempt : new String[] {
+				"minecraft:elytra",
+				"minecraft:netherite_chestplate", "minecraft:diamond_helmet",
+				"minecraft:iron_leggings", "minecraft:leather_boots",
+				"minecraft:turtle_helmet", "minecraft:shield"}) {
+			check(!affected.contains(exempt), "EXEMPT: " + exempt + " takes zero extra wear");
+			check(anythingDamageable.contains(exempt),
+					"...and it really does lose durability through the same hook (" + exempt + ")");
+		}
+
+		// Weapons and the miscellaneous durability items are out too -- worth
+		// pinning, because "tool" could plausibly have been read to include them.
+		for (String exempt : new String[] {
+				"minecraft:netherite_sword", "minecraft:bow", "minecraft:crossbow",
+				"minecraft:trident", "minecraft:mace", "minecraft:fishing_rod",
+				"minecraft:flint_and_steel", "minecraft:brush"}) {
+			check(!affected.contains(exempt), "EXEMPT: " + exempt);
+		}
+
+		// Shears are the one item beyond the four digging families, kept on purpose.
+		check(affected.contains("minecraft:shears"),
+				"shears ARE covered -- deliberate, see AFFECTED_ITEMS");
+
+		// Every armour piece in the game, not just the samples above.
+		Set<String> allArmour = new java.util.HashSet<>();
+		for (String slot : new String[] {"head_armor", "chest_armor", "leg_armor", "foot_armor"}) {
+			allArmour.addAll(resolveItemTag("enchantable/" + slot));
+		}
+		check(!allArmour.isEmpty(), "the armour tags resolved to something (" + allArmour.size() + " items)");
+		check(java.util.Collections.disjoint(affected, allArmour),
+				"NO armour item of any slot is in the affected set");
+
+		// The tag is a strict subset of "anything with durability" -- i.e. the
+		// narrowing is real, and the effect no longer means "every damageable item".
+		check(anythingDamageable.containsAll(affected) && anythingDamageable.size() > affected.size(),
+				"affected (" + affected.size() + ") is a strict subset of all damageable ("
+						+ anythingDamageable.size() + ")");
+
+		// The gate has to run BEFORE the random roll, or the DEBUG line would report
+		// procs on armour that never actually applied.
+		check(Checks.hasMethod(ClumsyDiggerBehavior.class, "appliesTo"),
+				"the scope test is a named method on the effect, not inlined in the mixin");
+	}
+
+	/**
+	 * Resolves a vanilla item tag from the Minecraft jar on the classpath,
+	 * following nested {@code #namespace:path} references.
+	 *
+	 * <p>Entries may be plain strings or {@code {"id": ..., "required": false}}
+	 * objects; both forms are handled.
+	 */
+	private static Set<String> resolveItemTag(String path) {
+		Set<String> out = new java.util.HashSet<>();
+		resolveItemTagInto(path, out, new java.util.HashSet<>());
+		return out;
+	}
+
+	private static void resolveItemTagInto(String path, Set<String> out, Set<String> seen) {
+		if (!seen.add(path)) {
+			return;
+		}
+		String resource = "/data/minecraft/tags/item/" + path + ".json";
+		try (java.io.InputStream in = HarnessMain.class.getResourceAsStream(resource)) {
+			if (in == null) {
+				throw new IllegalStateException("tag not found on classpath: " + resource);
+			}
+			com.google.gson.JsonObject root = com.google.gson.JsonParser
+					.parseReader(new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8))
+					.getAsJsonObject();
+			for (com.google.gson.JsonElement element : root.getAsJsonArray("values")) {
+				String value = element.isJsonObject()
+						? element.getAsJsonObject().get("id").getAsString()
+						: element.getAsString();
+				if (value.startsWith("#")) {
+					resolveItemTagInto(value.substring(value.indexOf(':') + 1), out, seen);
+				} else {
+					out.add(value);
+				}
+			}
+		} catch (java.io.IOException e) {
+			throw new java.io.UncheckedIOException(e);
+		}
 	}
 
 	/**

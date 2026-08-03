@@ -1277,22 +1277,70 @@ asserted:
 - **Nothing is "barely affected".** Even wood loses half its life, so the bottom
   of the table is not a dead zone.
 
-**Armour and the elytra ride the same hook**, since `ItemStack.hurtAndBreak` is
-every source of durability loss, not just mining. This is collateral worth seeing
-before it is discovered in play:
+#### Clumsy Digger is scoped to mining tools — the hook is broader than the effect
+`ItemStack.hurtAndBreak` is *every* source of durability loss, and for a while
+this effect took all of it. Armour and the elytra were being hit at the tool
+severity: a netherite chestplate lost ~90% of its life, an elytra managed under a
+minute of flight. **The hook's breadth had been mistaken for the effect's scope.**
 
-| Item | Max durability | +damage | Uses survived | vs. normal |
-|---|---|---|---|---|
-| Netherite chestplate | 592 | +118 | 56.7 damage events | −90.4% |
-| Elytra | 432 | +86 | 54.8 seconds of flight | −87.3% |
+**The gate is a vanilla tag, `#minecraft:enchantable/mining`**, held as
+`ClumsyDiggerBehavior.AFFECTED_ITEMS`. Why a tag and not a class check:
 
-**A DEBUG log line fires on each successful roll**, now including the tool's max
-durability. This effect has no sound, no message and no visible change — only a
-durability bar moving faster — which is precisely why "not firing" and "firing
-rarely" were indistinguishable in the original report.
-`grep "Clumsy Digger" run/logs/debug-*.log.gz` shows every proc and the tool it
-hit. It costs nothing for players without the effect, since both early returns
-precede it.
+- **There is no class hierarchy left to test.** `DiggerItem` / `PickaxeItem` /
+  `ShovelItem` are gone — tools are data-driven now (an `Item.Properties` carrying
+  a `TOOL` data component). A hardcoded list of item classes has nothing to bind
+  to.
+- **There is no `#minecraft:tools` tag either.** The candidates are
+  `#pickaxes` / `#axes` / `#shovels` / `#hoes` individually, or one of the
+  `enchantable/*` tags.
+- `enchantable/mining` = those four families **plus shears**, and is the closest
+  vanilla concept to "mining implement". One tag rather than a union of four, and
+  a modded or datapack-added pickaxe joins it for free.
+- `enchantable/mining_loot` is the identical tag **minus shears** — a one-word
+  change if shears should be excluded. Shears are kept deliberately: they are a
+  tool and they break blocks.
+- For contrast, `#minecraft:enchantable/durability` is what "anything with
+  durability" actually means, and it contains all four armour slots, elytra,
+  shield, swords, bow, crossbow, trident, mace, flint and steel, brush and fishing
+  rod. That is the set this effect used to hit.
+
+**Out of scope now, and asserted individually:** every armour item of every slot
+(29 of them), elytra, shield, all weapons, flint and steel, brush, fishing rod.
+The affected set is 29 items; all-damageable is 83.
+
+**API note — `ItemStack.is(TagKey)` does not exist in this version.** This is the
+idiom in every tutorial and it is gone; the only `is` overload takes a
+`Predicate<Holder<Item>>`, and `TagKey` is a plain record, not a `Predicate`. Tag
+membership goes through the item's holder, which is also renamed:
+
+```java
+stack.typeHolder().is(ItemTags.MINING_ENCHANTABLE)   // getItemHolder() -> typeHolder()
+```
+
+This is the form vanilla itself uses (`Holder.is(TagKey)` in `Enchantment`).
+
+**The scope gate runs before the random roll**, deliberately — verified in
+bytecode as `appliesTo` → `nextFloat` → `extraDamageFor` → `LOGGER.debug`. If it
+ran after, the DEBUG line would report procs on armour that were then discarded,
+which is exactly the kind of misleading diagnostic that caused this effect's
+original misdiagnosis.
+
+**How the harness checks this without a loaded tag set.** Evaluating
+`typeHolder().is(tag)` for real needs a bootstrapped registry and loaded tags,
+which the harness does not have. Instead it **reads the shipped tag JSON out of
+the Minecraft jar on the classpath** (`/data/minecraft/tags/item/...`) and
+resolves the nested `#minecraft:` references itself. That checks the claim that
+actually matters — what the tag *contains* — against real game data rather than
+restating the constant. Copy this for any future tag-scoped effect.
+
+**A DEBUG log line fires on each successful roll**, naming the item and its max
+durability, and — since the scope gate runs first — **only ever for tools**. This
+effect has no sound, no message and no visible change, only a durability bar
+moving faster, which is precisely why "not firing" and "firing rarely" were
+indistinguishable in the original report.
+`grep "Clumsy Digger" run/logs/debug-*.log.gz` shows every proc and what it hit;
+an armour piece appearing there would itself be the bug. It costs nothing for
+players without the effect, since the early returns precede it.
 
 #### Villager pricing: mixin-only, and the class moved (Bad Reputation)
 Two findings, both worth having permanently:
@@ -1591,13 +1639,13 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 145 checks currently: the tuning constants as
+same numbers kept being re-derived. 175 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, the crop-schedule
 tracking rules, `/entropygrant`'s contract, Clumsy Digger's whole per-tier
-durability table, Bad Reputation's whole price table, and `OpenChoicePayload`'s
-codec round-trip.
+durability table and its tools-only scope gate, Bad Reputation's whole price
+table, and `OpenChoicePayload`'s codec round-trip.
 
 **Clumsy Digger's table reads real durabilities out of `ToolMaterial` rather
 than hardcoding them** (`ToolMaterial.NETHERITE.durability()`, etc.), which is
@@ -1832,6 +1880,31 @@ One consequence the old note predicted is now real and handled: a saved run can
 be loaded by a build whose registry has changed. Unknown effect ids are skipped
 with a warning rather than failing the load, and every codec field is optional
 so an older save still opens.
+
+### 11. A separate armour-durability curse — OPEN, deliberately unspecified
+Clumsy Digger used to hit armour and the elytra, because
+`ItemStack.hurtAndBreak` reaches every damageable item. That was never the intent
+and has been scoped out — see "Clumsy Digger is scoped to mining tools" in Part 1.
+
+**Armour wear is still a legitimate curse idea, and it is tracked here rather
+than half-built.** Nothing about it is decided:
+
+- **Severity is genuinely open, and must not be assumed to be Clumsy Digger's.**
+  The tool numbers were approved *for tools*. Armour durability is consumed on a
+  completely different schedule — per damage event rather than per block — so the
+  same formula produced ~90% life loss and read as far harsher. Any armour curse
+  needs its own derivation against how often armour actually takes damage.
+- **The elytra is a separate question again.** It burns durability per second of
+  flight, so a per-event penalty behaves like a flight-time cap. It may deserve
+  its own effect, its own severity, or exemption.
+- **The mechanism is already proven and cheap to reuse:** the same
+  `ItemStackDurabilityMixin` hook with `#minecraft:enchantable/armor` (or the
+  per-slot tags) instead of `enchantable/mining`. No new mixin needed.
+
+**Do not fold this back into Clumsy Digger.** They are two effects with different
+severities, and merging them is what produced the problem this section exists to
+record. The anti-stacking category question (both would be `TOOL`/`GEAR`) is part
+of the design decision.
 
 ---
 
