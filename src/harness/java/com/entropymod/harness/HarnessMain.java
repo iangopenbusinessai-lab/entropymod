@@ -23,6 +23,7 @@ import com.entropymod.network.OpenChoicePayload;
 import io.netty.buffer.Unpooled;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.world.item.ToolMaterial;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -500,35 +501,124 @@ public final class HarnessMain {
 	 * confront the ceiling instead of rediscovering it.
 	 */
 	private static void clumsyDiggerMagnitude() {
-		section("Clumsy Digger magnitude (the chance is not the binding lever)");
+		section("Clumsy Digger: per-tier durability cost");
 
-		double chance = constant(ClumsyDiggerBehavior.class, "CHANCE");
-		double extra = constant(ClumsyDiggerBehavior.class, "EXTRA_DAMAGE");
+		checkNear(constant(ClumsyDiggerBehavior.class, "CHANCE"), 0.08, 1e-7,
+				"chance is 8% per durability-consuming action");
+		check((int) constant(ClumsyDiggerBehavior.class, "BASE_EXTRA") == 40,
+				"BASE_EXTRA is 40 at the reference durability");
+		check((int) constant(ClumsyDiggerBehavior.class, "REFERENCE_DURABILITY") == 200,
+				"the reference durability is 200");
 
-		checkNear(chance, 0.07, 1e-7, "retuned to 7%, matching Leaky Pockets");
-		checkNear(chance, constant(LeakyPocketsBehavior.class, "CHANCE"), 1e-7,
-				"...and the two 'small chance per action' curses are literally the same rate");
+		// The flat constant is gone, not neutralised -- same discipline as the two
+		// retired crop multipliers. A leftover EXTRA_DAMAGE could be re-wired into
+		// the hook and silently override the proportional formula.
+		check(!Checks.hasConstant(ClumsyDiggerBehavior.class, "EXTRA_DAMAGE"),
+				"the old flat EXTRA_DAMAGE constant is deleted, not left at 1");
 
-		// An iron pickaxe is 250 uses; blocks mined = durability / expected cost.
-		int ironPickaxeUses = 250;
-		double blocksNow = ironPickaxeUses / (1.0 + chance * extra);
-		checkNear(blocksNow, 233.6, 0.5,
-				"an iron pickaxe now mines ~234 blocks instead of 250");
-		checkNear(100.0 * (1.0 - blocksNow / ironPickaxeUses), 6.5, 0.2,
-				"...a 6.5% shorter tool life");
+		// REAL durabilities, read out of the game's own ToolMaterial records rather
+		// than typed in here -- the whole point of the table is that it describes
+		// what ships. Note this version has a COPPER tier between stone and iron.
+		record Tier(String name, ToolMaterial material) {}
+		Tier[] tiers = {
+				new Tier("Gold", ToolMaterial.GOLD),
+				new Tier("Wood", ToolMaterial.WOOD),
+				new Tier("Stone", ToolMaterial.STONE),
+				new Tier("Copper", ToolMaterial.COPPER),
+				new Tier("Iron", ToolMaterial.IRON),
+				new Tier("Diamond", ToolMaterial.DIAMOND),
+				new Tier("Netherite", ToolMaterial.NETHERITE),
+		};
 
-		// The ceiling: even a guaranteed trigger only doubles wear, so no value of
-		// CHANCE can make this effect large.
-		double blocksAtCertainty = ironPickaxeUses / (1.0 + 1.0 * extra);
-		checkNear(blocksAtCertainty, 125.0, 0.5,
-				"even a 100% chance only halves tool life -- the chance saturates at 2x wear");
-		check(blocksAtCertainty > ironPickaxeUses / 2.0 - 1,
-				"EXTRA_DAMAGE, not CHANCE, is what bounds this effect's size");
+		System.out.printf("        %-10s %8s %8s %10s %10s%n",
+				"tier", "maxDur", "+dmg", "blocks", "% shorter");
+		for (Tier tier : tiers) {
+			int max = tier.material().durability();
+			int extra = ClumsyDiggerBehavior.extraDamageFor(max);
+			double blocks = ClumsyDiggerBehavior.blocksSurvived(max);
+			double shorter = 100.0 * (1.0 - blocks / max);
+			System.out.printf("        %-10s %8d %8d %10.1f %9.1f%%%n",
+					tier.name(), max, extra, blocks, shorter);
+		}
 
-		// The smallest magnitude change that produces something a player notices.
-		double blocksAtFour = ironPickaxeUses / (1.0 + chance * 4);
-		checkNear(100.0 * (1.0 - blocksAtFour / ironPickaxeUses), 21.9, 0.5,
-				"EXTRA_DAMAGE=4 would cost 22% of a tool's life -- the documented next step");
+		// Spot checks against the real durabilities, so a regression names the tier.
+		check(ToolMaterial.WOOD.durability() == 59 && ToolMaterial.IRON.durability() == 250
+						&& ToolMaterial.NETHERITE.durability() == 2031,
+				"durabilities come from ToolMaterial itself (wood 59, iron 250, netherite 2031)");
+		check(ClumsyDiggerBehavior.extraDamageFor(ToolMaterial.IRON.durability()) == 50,
+				"iron (250) takes +50 per proc -- the reference tier, near BASE_EXTRA");
+		check(ClumsyDiggerBehavior.extraDamageFor(ToolMaterial.GOLD.durability()) == 6,
+				"gold (32) takes only +6");
+		check(ClumsyDiggerBehavior.extraDamageFor(ToolMaterial.NETHERITE.durability()) == 406,
+				"netherite (2031) takes +406");
+
+		// The design claim: better tools lose a LARGER share of their life. This is
+		// the property that must not be "normalised away" by a later session.
+		double goldShare = 1.0 - ClumsyDiggerBehavior.blocksSurvived(ToolMaterial.GOLD.durability())
+				/ ToolMaterial.GOLD.durability();
+		double netheriteShare = 1.0 - ClumsyDiggerBehavior.blocksSurvived(ToolMaterial.NETHERITE.durability())
+				/ ToolMaterial.NETHERITE.durability();
+		checkNear(goldShare * 100, 32.4, 0.3, "gold loses 32% of its life");
+		checkNear(netheriteShare * 100, 97.0, 0.3, "netherite loses 97% of its life");
+		check(netheriteShare > goldShare,
+				"better tools lose a LARGER share -- the deliberate non-uniformity");
+
+		// Monotonic in absolute terms too: a better tool still survives longer, so
+		// tier progression is compressed but never inverted.
+		double previous = -1;
+		boolean monotonic = true;
+		for (int durability : new int[] {32, 59, 131, 190, 250, 1561, 2031}) {
+			double blocks = ClumsyDiggerBehavior.blocksSurvived(durability);
+			if (blocks <= previous) {
+				monotonic = false;
+			}
+			previous = blocks;
+		}
+		check(monotonic, "tier order is preserved -- a better tool still outlasts a worse one");
+
+		// The structural consequence, asserted so a retune confronts it rather than
+		// rediscovering it: durability cancels, so blocks survived is capped.
+		// Tolerance is 1e-4 rather than 1e-6 because CHANCE is a float: 0.08f is
+		// really 0.079999998, which moves the ceiling by ~1.4e-6. Tightening this
+		// would be asserting IEEE 754 rounding, not the design.
+		checkNear(ClumsyDiggerBehavior.blockCeiling(), 62.5, 1e-4,
+				"blocks survived is asymptotically capped at 200/(0.08*40) = 62.5");
+		check(ClumsyDiggerBehavior.blocksSurvived(1_000_000) < ClumsyDiggerBehavior.blockCeiling(),
+				"...and no durability, however large, exceeds that ceiling");
+		check(ClumsyDiggerBehavior.blocksSurvived(ToolMaterial.NETHERITE.durability())
+						> ClumsyDiggerBehavior.blockCeiling() - 2,
+				"netherite is already within 2 blocks of the ceiling");
+
+		// Diamond and netherite become near-indistinguishable, which is the single
+		// most surprising number in the table.
+		double diamond = ClumsyDiggerBehavior.blocksSurvived(ToolMaterial.DIAMOND.durability());
+		double netherite = ClumsyDiggerBehavior.blocksSurvived(ToolMaterial.NETHERITE.durability());
+		check(Math.abs(netherite - diamond) < 1.0,
+				"diamond and netherite land within one block of each other (30% more durability, no benefit)");
+
+		// A non-damageable item must be untouched, and a damageable one never exempt.
+		check(ClumsyDiggerBehavior.extraDamageFor(0) == 0, "a non-damageable item takes no extra damage");
+		check(ClumsyDiggerBehavior.extraDamageFor(1) == 1,
+				"a 1-durability item still takes at least 1 -- rounding cannot exempt it");
+
+		// The hook is ItemStack.hurtAndBreak, which is EVERY source of durability
+		// loss -- not just mining. These two are the collateral worth seeing, and
+		// they are driven through the same real formula. Durabilities are
+		// javap-verified: netherite ArmorMaterial durability 37 x ArmorType.CHESTPLATE
+		// multiplier 16 = 592, and Items.ELYTRA is registered with durability(432).
+		System.out.printf("        %-22s %8s %8s %10s %10s%n",
+				"non-tool (same hook)", "maxDur", "+dmg", "uses", "% shorter");
+		for (Object[] item : new Object[][] {{"Netherite chestplate", 592}, {"Elytra", 432}}) {
+			int max = (Integer) item[1];
+			System.out.printf("        %-22s %8d %8d %10.1f %9.1f%%%n",
+					item[0], max, ClumsyDiggerBehavior.extraDamageFor(max),
+					ClumsyDiggerBehavior.blocksSurvived(max),
+					100.0 * (1.0 - ClumsyDiggerBehavior.blocksSurvived(max) / max));
+		}
+		check(ClumsyDiggerBehavior.blocksSurvived(592) < 60,
+				"a netherite chestplate survives <60 damage events -- armour rides the same hook");
+		check(ClumsyDiggerBehavior.blocksSurvived(432) < 60,
+				"an elytra survives <60 seconds of flight -- flagged, not hidden");
 	}
 
 	/**

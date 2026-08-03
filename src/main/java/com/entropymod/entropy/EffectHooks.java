@@ -199,7 +199,7 @@ public final class EffectHooks {
 	 * {@code run/logs/debug-N.log.gz} and count. It costs nothing for players
 	 * without the effect, since both returns above it are taken first.
 	 */
-	public static int rollClumsyDiggerExtraDamage(Player player, RandomSource random) {
+	public static int rollClumsyDiggerExtraDamage(Player player, RandomSource random, int maxDamage) {
 		AcquiredEffects acquired = acquired(player);
 		if (acquired == null || !acquired.contains(ClumsyDiggerBehavior.ID)) {
 			return 0;
@@ -207,9 +207,10 @@ public final class EffectHooks {
 		if (random.nextFloat() >= ClumsyDiggerBehavior.CHANCE) {
 			return 0;
 		}
-		EntropyMod.LOGGER.debug("Clumsy Digger: +{} durability damage for {}",
-				ClumsyDiggerBehavior.EXTRA_DAMAGE, player.getName().getString());
-		return ClumsyDiggerBehavior.EXTRA_DAMAGE;
+		int extra = ClumsyDiggerBehavior.extraDamageFor(maxDamage);
+		EntropyMod.LOGGER.debug("Clumsy Digger: +{} durability damage (tool max {}) for {}",
+				extra, maxDamage, player.getName().getString());
+		return extra;
 	}
 
 	/** True if villagers should overcharge this player (Bad Reputation). */

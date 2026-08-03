@@ -28,6 +28,11 @@ import java.util.function.Consumer;
  * <p><b>Players without the effect are unaffected:</b>
  * {@code rollClumsyDiggerExtraDamage} returns 0, and {@code amount + 0} is the
  * original value.
+ *
+ * <p><b>The extra damage is proportional to the stack's own max durability</b>,
+ * so this hook now reads {@code getMaxDamage()} and passes it through. See
+ * {@code ClumsyDiggerBehavior} for the formula and for why hitting better tools
+ * harder is the intent rather than a bug.
  */
 @Mixin(ItemStack.class)
 public abstract class ItemStackDurabilityMixin {
@@ -42,6 +47,12 @@ public abstract class ItemStackDurabilityMixin {
 		if (player == null) {
 			return amount;
 		}
-		return amount + EffectHooks.rollClumsyDiggerExtraDamage(player, player.getRandom());
+		// The stack's own max durability scales the penalty -- better tools lose
+		// more, deliberately. Safe to read here: getMaxDamage() is a data-component
+		// lookup with no side effects, and it returns 0 for non-damageable items,
+		// which the hook turns into no extra damage.
+		ItemStack stack = (ItemStack) (Object) this;
+		return amount + EffectHooks.rollClumsyDiggerExtraDamage(
+				player, player.getRandom(), stack.getMaxDamage());
 	}
 }

@@ -1210,30 +1210,89 @@ nothing" rule. **No bug was found, and the trigger path is fully correct:**
   `processDurabilityChange`, which is where Unbreaking is applied. The `+1` lands
   *before* Unbreaking, so an enchanted tool composes rather than double-counting.
 
-**The real finding is that `CHANCE` is the wrong lever, and no value of it can
-make this effect noticeable.** The observable magnitude is entirely
-`1 + CHANCE × EXTRA_DAMAGE`, expressed as percent of a tool's lifetime:
+**The finding that mattered: `CHANCE` was the wrong lever, and no value of it
+could have fixed this.** The observable magnitude is entirely
+`1 + CHANCE × EXTRA_DAMAGE` as a share of a tool's lifetime, and with a flat
+`EXTRA_DAMAGE` of 1 even a **guaranteed** trigger only doubles wear — the same
+saturation shape as Exposed's 1.25 detection cap and the crop hook's 26x. 0.04
+cost 4% of an iron pickaxe; 0.07 cost 6.5%. Both are inside the range a player
+cannot detect without counting blocks.
 
-| CHANCE × EXTRA_DAMAGE | iron pickaxe (250 uses) | tool life |
-|---|---|---|
-| 0.04 × 1 (original) | 240 blocks | 4% shorter |
-| **0.07 × 1 (shipped)** | **234 blocks** | **6.5% shorter** |
-| 1.00 × 1 (ceiling of chance alone) | 125 blocks | 50% shorter |
-| 0.07 × 4 (recommended next step) | 195 blocks | 22% shorter |
+#### Clumsy Digger's per-tier cost — deliberately NON-UNIFORM, do not normalise it
+`EXTRA_DAMAGE` is no longer a flat number. It scales with the tool's own maximum
+durability against a 200-point reference:
 
-**Even a *guaranteed* trigger only doubles wear**, because `EXTRA_DAMAGE` is 1 —
-the same saturation shape as Exposed's 1.25 detection cap and the crop hook's 26x.
-So 7% was shipped as asked and matches Leaky Pockets for consistency, but it is
-**still inside the range a player cannot detect without counting blocks**. If it
-reads as nothing again, raise `EXTRA_DAMAGE`, not `CHANCE`. The harness asserts
-the whole table, including the ceiling, so this cannot be rediscovered from zero.
+```
+extraDamage = round(BASE_EXTRA × maxDamage / REFERENCE_DURABILITY)
+            = round(40 × maxDamage / 200)
+```
 
-**A DEBUG log line now fires on each successful roll.** This effect has no sound,
-no message and no visible change — only a durability bar moving marginally faster
-— which is precisely why "not firing" and "firing rarely" were indistinguishable
-in the report. `grep "Clumsy Digger" run/logs/debug-*.log.gz | wc -l` against
-blocks mined settles it in one step. It costs nothing for players without the
-effect, since both early returns precede it.
+**Better tools lose a larger share of their life, and that is the design.** A
+curse that costs netherite 97% and gold 32% is a curse that punishes bringing out
+the good gear. A future session must not "correct" the non-uniformity — the
+harness asserts `netheriteShare > goldShare` specifically to stop that.
+
+Real durabilities, read from `ToolMaterial` itself rather than typed in (**note
+this version has a COPPER tier at 190**, between stone and iron):
+
+| Tier | Max durability | +damage per proc | Blocks survived | vs. normal |
+|---|---|---|---|---|
+| Gold | 32 | +6 | 21.6 | **−32.4%** |
+| Wood | 59 | +12 | 30.1 | −49.0% |
+| Stone | 131 | +26 | 42.5 | −67.5% |
+| Copper | 190 | +38 | 47.0 | −75.2% |
+| Iron | 250 | +50 | 50.0 | −80.0% |
+| Diamond | 1561 | +312 | 60.1 | −96.1% |
+| Netherite | 2031 | +406 | 60.7 | **−97.0%** |
+
+**The structural consequence, and the most important thing to know before
+retuning: durability cancels out, so blocks survived is asymptotically capped.**
+
+```
+blocks = maxDur / (1 + CHANCE × BASE_EXTRA × maxDur / REFERENCE)
+       → REFERENCE / (CHANCE × BASE_EXTRA) = 200 / (0.08 × 40) = 62.5 blocks
+```
+
+So `BASE_EXTRA` is really a control on **"how many blocks does any good tool
+get"**, not on a percentage. At 40 the ceiling is ~62 blocks; at 20 it would be
+~125; at 80, ~31. Three consequences fall straight out of that and are all
+asserted:
+
+- **Diamond and netherite are within 0.5 blocks of each other** (60.1 vs 60.7).
+  Netherite's 30% durability advantage is completely erased — both are simply
+  sitting on the ceiling.
+- **Tier progression is compressed roughly 22-fold.** Normal durability spans 63x
+  (gold 32 → netherite 2031); under the curse the span is 2.8x (21.6 → 60.7).
+  Order is preserved and never inverted, but the tiers stop meaning much.
+- **A cursed netherite pickaxe (60.7) is worth about an uncursed wooden one
+  (59).** That is the single sharpest way to read the table.
+
+**Flagged outliers, stated rather than left to be noticed in a table:**
+
+- **Netherite at −97% is the extreme.** 2031 blocks becomes 61. If that reads as
+  too much in play, lower `BASE_EXTRA` — it moves the ceiling directly.
+- **Gold at −32% is the mild end**, and cursed gold (21.6) is the only tier that
+  drops below cursed wood (30.1) — because gold's real durability is genuinely
+  worse than wood's. Not a formula artefact.
+- **Nothing is "barely affected".** Even wood loses half its life, so the bottom
+  of the table is not a dead zone.
+
+**Armour and the elytra ride the same hook**, since `ItemStack.hurtAndBreak` is
+every source of durability loss, not just mining. This is collateral worth seeing
+before it is discovered in play:
+
+| Item | Max durability | +damage | Uses survived | vs. normal |
+|---|---|---|---|---|
+| Netherite chestplate | 592 | +118 | 56.7 damage events | −90.4% |
+| Elytra | 432 | +86 | 54.8 seconds of flight | −87.3% |
+
+**A DEBUG log line fires on each successful roll**, now including the tool's max
+durability. This effect has no sound, no message and no visible change — only a
+durability bar moving faster — which is precisely why "not firing" and "firing
+rarely" were indistinguishable in the original report.
+`grep "Clumsy Digger" run/logs/debug-*.log.gz` shows every proc and the tool it
+hit. It costs nothing for players without the effect, since both early returns
+precede it.
 
 #### Villager pricing: mixin-only, and the class moved (Bad Reputation)
 Two findings, both worth having permanently:
@@ -1532,12 +1591,19 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 132 checks currently: the tuning constants as
+same numbers kept being re-derived. 145 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, the crop-schedule
-tracking rules, `/entropygrant`'s contract, Clumsy Digger's magnitude ceiling,
-Bad Reputation's whole price table, and `OpenChoicePayload`'s codec round-trip.
+tracking rules, `/entropygrant`'s contract, Clumsy Digger's whole per-tier
+durability table, Bad Reputation's whole price table, and `OpenChoicePayload`'s
+codec round-trip.
+
+**Clumsy Digger's table reads real durabilities out of `ToolMaterial` rather
+than hardcoding them** (`ToolMaterial.NETHERITE.durability()`, etc.), which is
+what makes it a check rather than a restatement — and it is how the COPPER tier
+was noticed. No bootstrap is needed: `ToolMaterial`'s constants are plain records
+over `TagKey`s. Copy that approach for anything else keyed on vanilla item data.
 
 **The payload round-trip is the model to copy for any future payload change.** It
 runs the real `StreamCodec` against `RegistryAccess.EMPTY` — no bootstrap needed,
