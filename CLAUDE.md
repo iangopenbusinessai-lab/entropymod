@@ -1490,6 +1490,126 @@ Note the two accessors are deliberately different and must stay so:
 requires `waitingOnChoice`. Collapsing them would make the wire value depend on
 when it was asked.
 
+#### Become Hardcore — INVESTIGATED, NOT BUILT. Verdict: buildable as specified
+Full javap investigation, no code written. Recorded because the answer is
+non-obvious in both directions and re-deriving it would cost a session.
+
+**Verdict: real vanilla hardcore is reachable.** The flag can be flipped at
+runtime, it is read *live* at the moment that matters, and it persists to
+`level.dat`. This does not need a mod-built imitation.
+
+**Where the flag lives.** `MinecraftServer.isHardcore()` → `WorldData.isHardcore()`
+→ `PrimaryLevelData.isHardcore()` → `settings.difficultySettings().hardcore()`.
+
+- `LevelSettings` is in **`net.minecraft.world.level`**, *not*
+  `net.minecraft.world.level.storage` where the rest of the level-data classes
+  live. Both it and the nested `LevelSettings$DifficultySettings`
+  (`difficulty`, `hardcore`, `locked`) are **records**.
+- **There is no `withHardcore()`.** Vanilla ships `withGameType`,
+  `withDifficulty`, `withDifficultyLock`, `withDataConfiguration`, `copy()` — and
+  deliberately no way to rebuild settings with a different hardcore value. So
+  there is no public API path.
+- **But `PrimaryLevelData.settings` is `private` and NOT final**, and vanilla
+  itself rewrites it with `putfield` in `setDifficulty`, `setDifficultyLocked`,
+  `setGameType` and `setDataConfiguration`. Replacing the record with one carrying
+  `hardcore = true` is therefore an ordinary field write on the server — an
+  accessor mixin, no `@Mutable` needed.
+- **It persists.** `PrimaryLevelData.setTagData` writes `difficulty_settings`
+  through `DifficultySettings.CODEC`, which includes `hardcore`. The flip lands in
+  `level.dat` at the next save and the world is genuinely, permanently hardcore.
+
+**The critical question — is it read live at death? YES.** This was the finding
+that decided buildability, and it went the good way.
+
+- **`ServerPlayer` does not reference `isHardcore` anywhere.** Death itself does
+  not check it.
+- **`PlayerList.respawn` does not reference it either.**
+- In the entire common jar there are exactly **two** reads:
+  `PlayerList.placeNewPlayer` (building `ClientboundLoginPacket` at join) and
+  `ServerGamePacketListenerImpl.handleClientCommand` (the `PERFORM_RESPAWN`
+  handler).
+- In `handleClientCommand` the order is: bail if `getHealth() > 0`;
+  `PlayerList.respawn(player, false, KILLED)`; `resetPosition()`;
+  `restartClientLoadTimerAfterRespawn()`; **then `server.isHardcore()` at offset
+  174**; and only then the hardcore branch.
+
+So the decision is made **after death, when the player clicks the button**, from a
+live read with nothing cached. An effect that flips the flag at any earlier point
+takes effect on the very next death.
+
+**What vanilla's hardcore death actually is** — the whole server-side mechanism,
+not the reputation:
+
+1. The player **respawns normally first** (`PlayerList.respawn` builds a new
+   `ServerPlayer`).
+2. `player.setGameMode(GameType.SPECTATOR)`.
+3. `level.getGameRules().set(SPECTATORS_GENERATE_CHUNKS, false, server)`.
+
+That is all of it. **No world deletion, no world-level "game over" flag, no
+locking of the save.** Permanence is ordinary gamemode persistence:
+`ServerPlayer.storeGameTypes` writes `playerGameType`, and
+`calculateGameModeForNewPlayer` only overrides it when
+`MinecraftServer.getForcedGameType()` is non-null — which `IntegratedServer`
+returns only when the world is LAN-published *and not hardcore*. `PlayerList
+.respawn` sets no gamemode at all. So Spectator survives relog with nothing
+undoing it.
+
+**Nothing is gated on how the server was launched.** No launch-time or
+world-creation-time precondition exists that a later flip could fail to satisfy.
+
+**The one real caveat: the client is told exactly once, at login.**
+
+- `hardcore` is a component of `ClientboundLoginPacket` **only**. It is *not* on
+  `ClientboundRespawnPacket`, and *not* in `CommonPlayerSpawnInfo`. No vanilla
+  packet updates it mid-session.
+- `ClientLevel$ClientLevelData.hardcore` is **`private final`** client-side.
+- **This does not block the effect**, because `DeathScreen.init` wires *both* the
+  "Spectate" and "Respawn" buttons to `LocalPlayer.respawn()`, which sends the
+  identical `ServerboundClientCommandPacket(PERFORM_RESPAWN)`. Only the label
+  differs. Even "Title Screen" calls `LocalPlayer.respawn()` first
+  (`lambda$handleExitToTitleScreen$0`).
+- Net effect of a stale client: for **that one death only**, the screen says "You
+  died!" with a "Respawn" button instead of the hardcore title and "Spectate
+  World" — the player clicks it and the server puts them in Spectator regardless.
+  Outcome correct, cosmetics wrong. After any relog the login packet carries the
+  flipped flag and hearts, death screen and the world-list label
+  (`LevelSummary.isHardcore`, red "Hardcore") are all correct permanently.
+- Closing that cosmetic gap is optional polish: a `@Mutable` shadow on
+  `ClientLevelData.hardcore` plus a one-boolean payload, which this project's
+  networking layer already supports.
+
+**Interactions with what is already built:**
+
+- **Re-application hooks need no change, and suppressing them would be worse.**
+  Verified ordering: `PlayerList.respawn` is offset 156, `setGameMode(SPECTATOR)`
+  is offset 187 — so `ServerPlayerEvents.AFTER_RESPAWN` (and therefore
+  `reapplyAll`) fires *before* the spectator switch, exactly once, on a player who
+  is still nominally alive. Leaving it alone keeps the invariant that attributes
+  are always derived from `AcquiredEffects`; a spectator simply ignores max
+  health, damage, fall damage and block-break speed.
+- **The two tick services DO need a spectator guard, and currently lack one.**
+  `BlightTouchedTrample` keys only on the acquired set and the player's position,
+  so a dead player ghosting through a village farm would still trample it, and
+  `GreenThumbGrowth` would still grow crops around a spectator. Both are small and
+  neither is caused by this effect — but this effect is what makes a
+  permanently-spectating player a normal state rather than a curiosity. Add
+  `player.isSpectator()` checks when this is built.
+- **Entropy cap and hardcore death are independent end states that do not know
+  about each other.** `EntropyManager.triggerPick` sets `gameOver` on
+  `entropy >= entropyCap`; hardcore death is pure vanilla and touches no mod
+  state. Left as-is, **the loop keeps opening pick GUIs every interval for a dead
+  spectator**, which is a visible wart and a design decision rather than a bug.
+  See Open Question 12.
+- **This is the first effect whose real state lives outside `AcquiredEffects`.**
+  Every other effect is derived from that set and would vanish if the set were
+  cleared; this one writes to `level.dat` and **cannot be undone by the mod at
+  all** — not by clearing the acquired set, not by removing the mod. Worth stating
+  plainly because it breaks the "AcquiredEffects is the single source of truth"
+  invariant in a way nothing else does.
+- **`/entropygrant become_hardcore` would irreversibly convert the test world.**
+  This is the first debug grant with permanent consequences outside the mod's own
+  state. Whatever else happens, that command needs a guard or a very loud warning.
+
 #### Debug output has to reach the player, not just the log
 `/entropyhistory` was reported as a hard regression — "prints nothing in-game
 despite picks having been made" — and was suspected to be a `SavedData` migration
@@ -1905,6 +2025,30 @@ than half-built.** Nothing about it is decided:
 severities, and merging them is what produced the problem this section exists to
 record. The anti-stacking category question (both would be `TOOL`/`GEAR`) is part
 of the design decision.
+
+### 12. Does dying under Become Hardcore end the entropy run? — OPEN
+Raised by the Become Hardcore investigation (Part 1), which established that the
+effect is buildable and that vanilla's hardcore death leaves the player
+permanently in Spectator.
+
+**The two end states currently do not know about each other.** Entropy reaching
+the cap sets `gameOver` and stops the loop; a hardcore death is pure vanilla and
+touches no mod state. So as things stand, a dead spectator would keep being shown
+a mandatory pick GUI every three minutes for the rest of the world's life.
+
+Options, none chosen:
+
+- (a) A hardcore death sets `gameOver` — one loss condition, two triggers.
+- (b) The loop keeps running and the picks are cosmetic — bad, given the GUI is
+  modal and `shouldCloseOnEsc()` is false.
+- (c) The loop pauses while every player is a spectator, and resumes if one is
+  ever restored.
+
+This overlaps **Question 1** (win detection — beating the dragon is a third end
+state and is still unbuilt) and **Question 2** (multiplayer: in a shared run, does
+one player's hardcore death end everyone's run?). Worth settling all three
+together rather than piecemeal, since they are the same question about what "the
+run is over" means.
 
 ---
 
