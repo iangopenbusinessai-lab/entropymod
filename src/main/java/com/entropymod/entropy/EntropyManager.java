@@ -4,6 +4,7 @@ import com.entropymod.EntropyMod;
 import com.entropymod.entropy.behavior.SecondGuessBehavior;
 import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.OpenChoicePayload;
+import com.entropymod.network.RunSyncPayload;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import net.fabricmc.fabric.api.networking.v1.PlayerLookup;
@@ -17,7 +18,10 @@ import net.minecraft.world.level.saveddata.SavedDataType;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 
@@ -66,7 +70,14 @@ public class EntropyManager extends SavedData {
 					.forGetter(m -> List.copyOf(m.acquired.ids())),
 			PickRecord.CODEC.listOf().optionalFieldOf("history", List.of()).forGetter(m -> m.history),
 			Codec.BOOL.optionalFieldOf("reroll_used", false).forGetter(m -> m.rerollUsed),
-			Codec.STRING.optionalFieldOf("move_scramble", "").forGetter(m -> m.moveScramble)
+			Codec.STRING.optionalFieldOf("move_scramble", "").forGetter(m -> m.moveScramble),
+			// Optional WITHOUT a default, unlike every other field here, so the codec
+			// constructor can tell "this save predates run states" from "this save
+			// says NOT_STARTED" and migrate the first case. See the constructor.
+			Codec.STRING.optionalFieldOf("run_state").forGetter(m -> Optional.of(m.runState.name())),
+			Codec.unboundedMap(Codec.STRING, KeybindSnapshot.CODEC)
+					.optionalFieldOf("keybind_snapshots", Map.of())
+					.forGetter(m -> Map.copyOf(m.keybindSnapshots))
 	).apply(instance, EntropyManager::new));
 
 	private static final SavedDataType<EntropyManager> TYPE = new SavedDataType<>(
@@ -113,6 +124,35 @@ public class EntropyManager extends SavedData {
 	 */
 	private String moveScramble = "";
 
+	/**
+	 * Where the run is in its lifecycle. <b>Gates the whole tick loop</b> -- see
+	 * {@link #tick}.
+	 *
+	 * <p>Only {@code NOT_STARTED} and {@code IN_PROGRESS} exist; the {@code ENDED}
+	 * half of the recorded architecture is not built. Note this is <em>not</em>
+	 * {@link #gameOver}, which is the older entropy-cap stop and is untouched by
+	 * this; merging the two belongs with the unbuilt {@code ENDED} work.
+	 */
+	private RunState runState = RunState.NOT_STARTED;
+
+	/**
+	 * Each player's movement keys as they were bound when the run started, keyed
+	 * by player UUID string.
+	 *
+	 * <p><b>Client-captured, server-persisted.</b> Only the client can read
+	 * keybinds, and only the server has durable per-world storage -- there is no
+	 * client-side equivalent of {@link SavedData} in this version, so this is
+	 * where a per-world snapshot can actually live. It is sent back to its owner
+	 * on {@code RunSyncPayload}. See CLAUDE.md for the investigation.
+	 *
+	 * <p>Keyed by UUID <em>string</em> rather than {@link java.util.UUID} so the
+	 * codec needs nothing but {@code Codec.STRING}, and so this class and
+	 * {@link KeybindSnapshot} stay drivable from the headless harness.
+	 *
+	 * <p>Write-once per player: see {@link #storeKeybindSnapshotIfAbsent}.
+	 */
+	private final Map<String, KeybindSnapshot> keybindSnapshots = new HashMap<>();
+
 	// Config, settable at world creation (wire up to a config screen later).
 	private int intervalTicks = DEFAULT_INTERVAL_TICKS;
 	private int entropyCap = DEFAULT_ENTROPY_CAP;
@@ -133,7 +173,8 @@ public class EntropyManager extends SavedData {
 	/** Codec constructor. */
 	private EntropyManager(int entropy, int pickCount, boolean gameOver, int entropyCap, int intervalTicks,
 						   List<String> acquiredIds, List<PickRecord> history, boolean rerollUsed,
-						   String moveScramble) {
+						   String moveScramble, Optional<String> runState,
+						   Map<String, KeybindSnapshot> keybindSnapshots) {
 		this.entropy = entropy;
 		this.pickCount = pickCount;
 		this.gameOver = gameOver;
@@ -145,13 +186,47 @@ public class EntropyManager extends SavedData {
 		// A malformed value from a hand-edited or newer save degrades to vanilla
 		// controls rather than reaching input handling and throwing every tick.
 		this.moveScramble = MovementScramble.isValid(moveScramble) ? moveScramble : "";
+
+		// Migration for saves written before run states existed. Such a save has no
+		// "run_state" field at all, and defaulting it to NOT_STARTED would re-gate a
+		// run that was already going and demand the player click Start on a world
+		// mid-run.
+		//
+		// pickCount is the right signal and the only reliable one: it moves ONLY in
+		// onChoiceMade, i.e. only after a pick was actually offered and answered. It
+		// is deliberately not inferred from the acquired set, because /entropygrant
+		// adds effects without advancing the run and works while NOT_STARTED -- a
+		// granted effect must not be mistaken for a started run.
+		this.runState = runState
+				.map(RunState::parse)
+				.orElseGet(() -> pickCount > 0 ? RunState.IN_PROGRESS : RunState.NOT_STARTED);
+
+		keybindSnapshots.forEach((uuid, snapshot) -> {
+			if (snapshot != null && snapshot.isPresent()) {
+				this.keybindSnapshots.put(uuid, snapshot);
+			}
+		});
 	}
 
 	// ------------------------------------------------------------------
 	// Loop
 	// ------------------------------------------------------------------
 
+	/**
+	 * The heartbeat. <b>Hard-gated on {@link RunState#IN_PROGRESS}</b>: while the
+	 * run has not been started, this does not count, does not advance entropy and
+	 * cannot open a pick.
+	 *
+	 * <p>The gate is placed <em>before</em> {@code tickCounter++}, not merely
+	 * before {@code triggerPick}. That is the difference between "the loop is
+	 * paused" and "the loop is running invisibly and fires the instant the gate
+	 * lifts": counting while gated would make a player who spent ten minutes on
+	 * the start panel eat an immediate pick on their first second of play.
+	 */
 	public void tick(MinecraftServer server) {
+		if (runState != RunState.IN_PROGRESS) {
+			return;
+		}
 		if (gameOver || waitingOnChoice) {
 			return;
 		}
@@ -172,7 +247,9 @@ public class EntropyManager extends SavedData {
 		RUN_ALREADY_OVER,
 		CHOICE_PENDING,
 		RUN_ENDED_NOW,
-		NO_ELIGIBLE_EFFECTS
+		NO_ELIGIBLE_EFFECTS,
+		/** The run has not been started yet -- the start panel has not been answered. */
+		RUN_NOT_STARTED
 	}
 
 	/**
@@ -180,6 +257,11 @@ public class EntropyManager extends SavedData {
 	 * not a debug imitation of it -- see CLAUDE.md's debug-command table.
 	 */
 	public PickTrigger forcePick(MinecraftServer server) {
+		// Gated exactly like tick(): forcePick bypasses the CLOCK and nothing else,
+		// so it must not be a way to reach a state a real interval firing could not.
+		if (runState != RunState.IN_PROGRESS) {
+			return PickTrigger.RUN_NOT_STARTED;
+		}
 		if (gameOver) {
 			return PickTrigger.RUN_ALREADY_OVER;
 		}
@@ -349,6 +431,117 @@ public class EntropyManager extends SavedData {
 		EntropyMod.LOGGER.info("Randomized Movement Controls: scramble for this run is {} (input order {})",
 				moveScramble, MovementScramble.ORDER);
 		return true;
+	}
+
+	// ------------------------------------------------------------------
+	// Run lifecycle
+	// ------------------------------------------------------------------
+
+	public RunState getRunState() {
+		return runState;
+	}
+
+	public boolean isStarted() {
+		return runState == RunState.IN_PROGRESS;
+	}
+
+	/**
+	 * Starts the run: {@code NOT_STARTED -> IN_PROGRESS}. This is the moment the
+	 * tick loop begins for real.
+	 *
+	 * <p><b>Idempotent, and that is a guard rather than a nicety.</b> The trigger
+	 * is a client packet, so it can arrive twice from a double-click, a replay, or
+	 * a second player clicking their own start panel; a run that "restarted" would
+	 * silently reset the interval timer mid-run. Returns true only on the
+	 * transitioning call, so callers can tell a real start from a duplicate.
+	 *
+	 * <p>The interval timer is zeroed here rather than left wherever it was.
+	 * {@code tickCounter} is not persisted and is gated off while
+	 * {@code NOT_STARTED}, so it is already zero in practice -- this makes "the
+	 * first interval starts now" true by construction instead of by inference.
+	 *
+	 * @return true if this call performed the transition
+	 */
+	public boolean startRun() {
+		if (runState == RunState.IN_PROGRESS) {
+			return false;
+		}
+		runState = RunState.IN_PROGRESS;
+		tickCounter = 0;
+		setDirty();
+		EntropyMod.LOGGER.info("Run started. Entropy loop is live: interval {} ticks, cap {}.",
+				intervalTicks, entropyCap);
+		return true;
+	}
+
+	/** This player's frozen movement keys, or {@link KeybindSnapshot#EMPTY} if none is held. */
+	public KeybindSnapshot keybindSnapshotFor(ServerPlayer player) {
+		return keybindSnapshotFor(player.getUUID().toString());
+	}
+
+	/**
+	 * By UUID string. Public, and not merely an implementation detail of the
+	 * {@code ServerPlayer} overload: the string is the persisted key, and it is
+	 * the form the headless harness can drive without constructing a player.
+	 */
+	public KeybindSnapshot keybindSnapshotFor(String uuid) {
+		return keybindSnapshots.getOrDefault(uuid, KeybindSnapshot.EMPTY);
+	}
+
+	/**
+	 * Records a player's movement keys, once per player per run.
+	 *
+	 * <p><b>Write-once is the entire point of this feature.</b> Randomized
+	 * Movement Controls is anchored to these keys precisely so that rebinding
+	 * afterwards cannot unscramble it; if a later capture could overwrite an
+	 * existing snapshot, a client could re-anchor the curse at will and the
+	 * counter-exploit would be back with an extra step. So this refuses rather
+	 * than replaces, exactly like {@link #assignMoveScrambleIfAbsent}.
+	 *
+	 * <p><b>Refused while {@code NOT_STARTED}</b>, because there is no run to
+	 * anchor to yet and the player may still rebind before clicking Start. The
+	 * start handler therefore has to call {@link #startRun} first -- an ordering
+	 * that is safe because both happen inside one synchronous packet handler.
+	 *
+	 * @return true if this call stored the snapshot
+	 */
+	public boolean storeKeybindSnapshotIfAbsent(ServerPlayer player, KeybindSnapshot snapshot) {
+		boolean stored = storeKeybindSnapshotIfAbsent(player.getUUID().toString(), snapshot);
+		if (stored) {
+			EntropyMod.LOGGER.info("Keybind snapshot frozen for {}: {}",
+					player.getName().getString(), snapshot.keys());
+		}
+		return stored;
+	}
+
+	/** By UUID string -- see {@link #keybindSnapshotFor(String)} for why this is public. */
+	public boolean storeKeybindSnapshotIfAbsent(String uuid, KeybindSnapshot snapshot) {
+		if (runState != RunState.IN_PROGRESS || snapshot == null || !snapshot.isPresent()) {
+			return false;
+		}
+		if (keybindSnapshots.containsKey(uuid)) {
+			return false;
+		}
+		keybindSnapshots.put(uuid, snapshot);
+		setDirty();
+		return true;
+	}
+
+	/** Tells one player the run state and their own frozen keybinds. */
+	public void syncRunTo(ServerPlayer player) {
+		ServerPlayNetworking.send(player, RunSyncPayload.of(runState, keybindSnapshotFor(player)));
+	}
+
+	/**
+	 * {@link #syncRunTo} for everybody. Called after the start transition, which is
+	 * also what makes every <em>other</em> connected client capture its own
+	 * keybinds -- they see {@code IN_PROGRESS} with no snapshot of their own and
+	 * send one, with no request packet needed.
+	 */
+	public void syncRunToAll(MinecraftServer server) {
+		for (ServerPlayer player : PlayerLookup.all(server)) {
+			syncRunTo(player);
+		}
 	}
 
 	/**

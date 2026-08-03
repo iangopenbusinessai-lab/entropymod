@@ -1,6 +1,7 @@
 package com.entropymod.client.mixin;
 
 import com.entropymod.client.ClientRunState;
+import com.entropymod.client.KeybindCapture;
 import com.entropymod.entropy.MovementScramble;
 import net.minecraft.client.player.ClientInput;
 import net.minecraft.client.player.KeyboardInput;
@@ -48,6 +49,39 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p><b>Only the four movement directions are permuted.</b> Jump, sneak and
  * sprint are passed through untouched -- scrambling those would make the effect
  * something other than what it says.
+ *
+ * <h2>The scramble is anchored to a keybind snapshot, not to live bindings</h2>
+ *
+ * <p><b>Permuting vanilla's direction booleans is exploitable and was the
+ * original design's real flaw.</b> This effect permutes <em>directions</em>;
+ * the Controls menu permutes <em>keys to directions</em>. Composed, they cancel:
+ * a player under {@code "LFRB"} need only rebind their four movement keys by the
+ * inverse permutation and they are playing vanilla again, in about twenty
+ * seconds, with no cost.
+ *
+ * <p>So the presses fed to {@code MovementScramble.apply} come from
+ * {@link KeybindCapture#pressesFor}, which reads the <em>physical</em> keys
+ * recorded when the run started -- see {@code KeybindSnapshot}. Rebinding after
+ * that point cannot reach the curse: the keys it is defined over stopped moving
+ * when the run began.
+ *
+ * <p>Two consequences worth stating plainly, because they are the visible
+ * behaviour rather than implementation detail:
+ *
+ * <ul>
+ *   <li>The keys that were W/A/S/D at Start keep doing exactly what the curse
+ *       says they do, no matter what the Controls menu says afterwards.</li>
+ *   <li>A key newly bound to a movement action after Start does nothing, because
+ *       it is not one of the four the curse is defined over. Vanilla would move
+ *       the player; this does not.</li>
+ * </ul>
+ *
+ * <p>When no usable snapshot exists the code falls back to permuting vanilla's
+ * live directions -- the old behaviour. That is reachable in exactly two ways:
+ * a run that has not been started yet (the snapshot is taken at Start, and
+ * {@code /entropygrant} can hand out the curse before then), and a movement key
+ * bound to something {@code glfwGetKey} cannot poll. The curse still works in
+ * both; it is simply not rebind-proof until the run starts.
  *
  * <p><b>Players without either effect are unaffected:</b> {@code moveScramble()}
  * returns {@code ""} and {@code tickForcedJump()} returns false, and the method
@@ -106,8 +140,19 @@ public abstract class KeyboardInputMixin extends ClientInput {
 		boolean right = in.right();
 
 		if (!scramble.isEmpty()) {
-			boolean[] permuted = MovementScramble.apply(scramble,
-					new boolean[] {forward, backward, left, right});
+			// The scramble is defined over the keys as they were bound when the run
+			// started, NOT over vanilla's current direction booleans. See the
+			// class javadoc for why that distinction is the whole feature.
+			boolean[] raw = KeybindCapture.pressesFor(ClientRunState.keybinds());
+			if (raw == null) {
+				// No usable snapshot. Permute vanilla's live directions instead --
+				// the pre-snapshot behaviour, which still delivers the curse and is
+				// merely not rebind-proof. Reachable before the run has started
+				// (/entropygrant from a server console) and for exotic SCANCODE
+				// bindings; see the class javadoc.
+				raw = new boolean[] {forward, backward, left, right};
+			}
+			boolean[] permuted = MovementScramble.apply(scramble, raw);
 			forward = permuted[0];
 			backward = permuted[1];
 			left = permuted[2];

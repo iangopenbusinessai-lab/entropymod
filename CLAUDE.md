@@ -208,6 +208,10 @@ is in the right place (start of `triggerPick`, before rolling).
 - ~~In-memory only~~ **RESOLVED.** `EntropyManager` is now a `SavedData` on the
   overworld's storage; entropy, pick count, acquired effects and history all
   survive a save/reload. See "Persistence — BUILT".
+- ~~The loop runs unconditionally from server start~~ **RESOLVED.** `tick` is
+  hard-gated on `RunState.IN_PROGRESS`; a fresh world counts nothing until the
+  player clicks Start. See "Run Lifecycle" below. Note the *loss* end state
+  (`gameOver`) is untouched by that work and is still separate.
 - No countdown warning before a pick forces open — it just happens. Might be
   jarring; might be exactly the point (see Open Question 8).
 
@@ -1559,8 +1563,8 @@ requires `waitingOnChoice`. Collapsing them would make the wire value depend on
 when it was asked.
 
 #### Become Hardcore — INVESTIGATED, NOT BUILT. Verdict: buildable as specified
-> **Superseded as the implementation approach** — see "Planned Architecture:
-> Gamified Run Lifecycle" below. The findings here remain accurate and are kept
+> **Superseded as the implementation approach** — see "Run Lifecycle: first slice
+> BUILT, ENDED half still design-only" below. The findings here remain accurate and are kept
 > as reference; the effect will use a mod-tracked flag instead.
 
 Full javap investigation, no code written. Recorded because the answer is
@@ -1825,6 +1829,114 @@ in `EntropyManager`'s existing codec as one `optionalFieldOf("move_scramble", ""
   is not an attribute**, so it implements `EffectBehavior` directly rather than
   extending `HookEffectBehavior` (whose `apply` is final and empty).
 
+#### Randomized Controls is anchored to a KEYBIND SNAPSHOT — the rebind exploit
+**Permuting vanilla's direction booleans is completely counterable from the
+Controls menu, and that was the original design's real flaw.** This effect
+permutes *directions*; rebinding permutes *keys to directions*. Composed, they
+cancel — a player under `"LFRB"` rebinds their four movement keys by the inverse
+permutation and is playing vanilla again in about twenty seconds, at no cost.
+
+So the presses fed to `MovementScramble.apply` no longer come from vanilla's
+`Input` record. They come from `KeybindCapture.pressesFor`, which reads the
+**physical keys as they were bound when the run started** (`KeybindSnapshot`,
+captured at Start — see the run-lifecycle section). Rebinding afterwards cannot
+reach the curse, because the keys it is defined over stopped moving when the run
+began.
+
+**Note this supersedes the raw-physical-WASD plan, which was never built.** The
+snapshot is not hardcoded W/A/S/D — it is whatever the player had bound at Start,
+so a player who plays on ESDF or arrows is cursed on *their* keys.
+
+Two consequences that are visible behaviour, not implementation detail:
+
+- Keys that were movement at Start keep doing exactly what the curse says, no
+  matter what the Controls menu says later.
+- **A key newly bound to a movement action after Start does nothing.** Vanilla
+  would move the player; this does not, because that key is not one of the four
+  the curse is defined over.
+
+**Fallback, and the one genuinely reachable edge case.** With no usable snapshot
+the code permutes vanilla's live directions — the old behaviour, still a working
+curse, just not rebind-proof. Reachable two ways:
+
+- **Before the run has started.** `/entropygrant randomized_controls` has no run-
+  state gate, and the snapshot is only taken at Start. In ordinary solo play this
+  is barely reachable — the start panel is modal, so chat cannot be opened — but a
+  server console or a second player can do it. Handled, not prevented.
+- A movement key bound to a `SCANCODE` key, which `glfwGetKey` cannot poll. One
+  unpollable key discards the whole snapshot rather than honouring three of four
+  directions, which would be a third behaviour nothing accounts for.
+
+#### Reading raw key state: the accessors, and the guard vanilla gets for free
+All javap-verified. Three of these contradict the obvious guess.
+
+- **`Options.keyUp/keyDown/keyLeft/keyRight` are `public final KeyMapping`.** No
+  accessor mixin needed.
+- **`KeyMapping.getKey()` does not exist** — the current binding is a `protected`
+  field. The public reader is **`saveString()`**, whose bytecode is exactly
+  `this.key.getName()`. That is also the string `options.txt` stores, which is
+  what makes it a good persisted form. **`getDefaultKey()` is public and is the
+  wrong one** — it reports the factory binding, not the player's.
+- **`InputConstants.getKey(String)` throws `IllegalArgumentException`** on an
+  unknown name rather than returning null.
+- **`InputConstants.isKeyDown` takes a `Window`, not a `long` handle**, in this
+  version. Its body is `glfwGetKey(window.handle(), value) == GLFW_PRESS`, so it
+  is **KEYSYM-only** — passing a mouse button through it queries an unrelated key.
+  Mouse bindings go through `glfwGetMouseButton` instead.
+
+**The guard that matters: `KeyboardInput.tick()` contains no screen check.**
+Verified in bytecode — it is seven `KeyMapping.isDown()` calls and nothing else.
+Vanilla's "typing in chat doesn't walk you into lava" behaviour comes entirely
+from **`Minecraft.setScreen` calling `KeyMapping.releaseAll()`** (offset 188,
+right after `screen.added()`), which clears the per-mapping down flags.
+**`glfwGetKey` knows nothing about that** and reports W as held while the player
+types "w" in chat. So `KeybindCapture.pressesFor` checks `screen == null` and
+`isWindowActive()` itself. Losing that guard would not fail loudly — it would
+make the player walk while typing.
+
+#### There is NO client-side per-world persistence — investigated, and it changed the design
+The brief called for the snapshot to be persisted **client-side**. It is not, and
+this is the finding rather than a shortcut.
+
+**Nothing in this version or in Fabric provides durable per-world client-side
+storage.** `SavedData`/`SavedDataStorage` are server-side only. The client's own
+durable state is *global*, not per-world (`options.txt`). The only per-world
+client-reachable directory is the save folder itself, via
+`Minecraft.getLevelSource()` — **which exists in singleplayer only**, so it
+cannot serve the multiplayer case at all.
+
+The nearest workable imitation would be a mod-managed file under
+`Minecraft.gameDirectory` keyed by some world identity — `getSingleplayerServer()`
+for local worlds, `getCurrentServer()` for remote ones. That identity is
+unreliable in exactly the ways that matter: a renamed or copied world, two
+servers behind one address, a world played from a second machine.
+
+**So the snapshot is client-captured and server-persisted**, in `EntropyManager`'s
+existing codec as `Map<UUID-string, KeybindSnapshot>`, and mirrored back to its
+owner on `RunSyncPayload`. Three things this buys beyond correctness:
+
+- Per-world **by construction**, with no world-identity guessing.
+- Works identically in singleplayer and multiplayer.
+- **Testable headlessly.** Requirement "the snapshot survives a relog" is a codec
+  round-trip in the harness; a client-side file store could not be driven by it
+  at all, since the harness classpath is the main source set only.
+
+Keyed by **UUID string**, not `java.util.UUID`, so the codec needs nothing but
+`Codec.STRING` and `KeybindSnapshot` stays Minecraft-import-free like
+`MovementScramble` and `TramplePath`.
+
+**Write-once per player is the anti-exploit guarantee, not tidiness.** If a later
+capture could overwrite an existing snapshot, a client could re-anchor its curse
+at will and rebinding would counter it again with one extra step. So
+`storeKeybindSnapshotIfAbsent` refuses rather than replaces, exactly like
+`assignMoveScrambleIfAbsent`.
+
+**No "send me your keybinds" request packet exists**, and that is a design choice
+worth keeping: `RunSyncPayload` carries the player's own stored snapshot, so a
+client can see for itself that the server holds nothing for it and capture
+unprompted. That one predicate covers every case except the player who clicks
+Start — a second player already online, and anyone joining mid-run.
+
 #### Debug output has to reach the player, not just the log
 `/entropyhistory` was reported as a hard regression — "prints nothing in-game
 despite picks having been made" — and was suspected to be a `SavedData` migration
@@ -1974,14 +2086,23 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 209 checks currently: the tuning constants as
+same numbers kept being re-derived. 259 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble
 model and its assign-once persistence, the crop-schedule
 tracking rules, `/entropygrant`'s contract, Clumsy Digger's whole per-tier
 durability table and its tools-only scope gate, Bad Reputation's whole price
-table, and `OpenChoicePayload`'s codec round-trip.
+table, `OpenChoicePayload`'s codec round-trip, the run-start gate and its
+save migration, the keybind snapshot's write-once rule, and an assertion that the
+`ENDED` half of the run lifecycle is genuinely absent rather than half-present.
+
+**The start gate is tested by ticking with a `null` server, and that is the
+assertion rather than a shortcut.** `triggerPick` dereferences the server almost
+immediately, so a gate that let the loop run would blow up rather than quietly
+passing — and the loop is ticked 500 past the interval length to guarantee it
+would be reached. The counter staying at 0 is checked separately, because that is
+what distinguishes "paused" from "counting invisibly".
 
 **Clumsy Digger's table reads real durabilities out of `ToolMaterial` rather
 than hardcoding them** (`ToolMaterial.NETHERITE.durability()`, etc.), which is
@@ -2110,52 +2231,124 @@ a `SavedData` and a run now survives a restart.
 
 ---
 
-## Planned Architecture: Gamified Run Lifecycle
+## Run Lifecycle: first slice BUILT, ENDED half still design-only
 
-**Status: DESIGN CONFIRMED, NOTHING BUILT.** Decided collaboratively and recorded
-here so it does not live only in chat history. Every "will" below is a decision,
-not a description — none of it exists in code yet. Read this before touching
-`EntropyManager`'s tick loop, `ChoiceScreen`, or anything to do with how a run
-begins or ends.
+**Read this status table before touching anything below it.** The architecture
+was recorded as one design; only its front half exists.
 
-### Run states
+| Piece | Status |
+|---|---|
+| `NOT_STARTED` / `IN_PROGRESS` states, persisted | **BUILT** |
+| Hard tick-loop gate while `NOT_STARTED` | **BUILT** |
+| Modal start panel with a Start button | **BUILT** |
+| Keybind snapshot captured at Start | **BUILT** |
+| Randomized Controls anchored to that snapshot | **BUILT** |
+| Interval/cap settings **on** the start panel | **NOT BUILT** — deferred |
+| `ENDED` state | **NOT BUILT** — the constant does not exist |
+| End screen | **NOT BUILT** |
+| Dragon-death win detection | **NOT BUILT** — still Open Question 1 |
+| Become Hardcore (death → loss) | **NOT BUILT** |
+| Run-wide death counter | **NOT BUILT** |
+
+`./gradlew harness` asserts the unbuilt half is *absent* rather than
+half-present — `RunState` has exactly two constants, and there is no `endRun()`
+or `getDeathCount()`. That is deliberate: a later session must be able to tell
+"deferred" from "started and abandoned".
+
+### Run states — BUILT (the first transition only)
 
 ```
-NOT_STARTED  ->  IN_PROGRESS  ->  ENDED
+NOT_STARTED  ->  IN_PROGRESS        [built]
+             ->  ENDED              [not built; no constant exists]
 ```
 
-**Today the entropy loop runs unconditionally from server start.** There is no
-gate: `EntropyManager.tick` counts and fires from the first tick a world is
-loaded. This introduces a real one.
+`RunState` deliberately declares **only two constants**. An `ENDED` constant
+"ready for later" would invite branching on a state nothing can produce.
 
-- **`NOT_STARTED`** — the loop must **not** advance entropy and must **not**
-  trigger picks. This is a hard gate, not a cosmetic one.
-- **`IN_PROGRESS`** — the loop runs as it does today.
-- **`ENDED`** — the run is over; see the three paths below.
+- **`NOT_STARTED`** — the loop does not advance entropy and cannot trigger picks.
+- **`IN_PROGRESS`** — the loop runs as it always has.
 
-The state is run state, so it belongs in the existing `SavedData` codec beside
-entropy and pick count, with the same `optionalFieldOf` discipline every other
-field follows (an older save must still load).
+Persisted **by name** in `EntropyManager`'s existing codec, same `optionalFieldOf`
+discipline as every other field.
 
-### The start panel
+**The gate sits before `tickCounter++`, not before `triggerPick`**, and that
+placement is the whole difference between "paused" and "running invisibly and
+firing the instant the gate lifts". A player who spent ten minutes on the start
+panel would otherwise eat an immediate pick. The harness asserts the counter
+stays at 0 across 4100 gated ticks.
 
-Shown on **first player spawn in a fresh world**, i.e. while state is
-`NOT_STARTED`.
+`forcePick` is gated identically and returns a new `PickTrigger.RUN_NOT_STARTED`,
+because `/entropyforcepick` bypasses **the clock and nothing else** — it must not
+reach a state a real interval firing could not.
 
-- **Modal, same pattern as `ChoiceScreen`** — blocks until dismissed, no escape
-  hatch. The proven GUI shape gets reused rather than reinvented, including its
-  hard constraint: because there is no escape, **the layout must never clip at any
-  GUI scale**. See `ChoiceScreen`'s responsive-layout notes.
-- **It is where world/run settings live**: interval length, entropy cap, and any
-  future setting. This finally gives Open Question 4 (config surface) a home.
-- **Deliberately NOT integrated into vanilla's world-creation flow.** That was
-  considered and **explicitly rejected**: vanilla's world-creation UI is a much
-  larger and completely uninvestigated piece of screen code, and hooking it would
-  be a project of its own. This is a considered trade, not an oversight — do not
-  "improve" it into the world-creation screen without revisiting the decision.
-- **Clicking "Start" locks in the chosen settings and transitions to
-  `IN_PROGRESS`.** That transition is the moment the entropy tick loop begins for
-  real.
+**`gameOver` is NOT this and was left alone.** That flag is the older
+entropy-cap stop. Folding the two together belongs with the unbuilt `ENDED` work.
+
+#### Loading a save written before run states existed
+`run_state` is the one codec field that is `optionalFieldOf` **without** a
+default — an `Optional<String>` — specifically so the constructor can tell "this
+save predates the feature" from "this save says `NOT_STARTED`". Absent migrates
+to `pickCount > 0 ? IN_PROGRESS : NOT_STARTED`, so a world already mid-run is not
+re-gated and asked to click Start again.
+
+**The signal is `pickCount`, never the acquired set.** `pickCount` moves only in
+`onChoiceMade`. `/entropygrant` adds effects without advancing the run and works
+while `NOT_STARTED`, so inferring from `acquired` would read a granted effect as a
+started run. Asserted directly.
+
+### The start panel — BUILT, button-only
+
+`StartScreen`, shown while the server reports `NOT_STARTED`.
+
+- **Modal, same contract as `ChoiceScreen`**: `shouldCloseOnEsc()` false,
+  `isPauseScreen()` true. Title + rule + wrapped body + button are measured and
+  centred as **one block**, and the button's Y is additionally clamped to the
+  window so that on a very short window the *text* clips and the only way out
+  never does.
+- **Settings are NOT on it.** Interval length and entropy cap sliders plus a
+  settings channel and validation is materially more work than the gate itself,
+  and the gate is what the keybind snapshot needed. **Open Question 4 is
+  therefore still open** — the panel is its intended home and now exists to
+  receive it.
+- **Still deliberately NOT in vanilla's world-creation flow** — that rejection
+  stands unchanged.
+
+#### The gate needs a tick guard, not just a payload — this is a real hazard
+`RunSyncPayload` arrives **during the join sequence, while the client may still
+be on the level-loading screen**, and vanilla calls `setScreen(null)` when that
+finishes. A panel opened from the network handler alone is silently discarded —
+and the path it fails on is a brand-new world, i.e. the only path that matters.
+
+So `ClientTickEvents.END_CLIENT_TICK` re-opens the panel whenever the state is
+`NOT_STARTED`, the player is in a world, and **`screen == null`** (so it cannot
+stomp another GUI). That also makes the gate un-escapable rather than merely
+un-closable.
+
+#### Clicking Start: the ordering question, and why it dissolves
+The state transition is server-authoritative; the keybind snapshot can only be
+read on the client. The obvious design does two things on one click and has to
+argue about ordering and races.
+
+**Instead, the snapshot IS the start message.** One `KeybindSnapshotPayload`
+carries the four keys plus `startRun`. One packet, one server handler, one
+`setDirty()`. There is no interleaving that starts a run without a snapshot,
+because they are the same packet — the ordering question is removed rather than
+answered.
+
+One ordering constraint survives, and it is safely internal to that handler:
+`storeKeybindSnapshotIfAbsent` **refuses while `NOT_STARTED`** (nothing to anchor
+to yet, and the player may still rebind before clicking), so `startRun()` must
+land first.
+
+**The screen never closes on its own click.** It waits for the server's
+`RunSyncPayload` to report `IN_PROGRESS`. A client-side close would put the
+player into a world whose loop had refused to start, with no way to ask again.
+`StartScreen` does close itself in exactly one case — `canSend` is false, i.e.
+not an Entropy Mod server — rather than trapping the player behind a button that
+talks to nobody.
+
+Nothing here trusts the client: `startRun()` is idempotent and re-checks the
+state, and the snapshot is write-once per player.
 
 ### The three paths to ENDED
 
@@ -2245,8 +2438,7 @@ architecture above is actually built.
 ## Part 3: Open Questions — need your call before the next build session
 
 ### 1. Win detection — DESIGN DECIDED, IMPLEMENTATION PENDING
-**Not resolved.** The *framing* is settled by "Planned Architecture: Gamified Run
-Lifecycle" above — dragon death is path 2 of three into the `ENDED` state, and is
+**Not resolved.** The *framing* is settled by "Run Lifecycle" above — dragon death is path 2 of three into the `ENDED` state, and is
 a win. But **nothing is built**: there is still no dragon-death listener anywhere
 in the codebase, and this stays open until there is. Sub-question (c) below is
 also still genuinely open and must be answered when it is built.
@@ -2279,15 +2471,23 @@ once entropy passes 25. Do you want:
   at low weight) so there's some texture/variety even late-game
 - (c) Some other blending rule
 
-### 4. What's the config surface for interval length and entropy cap?
-Needs to be settable at world creation per your original ask ("3 min
-default, but a setting"). Options:
-- (a) Vanilla GameRules (simplest — works with `/gamerule`, no custom UI
-  needed, but feels less "designed")
-- (b) A real custom world-creation config screen (more polished, more work)
-- (c) A config file (Mod Menu / Cloth Config style) — editable outside a
-  running world, but doesn't fit "chosen at world creation" as naturally
-- (d) Some combination (GameRules for now, real screen later)
+### 4. What's the config surface for interval length and entropy cap? — STILL OPEN, but it now has a home
+**Not resolved. The surface is decided; the controls are not built.**
+
+The venue question is answered: **`StartScreen` is where these live**, and it now
+exists, is modal, and already runs at the exact moment settings would be locked
+in. What is missing is only the controls themselves plus a client→server settings
+channel and validation — deliberately deferred as materially more work than the
+gate the last session was scoped to. `setIntervalTicks`/`setEntropyCap` still
+exist, are still persisted, and still have no player-facing way to reach them.
+
+Whatever lands must go **inside `StartScreen`'s centred layout block**, not below
+it, or it will push the Start button off-screen at small GUI scales — and that
+screen has no escape hatch.
+
+The original options (a) GameRules / (c) config file are superseded for the
+world-creation case by the panel, but a GameRule may still be worth having for
+mid-run admin adjustment. Not decided.
 
 ### 5. Anti-stacking enforcement: replace, or exclude from the pool? — RESOLVED
 **(b) Exclude from the pool.** Built. Categories with an already-active effect
@@ -2382,8 +2582,7 @@ of the design decision.
 
 ### 12. Does dying under Become Hardcore end the entropy run? — DESIGN DECIDED, IMPLEMENTATION PENDING
 **Not resolved.** The answer is now option (a) below, arrived at from a different
-direction than this question anticipated: see "Planned Architecture: Gamified Run
-Lifecycle" above. Death while Become Hardcore is held ends the run as a loss —
+direction than this question anticipated: see "Run Lifecycle" above. Death while Become Hardcore is held ends the run as a loss —
 **but via mod-tracked state, not via vanilla hardcore at all.** Vanilla death and
 respawn proceed completely normally, so the "dead spectator" scenario this
 question was framed around no longer arises. **Nothing is built**, so this stays

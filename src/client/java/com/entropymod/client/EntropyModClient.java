@@ -2,18 +2,23 @@ package com.entropymod.client;
 
 import com.entropymod.EntropyMod;
 import com.entropymod.client.gui.ChoiceScreen;
+import com.entropymod.client.gui.StartScreen;
 import com.entropymod.entropy.EffectPhase;
 import com.entropymod.entropy.RerollState;
 import com.entropymod.entropy.EntropyManager;
+import com.entropymod.entropy.RunState;
 import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.HistoryRequestPayload;
 import com.entropymod.network.HistoryResponsePayload;
+import com.entropymod.network.KeybindSnapshotPayload;
 import com.entropymod.network.OpenChoicePayload;
+import com.entropymod.network.RunSyncPayload;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
@@ -59,6 +64,39 @@ public class EntropyModClient implements ClientModInitializer {
 					payload.effectIds().size(), payload.moveScramble());
 		});
 
+		// Run lifecycle. One payload drives three decisions -- see RunSyncPayload.
+		ClientPlayNetworking.registerGlobalReceiver(RunSyncPayload.TYPE, (payload, context) -> {
+			RunState state = payload.state();
+			ClientRunState.updateRun(state, payload.snapshot());
+			EntropyMod.LOGGER.info("Run sync: state={} keybinds={}",
+					state, payload.snapshot().isPresent() ? payload.snapshot().keys() : "(none held)");
+
+			Minecraft client = context.client();
+			if (state == RunState.NOT_STARTED) {
+				// Modal gate. Guarded so a re-sent payload cannot replace the screen
+				// out from under a player who has already clicked Start.
+				if (!(client.screen instanceof StartScreen)) {
+					client.setScreen(new StartScreen());
+				}
+				return;
+			}
+
+			// The run is live. This is what closes the start panel -- the screen
+			// never closes on its own click, so a refused start cannot leave the
+			// player outside the gate with no way to ask again.
+			if (client.screen instanceof StartScreen) {
+				client.setScreen(null);
+			}
+
+			// The server holds no snapshot for this player: either they were already
+			// online when someone else clicked Start, or they joined mid-run. Capture
+			// now. This is why there is no "send me your keybinds" request packet.
+			if (ClientRunState.needsKeybindCapture()
+					&& ClientPlayNetworking.canSend(KeybindSnapshotPayload.TYPE)) {
+				ClientPlayNetworking.send(new KeybindSnapshotPayload(KeybindCapture.capture(), false));
+			}
+		});
+
 		// Interim surface for the pick history, until a real screen exists.
 		//
 		// This used to log ONLY, which is why /entropyhistory looked broken in game:
@@ -94,6 +132,27 @@ public class EntropyModClient implements ClientModInitializer {
 						.append(Component.literal(" -- " + entry.effectDescription()
 								+ " (entropy " + entry.entropyAtPick() + ")")
 								.withStyle(ChatFormatting.GRAY)));
+			}
+		});
+
+		// Keeps the start gate up. Two separate jobs, and the first is a real
+		// ordering hazard rather than defensiveness:
+		//
+		// 1. RunSyncPayload arrives during the join sequence, while the client may
+		//    still be on the level-loading screen -- and vanilla calls setScreen(null)
+		//    when that finishes, which would silently discard a start panel opened
+		//    from the network handler. The panel would simply never appear, on the
+		//    one path that matters most: a brand-new world.
+		// 2. It makes the gate genuinely un-escapable rather than merely un-closable,
+		//    since anything that does manage to clear the screen puts it straight back.
+		//
+		// Only acts when nothing else is on screen, so it cannot stomp another GUI.
+		ClientTickEvents.END_CLIENT_TICK.register(client -> {
+			if (client.level == null || client.player == null || client.screen != null) {
+				return;
+			}
+			if (ClientRunState.runState() == RunState.NOT_STARTED) {
+				client.setScreen(new StartScreen());
 			}
 		});
 

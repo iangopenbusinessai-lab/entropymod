@@ -176,6 +176,15 @@ public final class EntropyCommands {
 											+ manager.getEntropy() + " -- see the log."));
 							return 0;
 						}
+						case RUN_NOT_STARTED -> {
+							// Says which gate refused, because "nothing happened" after a
+							// forced pick is exactly the ambiguity this command exists to
+							// remove -- and this gate is new enough to look like a bug.
+							source.sendFailure(Component.literal(
+									"[Entropy] The run has not been started -- click Start on the "
+											+ "start panel first. The loop is gated until then."));
+							return 0;
+						}
 					}
 					return 0;
 				}));
@@ -193,6 +202,12 @@ public final class EntropyCommands {
 					CommandSourceStack source = ctx.getSource();
 					EntropyManager manager = EntropyManager.get(source.getServer());
 
+					// Run state first: while NOT_STARTED every number below is frozen
+					// by design, and reading them without that context looks like a
+					// broken timer rather than a gate working.
+					source.sendSuccess(() -> Component.literal(
+							"[Entropy] run state " + manager.getRunState()
+									+ (manager.isStarted() ? "" : " -- loop gated, nothing is counting")), false);
 					source.sendSuccess(() -> Component.literal(
 							"[Entropy] entropy " + manager.getEntropy() + "/" + manager.getEntropyCap()
 									+ ", picks made " + manager.getPickCount()

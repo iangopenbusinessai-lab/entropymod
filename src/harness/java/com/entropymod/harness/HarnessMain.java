@@ -6,8 +6,10 @@ import com.entropymod.entropy.EffectHooks;
 import com.entropymod.entropy.EffectRegistry;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.entropy.EffectPhase;
+import com.entropymod.entropy.KeybindSnapshot;
 import com.entropymod.entropy.MovementScramble;
 import com.entropymod.entropy.RerollState;
+import com.entropymod.entropy.RunState;
 import com.entropymod.entropy.behavior.BadReputationBehavior;
 import com.entropymod.entropy.behavior.BlightTouchedBehavior;
 import com.entropymod.entropy.behavior.ClumsyDiggerBehavior;
@@ -24,7 +26,11 @@ import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.entropy.growth.TramplePath;
 import com.entropymod.network.EntropyCodecs;
 import com.entropymod.network.ClientEffectsPayload;
+import com.entropymod.network.KeybindSnapshotPayload;
 import com.entropymod.network.OpenChoicePayload;
+import com.entropymod.network.RunSyncPayload;
+import com.google.gson.JsonElement;
+import com.mojang.serialization.JsonOps;
 import io.netty.buffer.Unpooled;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -71,6 +77,11 @@ public final class HarnessMain {
 		rerollStateDerivation();
 		openChoicePayloadRoundTrip();
 		tier2ClientEffects();
+		runStartGate();
+		keybindSnapshotRules();
+		runStatePersistence();
+		runLifecyclePayloadRoundTrip();
+		endedStateNotBuilt();
 		System.exit(Checks.summary());
 	}
 
@@ -993,6 +1004,270 @@ public final class HarnessMain {
 		ClientEffectsPayload emptyGot = ClientEffectsPayload.CODEC.decode(empty);
 		check(emptyGot.effectIds().isEmpty() && emptyGot.moveScramble().isEmpty(),
 				"an empty run round-trips (the client must be told 'you have nothing' too)");
+	}
+
+	// ------------------------------------------------------------------
+	// Run lifecycle: the NOT_STARTED gate and the keybind snapshot.
+	// The ENDED half of the architecture is deliberately not built -- see
+	// endedStateNotBuilt() below, which asserts exactly that.
+	// ------------------------------------------------------------------
+
+	/**
+	 * The gate is real: nothing counts before the run is started.
+	 *
+	 * <p>Ticked with a {@code null} server on purpose. That is not a shortcut
+	 * around building one -- it is the assertion. {@code triggerPick} dereferences
+	 * the server immediately, so a gate that let the loop run would blow up here
+	 * rather than quietly passing, and ticking well past the interval length is
+	 * what guarantees it would be reached.
+	 */
+	private static void runStartGate() {
+		section("Run lifecycle: the NOT_STARTED gate");
+
+		EntropyManager manager = new EntropyManager();
+		check(manager.getRunState() == RunState.NOT_STARTED,
+				"a fresh run starts NOT_STARTED, so a new world is gated by default");
+		check(!manager.isStarted(), "isStarted() agrees with the state");
+
+		boolean survived;
+		try {
+			for (int i = 0; i < EntropyManager.DEFAULT_INTERVAL_TICKS + 500; i++) {
+				manager.tick(null);
+			}
+			survived = true;
+		} catch (RuntimeException e) {
+			survived = false;
+		}
+		check(survived,
+				"ticking " + (EntropyManager.DEFAULT_INTERVAL_TICKS + 500)
+						+ " times while NOT_STARTED never reaches triggerPick");
+		check(manager.getTicksIntoInterval() == 0,
+				"the interval counter does not advance either -- the gate is before the "
+						+ "increment, so the loop is paused rather than running invisibly");
+
+		check(manager.startRun(), "startRun() performs the transition and reports it");
+		check(manager.getRunState() == RunState.IN_PROGRESS, "state is IN_PROGRESS afterwards");
+
+		// Requirement: Start must not be actionable twice. The trigger is a client
+		// packet, so a double-click or a replay really can arrive.
+		check(!manager.startRun(), "startRun() is idempotent -- a second call is refused");
+		check(manager.getTicksIntoInterval() == 0,
+				"the refused second start does not reset the interval timer mid-run");
+
+		for (int i = 0; i < 10; i++) {
+			manager.tick(null);
+		}
+		check(manager.getTicksIntoInterval() == 10,
+				"once started, the loop counts normally");
+
+		// forcePick bypasses the clock and nothing else, so it must respect the gate.
+		check(new EntropyManager().forcePick(null) == EntropyManager.PickTrigger.RUN_NOT_STARTED,
+				"/entropyforcepick is refused while NOT_STARTED, and says which gate refused");
+	}
+
+	/** Write-once per player, and only while the run is live. */
+	private static void keybindSnapshotRules() {
+		section("Keybind snapshot: captured once, at Start");
+
+		KeybindSnapshot wasd = new KeybindSnapshot(
+				"key.keyboard.w", "key.keyboard.s", "key.keyboard.a", "key.keyboard.d");
+		KeybindSnapshot arrows = new KeybindSnapshot(
+				"key.keyboard.up", "key.keyboard.down", "key.keyboard.left", "key.keyboard.right");
+
+		check(wasd.isPresent(), "a fully-bound snapshot is present");
+		check(!KeybindSnapshot.EMPTY.isPresent(), "EMPTY is absent");
+		check(!new KeybindSnapshot("key.keyboard.w", "", "key.keyboard.a", "key.keyboard.d").isPresent(),
+				"a partially-filled snapshot counts as absent, not half-honoured");
+
+		// The array handed to MovementScramble.apply is indexed by ORDER, so the
+		// snapshot's field order has to match it or every direction is rotated.
+		check(MovementScramble.ORDER.equals("FBLR"),
+				"MovementScramble.ORDER is still forward/back/left/right");
+		check(wasd.keys().equals(List.of(
+						"key.keyboard.w", "key.keyboard.s", "key.keyboard.a", "key.keyboard.d")),
+				"keys() is in ORDER -- forward, back, left, right");
+		check(wasd.keys().size() == MovementScramble.LENGTH,
+				"a snapshot has exactly as many keys as a scramble has slots");
+
+		String uuid = "11111111-2222-3333-4444-555555555555";
+		String other = "99999999-8888-7777-6666-555555555555";
+
+		EntropyManager notStarted = new EntropyManager();
+		check(!notStarted.storeKeybindSnapshotIfAbsent(uuid, wasd),
+				"a snapshot is REFUSED while NOT_STARTED -- there is no run to anchor to, "
+						+ "and the player may still rebind before clicking Start");
+		check(!notStarted.keybindSnapshotFor(uuid).isPresent(), "so nothing is held");
+
+		EntropyManager live = new EntropyManager();
+		live.startRun();
+		check(live.storeKeybindSnapshotIfAbsent(uuid, wasd), "stored once the run is live");
+		check(live.keybindSnapshotFor(uuid).equals(wasd), "and reads back unchanged");
+
+		// This is the whole anti-exploit guarantee. If a later capture could
+		// overwrite, a client could re-anchor its curse at will and rebinding would
+		// counter it again with one extra step.
+		check(!live.storeKeybindSnapshotIfAbsent(uuid, arrows),
+				"a SECOND snapshot for the same player is refused, not applied");
+		check(live.keybindSnapshotFor(uuid).equals(wasd),
+				"the original snapshot is still the one held");
+
+		check(live.storeKeybindSnapshotIfAbsent(other, arrows),
+				"a different player gets their own snapshot");
+		check(live.keybindSnapshotFor(other).equals(arrows)
+						&& live.keybindSnapshotFor(uuid).equals(wasd),
+				"the two players' snapshots do not collide");
+
+		check(!live.storeKeybindSnapshotIfAbsent("someone-else", KeybindSnapshot.EMPTY),
+				"an absent snapshot is not stored as if it were real");
+		check(!live.keybindSnapshotFor("nobody").isPresent(),
+				"an unknown player reads back as absent rather than null");
+	}
+
+	/**
+	 * Survives a relog, which for a {@code SavedData} means: survives the codec.
+	 * Includes the migration path for saves written before run states existed.
+	 */
+	private static void runStatePersistence() {
+		section("Run lifecycle persists across a relog");
+
+		String uuid = "11111111-2222-3333-4444-555555555555";
+		KeybindSnapshot wasd = new KeybindSnapshot(
+				"key.keyboard.w", "key.keyboard.s", "key.keyboard.a", "key.keyboard.d");
+
+		EntropyManager before = new EntropyManager();
+		before.startRun();
+		before.storeKeybindSnapshotIfAbsent(uuid, wasd);
+
+		EntropyManager after = reencode(before);
+		check(after.getRunState() == RunState.IN_PROGRESS, "run state survives the save");
+		check(after.keybindSnapshotFor(uuid).equals(wasd),
+				"the keybind snapshot survives the save, key for key and in order");
+
+		EntropyManager fresh = reencode(new EntropyManager());
+		check(fresh.getRunState() == RunState.NOT_STARTED,
+				"an unstarted run reloads as unstarted -- the gate is not lost on reload");
+		check(!fresh.keybindSnapshotFor(uuid).isPresent(), "and holds no snapshots");
+
+		// Migration. A save from before this feature has no "run_state" field at
+		// all, and defaulting it to NOT_STARTED would demand that a player already
+		// mid-run click Start again on a world they had been playing for an hour.
+		JsonElement legacy = encode(new EntropyManager());
+		legacy.getAsJsonObject().remove("run_state");
+		legacy.getAsJsonObject().addProperty("pick_count", 7);
+		EntropyManager migrated = decode(legacy);
+		check(migrated.getRunState() == RunState.IN_PROGRESS,
+				"a pre-run-state save with picks made migrates to IN_PROGRESS");
+		check(migrated.getPickCount() == 7, "and keeps its picks");
+
+		JsonElement legacyUntouched = encode(new EntropyManager());
+		legacyUntouched.getAsJsonObject().remove("run_state");
+		check(decode(legacyUntouched).getRunState() == RunState.NOT_STARTED,
+				"a pre-run-state save with no picks migrates to NOT_STARTED");
+
+		// The migration keys on pickCount specifically, NOT on the acquired set --
+		// /entropygrant adds effects without advancing the run and works while
+		// NOT_STARTED, so a granted effect must not be mistaken for a started run.
+		JsonElement granted = encode(new EntropyManager());
+		granted.getAsJsonObject().remove("run_state");
+		granted.getAsJsonObject().add("acquired",
+				JsonOps.INSTANCE.createList(java.util.stream.Stream.of(
+						JsonOps.INSTANCE.createString(SureFootingBehavior.ID))));
+		check(decode(granted).getRunState() == RunState.NOT_STARTED,
+				"a granted effect on a pre-run-state save does NOT look like a started run");
+
+		// Unparseable rather than absent: must degrade, not make the world unloadable.
+		JsonElement garbage = encode(new EntropyManager());
+		garbage.getAsJsonObject().addProperty("run_state", "ENDED_SOMEHOW");
+		check(decode(garbage).getRunState() == RunState.NOT_STARTED,
+				"an unrecognised run_state degrades to NOT_STARTED instead of throwing");
+	}
+
+	private static JsonElement encode(EntropyManager manager) {
+		return EntropyManager.CODEC.encodeStart(JsonOps.INSTANCE, manager)
+				.getOrThrow(msg -> new IllegalStateException("encode failed: " + msg));
+	}
+
+	private static EntropyManager decode(JsonElement json) {
+		return EntropyManager.CODEC.parse(JsonOps.INSTANCE, json)
+				.getOrThrow(msg -> new IllegalStateException("decode failed: " + msg));
+	}
+
+	/** Save and reload, which is what a relog is for a SavedData. */
+	private static EntropyManager reencode(EntropyManager manager) {
+		return decode(encode(manager));
+	}
+
+	private static void runLifecyclePayloadRoundTrip() {
+		section("Run lifecycle payloads round-trip");
+
+		// Four same-typed string components in a row on both payloads -- exactly the
+		// shape where a mis-wired getter compiles and silently sends the wrong
+		// field, so every value here is distinct and each is checked by name.
+		KeybindSnapshot distinct = new KeybindSnapshot("K_FWD", "K_BACK", "K_LEFT", "K_RIGHT");
+
+		RegistryFriendlyByteBuf buf =
+				new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+		RunSyncPayload.CODEC.encode(buf, RunSyncPayload.of(RunState.IN_PROGRESS, distinct));
+		RunSyncPayload gotSync = RunSyncPayload.CODEC.decode(buf);
+
+		check(gotSync.state() == RunState.IN_PROGRESS, "run state survives the wire");
+		check(gotSync.snapshot().forward().equals("K_FWD")
+						&& gotSync.snapshot().back().equals("K_BACK")
+						&& gotSync.snapshot().left().equals("K_LEFT")
+						&& gotSync.snapshot().right().equals("K_RIGHT"),
+				"the four keys are not rotated or swapped on RunSyncPayload");
+		check(buf.readableBytes() == 0, "RunSyncPayload's buffer is fully consumed");
+
+		RegistryFriendlyByteBuf named =
+				new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+		RunSyncPayload.CODEC.encode(named, RunSyncPayload.of(RunState.NOT_STARTED, KeybindSnapshot.EMPTY));
+		check(named.toString(java.nio.charset.StandardCharsets.UTF_8).contains("NOT_STARTED"),
+				"run state goes on the wire by name, not by ordinal");
+
+		for (boolean start : new boolean[] {true, false}) {
+			RegistryFriendlyByteBuf up =
+					new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+			KeybindSnapshotPayload.CODEC.encode(up, new KeybindSnapshotPayload(distinct, start));
+			KeybindSnapshotPayload got = KeybindSnapshotPayload.CODEC.decode(up);
+
+			check(got.startRun() == start,
+					"startRun survives the wire as " + start + " -- it is what starts the run");
+			check(got.snapshot().equals(distinct),
+					"the snapshot rides with it intact (startRun=" + start + ")");
+			check(up.readableBytes() == 0,
+					"KeybindSnapshotPayload's buffer is fully consumed (startRun=" + start + ")");
+		}
+
+		// The empty snapshot has to survive too: it is the "server holds nothing for
+		// you" signal that makes a client capture its keybinds.
+		RegistryFriendlyByteBuf empty =
+				new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+		RunSyncPayload.CODEC.encode(empty, RunSyncPayload.of(RunState.NOT_STARTED, KeybindSnapshot.EMPTY));
+		check(!RunSyncPayload.CODEC.decode(empty).snapshot().isPresent(),
+				"an absent snapshot survives as absent -- that is the capture cue");
+	}
+
+	/**
+	 * The other half of the architecture is still unbuilt, and this asserts it
+	 * rather than trusting a doc comment.
+	 *
+	 * <p>The scope line matters because {@code ENDED} is the state everything else
+	 * hangs off: an end screen, dragon-death win detection, Become Hardcore's
+	 * death-triggered loss, and a run-wide death counter. A later session finding
+	 * a half-present {@code ENDED} constant would have no way to tell "started and
+	 * abandoned" from "deliberately deferred".
+	 */
+	private static void endedStateNotBuilt() {
+		section("The ENDED half is deliberately NOT built");
+
+		check(RunState.values().length == 2,
+				"RunState has exactly two constants -- no speculative ENDED to branch on");
+		check(Arrays.stream(RunState.values()).noneMatch(s -> s.name().equals("ENDED")),
+				"no ENDED constant exists yet");
+		check(!Checks.hasMethod(EntropyManager.class, "endRun"),
+				"no endRun() -- the three paths into ENDED are still unbuilt");
+		check(!Checks.hasMethod(EntropyManager.class, "getDeathCount"),
+				"no run-wide death counter yet (that belongs with the end screen)");
 	}
 
 	private HarnessMain() {}

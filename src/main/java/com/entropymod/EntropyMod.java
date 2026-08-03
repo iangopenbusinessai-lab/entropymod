@@ -10,8 +10,10 @@ import com.entropymod.network.ChoiceMadePayload;
 import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.HistoryRequestPayload;
 import com.entropymod.network.HistoryResponsePayload;
+import com.entropymod.network.KeybindSnapshotPayload;
 import com.entropymod.network.OpenChoicePayload;
 import com.entropymod.network.RerollRequestPayload;
+import com.entropymod.network.RunSyncPayload;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityLevelChangeEvents;
 import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
@@ -52,6 +54,10 @@ public class EntropyMod implements ModInitializer {
 		// Tier 2's client-side effects need to know which effects the run holds --
 		// see ClientEffectsPayload. Nothing before Tier 2 required this.
 		PayloadTypeRegistry.clientboundPlay().register(ClientEffectsPayload.TYPE, ClientEffectsPayload.CODEC);
+		// Run lifecycle: the state gate and the per-player keybind snapshot that
+		// Randomized Movement Controls is anchored to.
+		PayloadTypeRegistry.clientboundPlay().register(RunSyncPayload.TYPE, RunSyncPayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(KeybindSnapshotPayload.TYPE, KeybindSnapshotPayload.CODEC);
 
 		// Effect ids are matched between EffectRegistry and EffectBehaviors by string,
 		// which the compiler cannot check. Report mismatches once, at startup.
@@ -74,6 +80,37 @@ public class EntropyMod implements ModInitializer {
 		ServerPlayNetworking.registerGlobalReceiver(RerollRequestPayload.TYPE, (payload, context) -> {
 			MinecraftServer server = ((ServerLevel) context.player().level()).getServer();
 			EntropyManager.get(server).requestReroll(server);
+		});
+
+		// The start panel's button, and every keybind capture.
+		//
+		// ONE handler for both, because the snapshot IS the start message -- see
+		// KeybindSnapshotPayload for why that removes the client/server ordering
+		// question rather than answering it. Order inside the handler matters and is
+		// the only ordering constraint left: storeKeybindSnapshotIfAbsent refuses
+		// while the run is NOT_STARTED, so the transition has to land first.
+		//
+		// Nothing here trusts the client. startRun is idempotent and re-checks the
+		// state; the snapshot is write-once per player. A client that sets startRun
+		// on every packet, or re-sends a fresh capture to re-anchor its curse, gets
+		// nowhere.
+		ServerPlayNetworking.registerGlobalReceiver(KeybindSnapshotPayload.TYPE, (payload, context) -> {
+			ServerPlayer player = context.player();
+			MinecraftServer server = player.level().getServer();
+			EntropyManager manager = EntropyManager.get(server);
+
+			boolean started = payload.startRun() && manager.startRun();
+			manager.storeKeybindSnapshotIfAbsent(player, payload.snapshot());
+
+			if (started) {
+				// Tells every client the run is live. For the player who clicked, this
+				// is what closes the start panel -- the client never closes it on its
+				// own click, so a refused start cannot strand them outside the gate.
+				// For everyone else it is also the cue to capture their own keybinds.
+				manager.syncRunToAll(server);
+			} else {
+				manager.syncRunTo(player);
+			}
 		});
 
 		// History is fetched on demand, and answered only to the player who asked --
@@ -162,6 +199,11 @@ public class EntropyMod implements ModInitializer {
 		// "you have nothing" too, or a stale cache from a previous world would
 		// survive into this one.
 		manager.syncTo(player);
+		// Same discipline, and this one drives three separate client decisions on
+		// join: show the start panel while NOT_STARTED, close it once started, and
+		// capture keybinds if the server holds none for this player yet. See
+		// RunSyncPayload.
+		manager.syncRunTo(player);
 	}
 
 	public static Identifier id(String path) {
