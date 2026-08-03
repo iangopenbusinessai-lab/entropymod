@@ -67,6 +67,23 @@ final class Checks {
 		}
 	}
 
+	/**
+	 * Whether a method is declared at all, by name, ignoring its signature.
+	 *
+	 * <p>The counterpart to {@link #hasConstant} for a retired code path: it
+	 * asserts a hook was genuinely deleted rather than left in place returning a
+	 * neutral value for nobody. A method that still exists can be re-wired by a
+	 * later session that does not know why it was emptied.
+	 */
+	static boolean hasMethod(Class<?> owner, String name) {
+		for (java.lang.reflect.Method method : owner.getDeclaredMethods()) {
+			if (method.getName().equals(name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	static int summary() {
 		System.out.println();
 		System.out.println("---------------------------------------------");

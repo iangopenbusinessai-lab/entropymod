@@ -2,7 +2,6 @@ package com.entropymod.entropy;
 
 import com.entropymod.entropy.behavior.BadReputationBehavior;
 import com.entropymod.entropy.behavior.BeastWhispererBehavior;
-import com.entropymod.entropy.behavior.BlightTouchedBehavior;
 import com.entropymod.entropy.behavior.ClumsyDiggerBehavior;
 import com.entropymod.entropy.behavior.GreenThumbBehavior;
 import com.entropymod.entropy.behavior.LeakyPocketsBehavior;
@@ -154,57 +153,15 @@ public final class EffectHooks {
 	}
 
 	/**
-	 * Scales crop growth speed at a block position. Read by the
-	 * {@code CropBlock.getGrowthSpeed} mixin.
-	 *
-	 * <p><b>Blight Touched is the only effect on this hook now.</b> Green Thumb
-	 * used to multiply here too and no longer contributes anything -- it moved to
-	 * {@code GreenThumbGrowth}, which grants advances on its own schedule, because
-	 * this hook can only change the <em>chance</em> a random tick succeeds and not
-	 * the <em>rate</em> at which random ticks arrive. See that class for the
-	 * ceiling that forced the change. Blight Touched's own multiplier and its
-	 * behaviour through this hook are deliberately untouched by that move.
-	 *
-	 * <p>A random tick has no notion of whose crop it is, so proximity is the only
-	 * honest way to scope this to a player: the nearest player within
-	 * {@link GreenThumbBehavior#RADIUS} of the block decides. Nearest rather than
-	 * "any" so two players with opposing effects cannot both apply.
-	 */
-	public static float cropGrowthMultiplier(Level level, BlockPos pos) {
-		AcquiredEffects acquired = acquired(nearestPlayerTo(level, pos));
-		return acquired == null ? 1.0f : cropGrowthMultiplierFor(acquired);
-	}
-
-	/**
-	 * The multiplier a given acquired set produces, with the player lookup already
-	 * done.
-	 *
-	 * <p>Split out so the composition rule can be driven directly by a headless
-	 * harness -- {@link AcquiredEffects} is free of Minecraft imports, so this is
-	 * testable against the real shipped method rather than against a copy of it.
-	 * That matters most for proving Green Thumb contributes exactly nothing here.
-	 *
-	 * <p>Never returns 0 or less. Vanilla divides by this value
-	 * ({@code (int)(25.0F / speed)}), and a zero would produce
-	 * {@code nextInt(Integer.MIN_VALUE)}, which throws inside a block tick.
-	 */
-	public static float cropGrowthMultiplierFor(AcquiredEffects acquired) {
-		float multiplier = 1.0f;
-		if (acquired.contains(BlightTouchedBehavior.ID)) {
-			multiplier *= BlightTouchedBehavior.MULTIPLIER;
-		}
-		return Math.max(multiplier, MIN_CROP_MULTIPLIER);
-	}
-
-	/**
 	 * True if a player holding Green Thumb is within {@link GreenThumbBehavior#RADIUS}
 	 * of this block. Read by {@code GreenThumbGrowth} to re-verify a crop at the
 	 * moment of each scheduled advance.
 	 *
-	 * <p>Uses the same nearest-player scoping as {@link #cropGrowthMultiplier}
-	 * above, deliberately: the two mechanisms must agree about whose crops are
-	 * whose, and "nearest" rather than "any" keeps two players from both claiming
-	 * the same block.
+	 * <p>"Nearest" rather than "any" so two players cannot both claim the same
+	 * block. This is the last remaining crop-proximity check in the mod: the
+	 * {@code cropGrowthMultiplier} hook that used to sit beside it was deleted
+	 * along with Blight Touched's growth-slowdown mechanic, since Blight Touched
+	 * was the only effect still feeding it. See {@code BlightTouchedTrample}.
 	 */
 	public static boolean hasGreenThumbNearby(Level level, BlockPos pos) {
 		AcquiredEffects acquired = acquired(nearestPlayerTo(level, pos));
@@ -220,9 +177,6 @@ public final class EffectHooks {
 				pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5,
 				GreenThumbBehavior.RADIUS, false);
 	}
-
-	/** Floor for {@link #cropGrowthMultiplier} -- see that method for why 0 is unsafe. */
-	private static final float MIN_CROP_MULTIPLIER = 0.01f;
 
 	/** True if this jump should spill an item (Leaky Pockets). Rolls the chance itself. */
 	public static boolean rollLeakyPockets(Player player, RandomSource random) {

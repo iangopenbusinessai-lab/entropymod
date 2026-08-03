@@ -363,12 +363,13 @@ Two things to know before changing it:
   `y` down when `player.getActiveEffects()` is non-empty is the obvious fix;
   it was left alone because the top-right position was specified.
 
-### Mixins — fifteen real ones now, plus the original placeholders
+### Mixins — fourteen real ones now, plus the original placeholders
 `EntropyModMixin` / `EntropyModClientMixin` are still unused example code.
-**Fifteen real mixins now exist**: three for the original hook-driven effects,
-eight from the mixin cluster, and four from the crop/event/meta session
-(`CropGrowthMixin`, `ServerPlayerJumpMixin`, `ItemStackDurabilityMixin`,
-`VillagerPricesMixin`). See "The original three mixins" and "The mixin
+**Fourteen real mixins now exist**: three for the original hook-driven effects,
+eight from the mixin cluster, and three from the crop/event/meta session
+(`ServerPlayerJumpMixin`, `ItemStackDurabilityMixin`, `VillagerPricesMixin`).
+`CropGrowthMixin` was the fifteenth and has been **deleted** — see "Blight
+Touched: the trample rewrite" below. See "The original three mixins" and "The mixin
 cluster" under the Tier 1 content batch below — the latter carries the
 javap-verified target table, which is the part worth reading before adding
 another. The pattern is proven; later signature effects (Mirror World's inverted
@@ -540,10 +541,14 @@ defines — that is handled the same way as any other unknown id: skipped with a
 warning at load, rest of the run intact.
 
 Eighteen are pure `AttributeEffectBehavior` subclasses (including
-`magnetic_boots`, via a mod-registered attribute). Ten need a mixin, because no
+`magnetic_boots`, via a mod-registered attribute). Nine need a mixin, because no
 vanilla attribute covers them: hunger rate, incoming damage, XP gain, water
 freezing, projectile knockback, footstep volume, mob detection range, and animal
-fleeing.
+fleeing. Two more — `green_thumb` and `blight_touched` — need **neither**: both
+are tick services driven from `ServerTickEvents.END_SERVER_TICK`, each having
+started life on a mixin and outgrown it. That is now an established third shape
+alongside attribute and mixin, and it is the right one whenever the effect is a
+schedule or a per-player world query rather than a value vanilla already computes.
 
 **Two effects were originally specced as "custom hook" and are attributes
 instead**, which is strictly better and worth knowing before someone "fixes" it:
@@ -728,7 +733,6 @@ before writing another mixin.
 | `LivingEntityVisibilityMixin` | `LivingEntity.getVisibilityPercent(Entity)` | `@Inject` RETURN |
 | `PanicGoalMixin` | `PanicGoal.shouldPanic()` | `@Inject` RETURN |
 | `AvoidEntityGoalMixin` | `AvoidEntityGoal.canUse()` | `@Inject` RETURN |
-| `CropGrowthMixin` | `CropBlock.getGrowthSpeed` *(static)* | `@Inject` RETURN — Blight Touched only now |
 | `ServerPlayerJumpMixin` | `ServerPlayer.jumpFromGround()` | `@Inject` TAIL |
 | `ItemStackDurabilityMixin` | `ItemStack.hurtAndBreak(I,ServerLevel,ServerPlayer,Consumer)` | `@ModifyVariable` |
 | `VillagerPricesMixin` | `Villager.updateSpecialPrices(Player)` *(private)* | `@Inject` TAIL |
@@ -910,48 +914,134 @@ It is done when a value has been observed to change in game. Prefer effects whos
 result is directly measurable, and when a magnitude is chosen, sanity-check what
 it means in blocks/hearts/seconds before shipping it.
 
-#### Crops: hook `getGrowthSpeed`, not `randomTick` (Blight Touched)
-**This hook is Blight Touched's alone now.** Green Thumb used to share it and no
-longer contributes anything to it — see "Green Thumb: when vanilla's own systems
-cannot reach the target" below for why, and for the pattern that replaced it.
-Everything in this section still applies to Blight Touched unchanged.
+#### Blight Touched: the trample rewrite, and the death of the shared crop hook
+**The `getGrowthSpeed` hook, its mixin and its multiplier are all gone.** Green
+Thumb left that hook first; Blight Touched was the last effect on it, and rather
+than leave a hook returning 1.0 for nobody, `CropGrowthMixin`,
+`EffectHooks.cropGrowthMultiplier`, `cropGrowthMultiplierFor` and
+`MIN_CROP_MULTIPLIER` were **deleted**. Same discipline as Green Thumb's
+retirement: a neutral code path can be quietly re-wired by a later session that
+doesn't know why it was emptied; code that doesn't exist cannot. The harness
+asserts all four absences by reflection.
 
-Vanilla grows a crop with
-`random.nextInt((int)(25.0F / getGrowthSpeed(...)) + 1) == 0`, so scaling that
-speed is the whole effect: higher speed, smaller divisor, better odds.
+The knowledge that hook produced is still worth having and is preserved below
+under "Crop growth timing" — it still describes vanilla, it is what proved Green
+Thumb needed a different mechanism, and it is what proved Blight Touched needed
+one too. **What it no longer describes is any shipped effect.**
 
-**`CropBlock.randomTick` is the obvious target and the worse one.**
-`BeetrootBlock` and `TorchflowerCropBlock` both override it — the subclass trap
-above — and although both happen to call `super`, relying on that is luck.
+**Why it was replaced: the old version could not be felt.** Halving growth speed
+is a shift in a probability the player never observes, over tens of minutes,
+against a baseline they have no reading of — failure mode 3 from the mixin-cluster
+list above, "real, but below the perceptual threshold". This is the second effect
+to fail that way (Magnetic Boots at 1.5x was the first), and the pattern is worth
+naming: **an effect that only changes a rate the player cannot measure is
+indistinguishable from an effect that does nothing.** Prefer effects whose result
+is a discrete, visible event.
 
-**`CropBlock.getGrowthSpeed` is strictly better on both counts.** It is `static`,
-so it cannot be overridden at all, and it is called from **three** classes rather
-than one: `CropBlock`, `StemBlock` and `PitcherCropBlock`. One hook therefore
-covers wheat, carrots, potatoes, beetroot and torchflower (all via
-`CropBlock.randomTick`), plus pumpkin and melon stems, plus the pitcher crop.
+**The mechanic now:** every crop the player's feet enter is replaced by a dead
+bush on the spot, at any growth stage. Instant, local, visible, obviously caused
+by them, and it leaves a permanent scar on the world rather than a temporary
+statistical drag.
 
-- **Scope limit, stated rather than hidden:** plants that don't use
-  `getGrowthSpeed` are unaffected — sugar cane, cactus, bamboo, saplings, nether
-  wart, cocoa, sweet berry bushes. "Crops" here means farmland crops and stems.
-- **Scoping to a player is possible and clean.** A random tick has no owner, but
-  it does have a `ServerLevel` and a `BlockPos`, and
-  `EntityGetter.getNearestPlayer(x, y, z, radius, false)` answers "who is within
-  8 blocks". *Nearest*, not *any*, so two players with opposing effects cannot
-  both apply. The stop condition in the brief did not fire.
-- **Never let the multiplier reach 0.** `25.0F / 0` is `Infinity`,
-  `(int)Infinity` is `Integer.MAX_VALUE`, and `nextInt(MAX_VALUE + 1)` overflows
-  to `nextInt(Integer.MIN_VALUE)`, which **throws inside a block tick**.
-  `EffectHooks.cropGrowthMultiplier` floors the result for exactly this reason.
-  **This matters more now than it used to:** with only Blight Touched left on the
-  hook, the multiplier is always ≤ 1.0, i.e. always on the dangerous side. Green
-  Thumb's old 26x used to dominate the composition and keep it far away.
+- **Scope is deliberately wide.** No radius, no ownership check, no "crops you
+  planted" test — cutting across a village farm ruins the village's farm. That
+  is the intended chaos.
+- **It is also much cheaper than the thing it replaced.** One block-state read
+  per player per tick, against Green Thumb's 4913-block sweep. No proximity
+  query, because the question is only ever "what block am I in".
+- Covered blocks are `CropBlock`, `StemBlock` and `PitcherCropBlock` — the same
+  three the old hook reached — **plus `AttachedStemBlock`**, which the hook did
+  not, so that a stem which has already fruited dies like its neighbours instead
+  of standing untouched in a dead field. The fruit block itself is separate and
+  is not removed.
+- The crop drops nothing. It is a block replacement, not a break.
+
+#### Dead Bush placement — the finding most likely to have gone wrong, and didn't
+This was the part of the design that could have silently reverted itself, and it
+verifies clean in a stronger way than expected. **Do not re-derive this from
+folklore about dead bushes needing sand.**
+
+- **There is no `DeadBushBlock` class in this version.** `minecraft:dead_bush` is
+  `net.minecraft.world.level.block.DryVegetationBlock`. Grepping for the old name
+  returns nothing, which reads like "the block is gone" rather than "the class was
+  renamed" — the same shape of mistake as the Frost Walker and `Villager` package
+  findings. Resolved via the `invokedynamic` bootstrap-method table of
+  `Blocks.<clinit>`, since the registration site is a lambda:
+  `javap -v -p Blocks | awk '/BootstrapMethods:/{f=1} f'`.
+- Its only survival rule is `VegetationBlock.canSurvive`, which is exactly
+  `below.is(BlockTags.SUPPORTS_DRY_VEGETATION)`. No light check, no water check,
+  nothing else.
+- **The tag chain makes this safe by construction, not by luck:**
+
+  | tag | contents |
+  |---|---|
+  | `supports_dry_vegetation` | `#sand`, `#terracotta`, `#supports_vegetation` |
+  | `supports_vegetation` | `#substrate_overworld`, **`minecraft:farmland`** |
+  | `supports_crops` | **`minecraft:farmland`** — and nothing else |
+
+  Every crop this effect touches requires `SUPPORTS_CROPS` beneath it, which is
+  farmland alone, and farmland is inside `SUPPORTS_DRY_VEGETATION`. **So the
+  ground under any crop is always ground a dead bush survives on.** More generally
+  `SUPPORTS_VEGETATION ⊆ SUPPORTS_DRY_VEGETATION`, so a dead bush survives
+  anywhere *any* `VegetationBlock` survives. Tag merging from datapacks is
+  additive, so this cannot be narrowed by a pack either.
+- It even survives the farmland being trampled back to dirt afterwards, since
+  `#dirt` is in `#substrate_overworld`.
+- **The one real exception is the pitcher crop's upper half**, which stands on the
+  lower half rather than on the ground. A dead bush placed there would have no
+  valid support and would pop off on the next update. `BlightTouchedTrample.blight`
+  redirects to `pos.below()` for that case; the upper half then breaks itself for
+  lack of support, which is what `setBlockAndUpdate` (flag 3, `UPDATE_ALL`) is for
+  — Green Thumb's `UPDATE_CLIENTS` would not have notified it.
+
+**World persistence needed no work and cannot be got wrong.** This is a *world*
+change, not player state — the first in the project. `Level.setBlockAndUpdate`
+reaches `LevelChunk.setBlockState`, which calls `markUnsaved()`, so vanilla writes
+it with the chunk like any other block edit. Nothing mod-side persists it, nothing
+mod-side can lose it, and it survives the mod being removed.
+
+#### Sweeping the path, not just the feet block
+A single "what block are my feet in" check per tick is right for walking (0.28
+blocks/tick means three or four ticks land in the same block) and **wrong for
+anything faster** — elytra, a horse, and a boat on ice all cover more than a block
+per tick, so a player flying over a field would skip most of it.
+
+`TramplePath` sweeps the segment between the previous tick's position and this
+one's. It is **free of Minecraft imports**, same discipline as `CropSchedule`,
+`AcquiredEffects` and `EntropyPalette`, because a gap in the sweep is invisible in
+play — it just looks like a crop that happened not to be trampled — so it needs to
+be harness-drivable. Three rules, all asserted:
+
+- Standing still yields exactly one cell, not one per sample.
+- A fast move yields every cell on the line, contiguous and in travel order.
+- **A move of more than `MAX_SEGMENT` (16 blocks) on any axis yields only the
+  destination cell.** A teleport, a portal and a `/tp` all present as an enormous
+  single-tick delta, and destroying every crop on the line between two points is
+  not the effect. A dimension change is treated the same way.
+
+Sampling is at `MAX_STEP` = 0.25 blocks on the largest axis rather than an exact
+voxel traversal. Stated limit: a cell clipped by less than a quarter block at a
+corner can be missed. That is deliberate — the exact algorithm is several times
+the code for an outcome no player can tell from a near-miss.
+
+**Feedback:** `level.levelEvent(LevelEvent.PARTICLES_DESTROY_BLOCK, pos,
+Block.getId(state))` — one line, and it gives the destroyed crop's own break sound
+and its own texture's break particles for free. Prefer this over hand-picking a
+`SoundEvent` and a `ParticleType`.
 
 #### Crop growth timing — derived, not measured; don't re-derive it from scratch
 This is the kind of number a future balance pass would otherwise redo from
 zero. The probability model below is **validated against an external known-good
 figure** (vanilla row-planted wheat at ~24 minutes) and is asserted by
-`./gradlew harness`. It still governs Blight Touched, and it is what proved Green
-Thumb needed a different mechanism entirely.
+`./gradlew harness`.
+
+**It no longer governs any shipped effect** — it described the retired
+`getGrowthSpeed` hook, which both crop effects have now left. It is kept because
+it still describes vanilla's own behaviour correctly, and because it is the
+evidence that *both* rewrites were necessary rather than merely preferred: it is
+what proved Green Thumb could not reach 90s through the hook, and the same
+saturation shape is why a growth multiplier was never going to make Blight Touched
+noticeable either.
 
 **Two independent probabilities decide vanilla crop speed, and only one of them
 is reachable from an effect.**
@@ -1002,11 +1092,12 @@ tick. Both halves matter: the schedule is what beats the ceiling, and using
 vanilla's transition is what keeps block updates, client visuals and every
 subclass quirk correct for free.
 
-`GreenThumbGrowth` grants stage advances directly and no longer touches
-`cropGrowthMultiplier` at all. **Green Thumb declares no multiplier constant any
-more** — removed rather than set to 1.0, because a neutral constant can be
-quietly re-wired into the shared hook and double-applied, and a field that does
-not exist cannot. The harness asserts its absence.
+`GreenThumbGrowth` grants stage advances directly. **Green Thumb declares no
+multiplier constant any more** — removed rather than set to 1.0, because a neutral
+constant can be quietly re-wired into the shared hook and double-applied, and a
+field that does not exist cannot. The harness asserts its absence. (The shared
+hook it left has since been deleted outright, when Blight Touched — the only other
+effect on it — left too.)
 
 **Why uniform 90s is achievable now and was not before.** A granted advance is
 not rolled for, so the expected total is just `stages × interval`. Differing
@@ -1051,7 +1142,8 @@ Three traps this avoided, each checked rather than assumed:
 - **`AttachedStemBlock extends VegetationBlock`, not `StemBlock`.** So a stem that
   has already fruited is not matched and drops out of tracking by itself. Had it
   been a subclass, `state.getValue(StemBlock.AGE)` would have thrown on a block
-  with no age property.
+  with no age property. (Blight Touched matches it explicitly and separately, for
+  the opposite reason — it *wants* fruited stems.)
 - **A pitcher crop is two blocks, and a radius scan finds both** — advancing it
   twice per interval. `PitcherCropBlock.isRandomlyTicking(state)` is vanilla's own
   "is there anything to do here" test (true only for the LOWER half, and only
@@ -1083,12 +1175,15 @@ Scheduling state is **not persisted and is cleared on `SERVER_STOPPED`** — it 
 about a player standing in a field right now, not part of the run, and in
 singleplayer the next world is one trip through the main menu away.
 
-**Blight Touched interaction:** the two no longer compose through one multiplier.
-Green Thumb's advances fire on schedule regardless, and Blight still slows the
-natural random-tick path. That is close to the old behaviour in practice — at
-26× × 0.5 the roll was *still* saturated, so Blight was fully masked then too.
-The one place it now bites is the stem's fruit step, which is genuinely
-probabilistic: blighted, that takes ~11 attempts instead of ~6.
+**Blight Touched interaction: there is none any more, and that is the point.**
+The two effects once composed through a single multiplier; both have since left
+that hook and it has been deleted. They now operate on different axes entirely —
+Green Thumb grants stage advances on a schedule, Blight Touched destroys blocks
+the player steps on — so a run holding both grows crops to maturity in 90 seconds
+*and* kills any of them the player walks over. Nothing about Green Thumb's timing
+depends on Blight Touched, which the harness asserts directly rather than leaving
+to inspection: the whole 90s interval table is re-derived in a section named for
+that regression.
 
 #### Leaky Pockets: 4% → 7% per jump
 Retuned after play testing. At 4% the mean gap was 25 jumps, rare enough that the
@@ -1307,15 +1402,20 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 64 checks currently: the tuning constants as
+same numbers kept being re-derived. 88 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
-and its per-crop intervals, Blight Touched's untouched contribution to the shared
-hook, the crop-schedule tracking rules, the growth-roll overflow guard, and
-`/entropygrant`'s contract.
+and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
+Blight Touched's path sweep and its off-by-default gate, the crop-schedule
+tracking rules, and `/entropygrant`'s contract.
 
-It has already earned its keep once: this session's first run failed on a
+It has already earned its keep once: an earlier session's first run failed on a
 hand-derived expected value for blighted wheat (the roll bound at speed 2.5 is
 11, not 12). The model was right and the number written next to it was not.
+
+**`Checks.hasMethod` is the counterpart to `Checks.hasConstant`** — it asserts a
+retired *code path* was deleted rather than left returning a neutral value. Both
+crop-hook retirements are pinned that way. Reach for it whenever a session removes
+a mechanic rather than changing one.
 
 Two things about it worth keeping:
 
@@ -1555,7 +1655,7 @@ permanent effects) is in and is real, not stubs.
 6. Config surface (Question 4) — can happen in parallel, low-risk to defer.
 7. A real pick-history screen to replace the `/entropyhistory` debug logging.
    The data is persisted now, so it survives long enough to be worth showing.
-8. Odd/signature effects, prioritized per Question 8. **Eleven mixins now exist
+8. Odd/signature effects, prioritized per Question 8. **Fourteen mixins now exist
    and the pattern is well proven** — including a mod-registered attribute, a
    goal-AI hook, and driving a data-driven vanilla enchantment directly. Read
    "The mixin cluster" above before starting: its target table, and the note that

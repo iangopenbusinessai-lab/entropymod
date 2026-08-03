@@ -9,9 +9,14 @@ import com.entropymod.entropy.behavior.BlightTouchedBehavior;
 import com.entropymod.entropy.behavior.GreenThumbBehavior;
 import com.entropymod.entropy.behavior.LeakyPocketsBehavior;
 import com.entropymod.entropy.behavior.SureFootingBehavior;
+import com.entropymod.entropy.growth.BlightTouchedTrample;
 import com.entropymod.entropy.growth.CropSchedule;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
+import com.entropymod.entropy.growth.TramplePath;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 
 import static com.entropymod.harness.Checks.check;
@@ -24,8 +29,9 @@ import static com.entropymod.harness.Checks.section;
  *
  * <p>Covers what can be established without booting Minecraft: the tuning
  * constants as they are actually compiled, the crop-growth timing derivation,
- * the divide-by-zero guard around vanilla's growth roll, and the parts of
- * {@code /entropygrant}'s contract that are observable off-server.
+ * Green Thumb's active schedule, Blight Touched's walked-through path sweep and
+ * its off-by-default gate, and the parts of {@code /entropygrant}'s contract
+ * that are observable off-server.
  *
  * <p><b>What it cannot prove</b>, and what still needs a real session: that the
  * mixins inject, that the effects are felt, and that a granted effect survives a
@@ -38,9 +44,10 @@ public final class HarnessMain {
 		growthModelSanity();
 		retiredMultiplierCeiling();
 		activeGrowthSchedule();
-		blightTouchedUnregressed();
+		greenThumbUnaffectedByBlightRemoval();
+		blightTramplePath();
+		blightTrampleGate();
 		scheduleTracking();
-		overflowGuard();
 		grantContract();
 		System.exit(Checks.summary());
 	}
@@ -59,14 +66,29 @@ public final class HarnessMain {
 				"Leaky Pockets fires on 7% of jumps");
 		checkNear(constant(GreenThumbBehavior.class, "RADIUS"), 8.0, 1e-7,
 				"Green Thumb radius is unchanged at 8 blocks");
-		checkNear(constant(BlightTouchedBehavior.class, "MULTIPLIER"), 0.5, 1e-7,
-				"Blight Touched is unchanged at 0.5x");
 
 		// Removed, not neutralised. A constant set to 1.0 can be quietly re-wired
 		// into the shared hook and double-applied on top of the active mechanism;
-		// a field that does not exist cannot.
+		// a field that does not exist cannot. Both crop effects have now left that
+		// hook by this route, so both absences are asserted.
 		check(!Checks.hasConstant(GreenThumbBehavior.class, "MULTIPLIER"),
 				"Green Thumb no longer declares a growth-speed multiplier at all");
+		check(!Checks.hasConstant(BlightTouchedBehavior.class, "MULTIPLIER"),
+				"Blight Touched no longer declares a growth-speed multiplier at all");
+
+		// And with the last effect off it, the shared hook itself is gone rather
+		// than left returning 1.0 for nobody.
+		check(!Checks.hasMethod(EffectHooks.class, "cropGrowthMultiplierFor"),
+				"EffectHooks.cropGrowthMultiplierFor is deleted, not neutralised");
+		check(!Checks.hasMethod(EffectHooks.class, "cropGrowthMultiplier"),
+				"EffectHooks.cropGrowthMultiplier is deleted too -- nothing feeds it now");
+		check(!Checks.hasConstant(EffectHooks.class, "MIN_CROP_MULTIPLIER"),
+				"...and so is the divide-by-zero floor that only existed to guard it");
+
+		checkNear(constant(TramplePath.class, "MAX_STEP"), 0.25, 1e-7,
+				"the trample path samples at most a quarter block per step");
+		checkNear(constant(TramplePath.class, "MAX_SEGMENT"), 16.0, 1e-7,
+				"...and treats more than 16 blocks in one tick as a teleport");
 
 		double meanJumps = 1.0 / constant(LeakyPocketsBehavior.class, "CHANCE");
 		checkNear(meanJumps, 14.3, 0.1, "Leaky Pockets spills once per ~14 jumps on average");
@@ -187,33 +209,152 @@ public final class HarnessMain {
 	}
 
 	/**
-	 * Blight Touched must be completely unaffected by Green Thumb leaving the
-	 * shared hook.
+	 * Green Thumb's timing must be completely unaffected by Blight Touched leaving
+	 * the shared hook.
 	 *
-	 * <p>Driven through the real {@code EffectHooks.cropGrowthMultiplierFor} with
-	 * real {@link AcquiredEffects}, not a reimplementation of the composition rule
-	 * -- that is the point of the method having been split out.
+	 * <p>This is the regression gate for this session's deletion. Green Thumb's
+	 * schedule is checked in full by {@link #activeGrowthSchedule()} above; what
+	 * this adds is the reason that check is still meaningful -- Green Thumb never
+	 * read the hook's output in the first place, so removing the hook cannot have
+	 * moved any of those numbers.
+	 *
+	 * <p>Stated as an assertion about the code rather than a comment: the growth
+	 * service's derivation is a pure function of the stage count and the tick
+	 * budget, so re-deriving every interval here reproduces the same table.
 	 */
-	private static void blightTouchedUnregressed() {
-		section("Blight Touched unregressed on the shared hook");
+	private static void greenThumbUnaffectedByBlightRemoval() {
+		section("Green Thumb unaffected by Blight Touched leaving the shared hook");
 
-		checkNear(EffectHooks.cropGrowthMultiplierFor(setOf()), 1.0, 1e-7,
-				"no effects -> 1.0, vanilla growth untouched");
-		checkNear(EffectHooks.cropGrowthMultiplierFor(setOf(BlightTouchedBehavior.ID)), 0.5, 1e-7,
-				"Blight Touched alone -> 0.5, exactly as before");
-		checkNear(EffectHooks.cropGrowthMultiplierFor(setOf(GreenThumbBehavior.ID)), 1.0, 1e-7,
-				"Green Thumb alone -> 1.0, it contributes nothing to this hook now");
-		checkNear(EffectHooks.cropGrowthMultiplierFor(
-						setOf(GreenThumbBehavior.ID, BlightTouchedBehavior.ID)), 0.5, 1e-7,
-				"both -> 0.5: Blight still applies, and is no longer masked by Green Thumb's 26x");
+		// The whole 90s table, re-derived after the deletion. Same expected values
+		// as activeGrowthSchedule(), asserted again here so a future edit that
+		// disturbs Green Thumb while touching Blight Touched fails in the section
+		// that names the reason.
+		int target = GreenThumbGrowth.TARGET_TICKS;
+		int stemBudget = target - GreenThumbGrowth.STEM_FRUIT_BUDGET_TICKS;
 
-		// Its slow-growth numbers through the hook are therefore unchanged.
-		double blightedWheat = CropGrowthModel.expectedSeconds(7, 1.0,
-				CropGrowthModel.BASE_SPEED_PACKED_FIELD,
-				(float) constant(BlightTouchedBehavior.class, "MULTIPLIER"));
-		// Base speed 5.0 x 0.5 = 2.5, so the roll bound is (int)(25/2.5) + 1 = 11.
-		checkNear(blightedWheat, 5256.53, 1.0,
-				"blighted packed-field wheat is still " + CropGrowthModel.asMinutesSeconds(blightedWheat));
+		check(GreenThumbGrowth.intervalForStages(7, target) == 255, "wheat/carrots/potatoes still 255t");
+		check(GreenThumbGrowth.intervalForStages(3, target) == 600, "beetroot still 600t");
+		check(GreenThumbGrowth.intervalForStages(2, target) == 900, "torchflower still 900t");
+		check(GreenThumbGrowth.intervalForStages(4, target) == 450, "pitcher crop still 450t");
+		check(GreenThumbGrowth.intervalForStages(7, stemBudget) == 240, "stem still 240t");
+
+		check(target == 1800, "the 90-second budget itself is untouched");
+		check(GreenThumbGrowth.ADVANCE_INTERVAL_TICKS == 5 && GreenThumbGrowth.RESCAN_INTERVAL_TICKS == 20,
+				"advance and rescan cadences are untouched");
+
+		// The structural reason the above cannot have regressed: Green Thumb's own
+		// multiplier constant was already gone, and the hook it used to feed is now
+		// gone as well, so there is no shared state left between the two effects.
+		check(!Checks.hasConstant(GreenThumbBehavior.class, "MULTIPLIER")
+						&& !Checks.hasMethod(EffectHooks.class, "cropGrowthMultiplierFor"),
+				"the two effects no longer share any code path at all");
+
+		// hasGreenThumbNearby is the one crop-proximity check that survives, and it
+		// must still be there -- the advance pass re-verifies through it.
+		check(Checks.hasMethod(EffectHooks.class, "hasGreenThumbNearby"),
+				"Green Thumb's own proximity re-verification survived the deletion");
+	}
+
+	/**
+	 * The path sweep, driven against the real {@link TramplePath}.
+	 *
+	 * <p>This is the part of the new mechanic most likely to be wrong and least
+	 * visible in play: a gap in the sweep just looks like a crop that happened not
+	 * to be trampled. Kept free of Minecraft imports for exactly this reason.
+	 */
+	private static void blightTramplePath() {
+		section("Blight Touched: the walked-through path");
+
+		// Standing still: one cell, and it is the block the feet are in.
+		List<long[]> still = cells(10.5, 64.0, 10.5, 10.5, 64.0, 10.5);
+		check(still.size() == 1, "a stationary player yields exactly one cell, not one per sample");
+		check(still.get(0)[0] == 10 && still.get(0)[1] == 64 && still.get(0)[2] == 10,
+				"...and it is the block containing the feet");
+
+		// Ordinary sprinting is 0.28 blocks/tick and usually stays in one block.
+		check(cells(10.5, 64.0, 10.5, 10.78, 64.0, 10.5).size() == 1,
+				"a sprint step inside one block yields one cell");
+		check(cells(10.9, 64.0, 10.5, 11.1, 64.0, 10.5).size() == 2,
+				"a sprint step across a boundary yields both cells");
+
+		// The case a single feet-position check would get wrong: flying fast.
+		List<long[]> dash = cells(0.5, 64.0, 0.5, 10.5, 64.0, 0.5);
+		check(dash.size() == 11, "a 10-block dash yields all 11 cells, not just the endpoint");
+		boolean contiguous = true;
+		for (int i = 0; i < dash.size(); i++) {
+			if (dash.get(i)[0] != i || dash.get(i)[1] != 64 || dash.get(i)[2] != 0) {
+				contiguous = false;
+			}
+		}
+		check(contiguous, "...contiguous and in order of travel, with no gaps");
+
+		// Diagonal movement is sampled off the largest axis, so it is no coarser.
+		List<long[]> diagonal = cells(0.5, 64.0, 0.5, 4.5, 64.0, 4.5);
+		check(diagonal.size() >= 5, "a diagonal dash still crosses every cell on its own axis");
+		check(noConsecutiveDuplicates(diagonal), "no cell is visited twice in a row");
+
+		// Falling through a field counts too -- the sweep is 3D, not just horizontal.
+		check(cells(10.5, 70.0, 10.5, 10.5, 64.0, 10.5).size() == 7,
+				"a 6-block fall sweeps every y level passed through");
+
+		// A teleport is not a walk.
+		List<long[]> teleport = cells(0.5, 64.0, 0.5, 500.5, 64.0, 500.5);
+		check(teleport.size() == 1, "a teleport yields only the destination cell, not the line between");
+		check(teleport.get(0)[0] == 500 && teleport.get(0)[2] == 500,
+				"...and that cell is the destination");
+
+		// Negative coordinates: an off-by-one in the floor would shift every cell.
+		List<long[]> negative = cells(-0.5, 64.0, -0.5, -0.5, 64.0, -0.5);
+		check(negative.get(0)[0] == -1 && negative.get(0)[2] == -1,
+				"floor is correct on the negative side of the world");
+
+		check(TramplePath.stepsFor(0, 0, 0, 1, 0, 0) == 4,
+				"one block of travel is sampled four times");
+		check(TramplePath.stepsFor(0, 0, 0, 0, 0, 0) == 1,
+				"a zero-length segment still samples at least once (no divide by zero)");
+	}
+
+	/**
+	 * The regression gate the brief asked for explicitly: a player who does not
+	 * hold Blight Touched must cause zero change.
+	 *
+	 * <p>Driven through the real {@code BlightTouchedTrample.isActive} with real
+	 * {@link AcquiredEffects}. That method is the first thing {@code tick} calls
+	 * and it returns before any player is inspected or any block is read, so a
+	 * false here is the whole of "nothing happens" -- this is not merely
+	 * "it wasn't in the diff".
+	 */
+	private static void blightTrampleGate() {
+		section("Blight Touched: nothing happens without the effect");
+
+		check(!BlightTouchedTrample.isActive(setOf()),
+				"an empty run does not trample -- the tick returns before reading any block");
+		check(!BlightTouchedTrample.isActive(setOf(GreenThumbBehavior.ID)),
+				"Green Thumb alone does not trample");
+		check(!BlightTouchedTrample.isActive(setOf(SureFootingBehavior.ID, GreenThumbBehavior.ID)),
+				"no combination of other effects enables it");
+		check(BlightTouchedTrample.isActive(setOf(BlightTouchedBehavior.ID)),
+				"Blight Touched alone enables it");
+		check(BlightTouchedTrample.isActive(setOf(GreenThumbBehavior.ID, BlightTouchedBehavior.ID)),
+				"...and holding Green Thumb as well does not disable it");
+	}
+
+	/** Collects the cells {@link TramplePath} visits for a segment, in order. */
+	private static List<long[]> cells(double x0, double y0, double z0,
+									  double x1, double y1, double z1) {
+		List<long[]> out = new ArrayList<>();
+		TramplePath.forEachCell(x0, y0, z0, x1, y1, z1,
+				(x, y, z) -> out.add(new long[] {x, y, z}));
+		return out;
+	}
+
+	private static boolean noConsecutiveDuplicates(List<long[]> cells) {
+		for (int i = 1; i < cells.size(); i++) {
+			if (Arrays.equals(cells.get(i), cells.get(i - 1))) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**
@@ -267,46 +408,6 @@ public final class HarnessMain {
 			acquired.add(id);
 		}
 		return acquired;
-	}
-
-	/**
-	 * The divide-by-zero hazard in vanilla's growth roll.
-	 *
-	 * <p>Now that only Blight Touched feeds this hook, the multiplier can only ever
-	 * be at or below 1.0 -- i.e. always on the dangerous side. Retaining this check
-	 * matters more than it did when Green Thumb's 26x dominated the composition.
-	 */
-	private static void overflowGuard() {
-		section("Growth-roll overflow guard");
-
-		float blight = (float) constant(BlightTouchedBehavior.class, "MULTIPLIER");
-		float floor = (float) constant(EffectHooks.class, "MIN_CROP_MULTIPLIER");
-
-		// The failure mode being guarded against, demonstrated so it is not folklore:
-		// a zero multiplier really does produce a negative nextInt bound, which throws.
-		check(CropGrowthModel.rollBound(0.0f) < 0,
-				"multiplier 0 would overflow to a negative nextInt bound (this is why the floor exists)");
-
-		float[] multipliers = {floor, blight * blight, blight, 1.0f};
-		float[] baseSpeeds = {0.5f, CropGrowthModel.BASE_SPEED_WORST_FARMLAND, 2.0f,
-				CropGrowthModel.BASE_SPEED_PACKED_FIELD, CropGrowthModel.BASE_SPEED_ROWS};
-
-		boolean allSafe = true;
-		for (float mult : multipliers) {
-			for (float base : baseSpeeds) {
-				int bound = CropGrowthModel.rollBound(base * mult);
-				if (bound < 1) {
-					allSafe = false;
-					System.out.println("        unsafe: base " + base + " x " + mult + " -> bound " + bound);
-				}
-			}
-		}
-		check(allSafe, "every multiplier/layout pair yields a nextInt bound of at least 1");
-
-		// The live worst case: the floor applied to the worst farmland layout.
-		check(CropGrowthModel.rollBound(CropGrowthModel.BASE_SPEED_WORST_FARMLAND * floor) > 0,
-				"even the floored multiplier on the worst layout yields a legal nextInt bound");
-		check(floor > 0.0f, "EffectHooks floors the combined multiplier above zero");
 	}
 
 	/**

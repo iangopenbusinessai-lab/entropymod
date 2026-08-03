@@ -4,6 +4,7 @@ import com.entropymod.command.EntropyCommands;
 import com.entropymod.entropy.EffectBehaviors;
 import com.entropymod.entropy.EntropyAttributes;
 import com.entropymod.entropy.EntropyManager;
+import com.entropymod.entropy.growth.BlightTouchedTrample;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.network.ChoiceMadePayload;
 import com.entropymod.network.HistoryRequestPayload;
@@ -118,15 +119,26 @@ public class EntropyMod implements ModInitializer {
 		// see GreenThumbGrowth for why the multiplier hook could not reach 90s.
 		// It returns immediately on ticks that are neither a rescan nor an advance
 		// pass, and again if nobody holds the effect.
+		//
+		// Blight Touched rides along for the mirror-image reason: its mechanic is
+		// "what block are this player's feet in right now", which is a per-tick
+		// question about the player rather than anything vanilla exposes a hook
+		// for. It too returns immediately if nobody holds the effect.
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
 			EntropyManager.get(server).tick(server);
 			GreenThumbGrowth.tick(server);
+			BlightTouchedTrample.tick(server);
 		});
 
-		// Bonus-growth scheduling is transient, not part of the run, so it is not
+		// Both services' state is transient, not part of the run, so neither is
 		// persisted -- but it must not survive into the next world either, which in
-		// singleplayer is one trip through the main menu away.
-		ServerLifecycleEvents.SERVER_STOPPED.register(server -> GreenThumbGrowth.reset());
+		// singleplayer is one trip through the main menu away. This says nothing
+		// about the dead bushes Blight Touched leaves behind: those are ordinary
+		// world blocks, saved by vanilla like any other block change.
+		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+			GreenThumbGrowth.reset();
+			BlightTouchedTrample.reset();
+		});
 
 		LOGGER.info("Entropy Mod ready. Default interval: {} ticks ({} min), cap: {}",
 				EntropyManager.DEFAULT_INTERVAL_TICKS,

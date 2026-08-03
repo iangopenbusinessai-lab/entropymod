@@ -105,7 +105,7 @@ public final class EffectRegistry {
 				EffectCategory.META, EffectPhase.BAD, 0, 25, true);
 		register("exposed", "Exposed", "Loud footsteps -- sneaking no longer hides you from mobs",
 				EffectCategory.DEBUFF, EffectPhase.BAD, 0, 25, true);
-		register("blight_touched", "Blight Touched", "Crops within 8 blocks of you grow half as fast",
+		register("blight_touched", "Blight Touched", "Every crop you walk through withers into a dead bush",
 				EffectCategory.UTILITY, EffectPhase.BAD, 0, 25, true);
 		register("leaky_pockets", "Leaky Pockets", "Jumping sometimes spills an item from your inventory",
 				EffectCategory.GEAR, EffectPhase.BAD, 0, 25, true);
