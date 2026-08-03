@@ -1491,6 +1491,10 @@ requires `waitingOnChoice`. Collapsing them would make the wire value depend on
 when it was asked.
 
 #### Become Hardcore — INVESTIGATED, NOT BUILT. Verdict: buildable as specified
+> **Superseded as the implementation approach** — see "Planned Architecture:
+> Gamified Run Lifecycle" below. The findings here remain accurate and are kept
+> as reference; the effect will use a mod-tracked flag instead.
+
 Full javap investigation, no code written. Recorded because the answer is
 non-obvious in both directions and re-deriving it would cost a session.
 
