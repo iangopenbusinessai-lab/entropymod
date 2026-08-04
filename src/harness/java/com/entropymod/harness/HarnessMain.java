@@ -10,13 +10,14 @@ import com.entropymod.entropy.KeybindSnapshot;
 import com.entropymod.entropy.MovementScramble;
 import com.entropymod.entropy.RerollState;
 import com.entropymod.entropy.RunState;
+import com.entropymod.entropy.AttributeEffectBehavior;
 import com.entropymod.entropy.EffectBehaviors;
 import com.entropymod.entropy.EffectCategory;
 import com.entropymod.entropy.behavior.BadReputationBehavior;
 import com.entropymod.entropy.behavior.BehemothGauntletsBehavior;
 import com.entropymod.entropy.behavior.CreativeFlightBehavior;
 import com.entropymod.entropy.behavior.CrouchInvincibilityBehavior;
-import com.entropymod.entropy.behavior.ExtremeGravityBehavior;
+import com.entropymod.entropy.behavior.EmbraceTheMoonBehavior;
 import com.entropymod.entropy.behavior.FlamboyantBehavior;
 import com.entropymod.entropy.behavior.GiantSizeBehavior;
 import com.entropymod.entropy.behavior.MoonWalkerBehavior;
@@ -95,6 +96,8 @@ public final class HarnessMain {
 		tier2BatchWiring();
 		extremeGravityPhysics();
 		giantSizeAttribute();
+		giantSizeKit();
+		multiAttributeIdempotency();
 		behemothGauntletsBothCases();
 		flamboyantFireOnly();
 		crouchInvincibilityGate();
@@ -1293,7 +1296,7 @@ public final class HarnessMain {
 	// ------------------------------------------------------------------
 
 	private static final List<String> TIER2_BATCH = List.of(
-			ExtremeGravityBehavior.ID, CreativeFlightBehavior.ID, BehemothGauntletsBehavior.ID,
+			EmbraceTheMoonBehavior.ID, CreativeFlightBehavior.ID, BehemothGauntletsBehavior.ID,
 			CrouchInvincibilityBehavior.ID, GiantSizeBehavior.ID, SlashedPocketsBehavior.ID,
 			FlamboyantBehavior.ID);
 
@@ -1319,7 +1322,7 @@ public final class HarnessMain {
 					id + " is counterplay-survivable if BAD (required below entropy 40)");
 		}
 
-		check(EffectRegistry.byId(ExtremeGravityBehavior.ID).phase() == EffectPhase.GOOD
+		check(EffectRegistry.byId(EmbraceTheMoonBehavior.ID).phase() == EffectPhase.GOOD
 						&& EffectRegistry.byId(CreativeFlightBehavior.ID).phase() == EffectPhase.GOOD
 						&& EffectRegistry.byId(BehemothGauntletsBehavior.ID).phase() == EffectPhase.GOOD
 						&& EffectRegistry.byId(CrouchInvincibilityBehavior.ID).phase() == EffectPhase.GOOD,
@@ -1331,9 +1334,9 @@ public final class HarnessMain {
 
 		// Anti-stacking is keyed on category, so a collision inside one phase means
 		// the two can never be offered together -- worth knowing, not a bug.
-		check(EffectRegistry.byId(ExtremeGravityBehavior.ID).category() == EffectCategory.MOVEMENT
+		check(EffectRegistry.byId(EmbraceTheMoonBehavior.ID).category() == EffectCategory.MOVEMENT
 						&& EffectRegistry.byId(CreativeFlightBehavior.ID).category() == EffectCategory.MOVEMENT,
-				"Extreme Gravity and Creative Flight are both MOVEMENT -- anti-stacking keeps "
+				"Embrace the Moon and Creative Flight are both MOVEMENT -- anti-stacking keeps "
 						+ "flight and low gravity apart, which is the intended exclusivity");
 
 		// The compiler cannot check id strings against EffectRegistry; this is the
@@ -1355,60 +1358,110 @@ public final class HarnessMain {
 	 * that actually matters -- why its attribute operation differs.
 	 */
 	private static void extremeGravityPhysics() {
-		section("Extreme Gravity: value, distinctness, and stacking safety");
+		section("Embrace the Moon: value, distinctness, and stacking safety");
 
-		double amount = constant(ExtremeGravityBehavior.class, "AMOUNT");
+		double amount = constant(EmbraceTheMoonBehavior.class, "GRAVITY_AMOUNT");
+		double jumpBonus = constant(EmbraceTheMoonBehavior.class, "JUMP_BONUS");
+		double safeFallBonus = constant(EmbraceTheMoonBehavior.class, "SAFE_FALL_BONUS");
 		double moonWalker = -0.30; // MoonWalkerBehavior passes this inline to super
 		double base = 0.08;        // GRAVITY's registered default, verified against the live registry
 
-		check(amount <= -0.60 && amount >= -0.70,
-				"the reduction is inside the specified -60%..-70% band (" + amount + ")");
+		check(amount <= -0.75 && amount >= -0.80,
+				"the reduction is inside the specified -75%..-80% band (" + amount + ")");
 
 		double gravity = base * (1.0 + amount);
-		checkNear(gravity, 0.028, 1e-9, "resulting gravity");
+		checkNear(gravity, 0.0176, 1e-9, "resulting gravity");
 		check(gravity > 0.0,
 				"gravity stays strictly positive -- 0 would leave the player floating "
 						+ "with no way down, and GRAVITY's clamp floors at -1.0, not 0");
 
+		// --- 1b: the jump bonus, and that it was derived rather than guessed ------
+		double jump = JUMP_DEFAULT * (1.0 + jumpBonus);
+		double apexGravityOnly = apex(gravity);
+		double apexShipped = apex(gravity, jump);
+		checkNear(apexGravityOnly, 4.065, 0.002, "apex from the gravity change alone");
+		checkNear(apexShipped, 4.567, 0.002, "apex as shipped, with the jump bonus");
+
+		double gain = apexShipped / apexGravityOnly - 1.0;
+		check(gain >= 0.10 && gain <= 0.15,
+				"the jump bonus lands inside the intended +10-15% apex band ("
+						+ Math.round(gain * 10000) / 100.0 + "%)");
+		// The whole point of deriving it: taking the apex percentage as the attribute
+		// percentage overshoots, because apex goes as the square of launch velocity.
+		check(apex(gravity, JUMP_DEFAULT * (1.0 + gain)) > apexShipped,
+				"a naive '+" + Math.round(gain * 100) + "% on the attribute' would overshoot "
+						+ "the target apex -- which is why this is solved, not assumed");
+
 		double moonGravity = base * (1.0 + moonWalker);
-		checkNear(apex(gravity), 2.866, 0.002, "Extreme Gravity jump apex (blocks)");
 		checkNear(apex(moonGravity), 1.657, 0.002, "Moon Walker jump apex (blocks)");
 		checkNear(apex(base), 1.2522, 0.002,
 				"the model still reproduces vanilla's known 1.2522-block jump");
-		check(apex(gravity) > apex(moonGravity) * 1.5,
-				"Extreme Gravity is meaningfully distinct from Moon Walker, not a nudge: "
-						+ Math.round(apex(gravity) / apex(moonGravity) * 100) + "% of its apex");
-		check(apex(gravity) > 2.5 && apex(moonGravity) < 2.0,
-				"it clears a 2.5-block ledge where Moon Walker cannot");
+		check(apexShipped > apex(moonGravity) * 2.5,
+				"Embrace the Moon is meaningfully distinct from Moon Walker, not a nudge: "
+						+ Math.round(apexShipped / apex(moonGravity) * 100) + "% of its apex");
+		check(apexShipped > 4.0 && apex(moonGravity) < 2.0,
+				"it clears a 4-block ledge where Moon Walker cannot clear 2");
 
-		// The operation is a safety property. ADD_MULTIPLIED_TOTAL composes
-		// multiplicatively and can never reach zero; ADD_MULTIPLIED_BASE sums.
+		// --- 1c: safe fall distance -----------------------------------------------
+		double safeFall = 3.0 + safeFallBonus; // SAFE_FALL_DISTANCE default, from the live registry
+		checkNear(safeFall, 6.0, 1e-9, "safe fall distance is doubled, 3 -> 6 blocks");
+		// calculateFallDamage(d, 1) = floor((d + 1e-6 - SAFE_FALL_DISTANCE) * FALL_DAMAGE_MULTIPLIER)
+		for (int d : new int[] {1, 2, 3, 4, 5, 6}) {
+			check(fallDamage(d, safeFall) == 0,
+					"a " + d + "-block fall is harmless (vanilla would deal "
+							+ fallDamage(d, 3.0) + ")");
+		}
+		check(fallDamage(7, safeFall) == 1 && fallDamage(7, 3.0) == 4,
+				"7 blocks: 1 damage instead of vanilla's 4");
+		check(fallDamage(20, safeFall) == 14 && fallDamage(20, 3.0) == 17,
+				"20 blocks: 14 instead of 17 -- the threshold moves, it is not a multiplier");
+		// The distinction that matters: this is NOT FALL_DAMAGE_MULTIPLIER's mechanic.
+		check(fallDamage(20, safeFall) - fallDamage(20, 3.0) == fallDamage(7, safeFall) - fallDamage(7, 3.0),
+				"the reduction is a constant 3 damage at every height -- a subtracted "
+						+ "threshold, not a scaled remainder like Featherlight");
+
+		// --- stacking safety, RECOMPUTED at the new value --------------------------
 		double stackedTotal = base * (1.0 + moonWalker) * (1.0 + amount);
 		double stackedBase = base * (1.0 + moonWalker + amount);
-		check(stackedTotal > 0.015,
-				"stacked with Moon Walker it stays playable (" + round4(stackedTotal) + ")");
-		check(stackedBase < stackedTotal / 4.0,
-				"had it used ADD_MULTIPLIED_BASE the same pairing would give "
-						+ round4(stackedBase) + " -- near-zero gravity");
-		// 9.9 vs 3.8 blocks -- a 2.6x difference. The threshold is deliberately below
-		// the measured ratio rather than equal to it, so a retune that keeps the
-		// property does not fail the check.
-		check(apex(stackedBase) > 2.5 * apex(stackedTotal),
-				"and an apex of " + round1(apex(stackedBase)) + " blocks vs "
-						+ round1(apex(stackedTotal)) + " -- which is why the operation differs "
-						+ "from Moon Walker's");
+		check(stackedTotal > 0.0,
+				"ADD_MULTIPLIED_TOTAL stacked with Moon Walker stays positive ("
+						+ round4(stackedTotal) + ")");
+		check(apex(stackedTotal, jump) < 7.0 && sim(stackedTotal, jump)[1] < 100,
+				"and stays playable: apex " + round1(apex(stackedTotal, jump))
+						+ ", airtime " + (int) sim(stackedTotal, jump)[1] + "t");
+
+		// THE regression this session had to re-derive: the old margin did NOT survive.
+		check(stackedBase < 0.0,
+				"had it used ADD_MULTIPLIED_BASE the same pairing would now give "
+						+ round4(stackedBase) + " -- NEGATIVE gravity, launched upward permanently");
+		check(base * (1.0 + moonWalker + (-0.65)) > 0.0,
+				"at last session's -65% that additive form was still (barely) positive at "
+						+ round4(base * (1.0 + moonWalker - 0.65))
+						+ " -- so the safety margin was NOT inherited, it had to be rechecked");
 	}
 
 	/**
 	 * Vanilla's per-tick vertical integration: integrate, then apply gravity and
 	 * the 0.98 air drag. Validated against the known vanilla apex above.
 	 */
+	/** JUMP_STRENGTH's registered default, from the live registry. */
+	private static final double JUMP_DEFAULT = 0.41999998688697815;
+
 	private static double apex(double gravity) {
-		double jump = 0.41999998688697815; // JUMP_STRENGTH's registered default
+		return apex(gravity, JUMP_DEFAULT);
+	}
+
+	private static double apex(double gravity, double jump) {
+		return sim(gravity, jump)[0];
+	}
+
+	/** @return {apex in blocks, airtime in ticks} */
+	private static double[] sim(double gravity, double jump) {
 		double y = 0.0;
 		double v = jump;
 		double best = 0.0;
-		for (int t = 0; t < 4000; t++) {
+		int t = 0;
+		for (; t < 6000; t++) {
 			y += v;
 			v = (v - gravity) * 0.98;
 			best = Math.max(best, y);
@@ -1416,7 +1469,31 @@ public final class HarnessMain {
 				break;
 			}
 		}
-		return best;
+		return new double[] {best, t + 1};
+	}
+
+	/**
+	 * Vanilla's own formula, javap-verified:
+	 * {@code floor((distance + 1e-6 - SAFE_FALL_DISTANCE) * FALL_DAMAGE_MULTIPLIER)},
+	 * with the multiplier at its default of 1.0.
+	 */
+	private static int fallDamage(double distance, double safeFallDistance) {
+		return Math.max(0, (int) Math.floor(distance + 1.0e-6 - safeFallDistance));
+	}
+
+	/** Solves the real integration for the jump strength that reaches a target apex. */
+	private static double jumpStrengthForApex(double gravity, double targetApex) {
+		double lo = 0.01;
+		double hi = 5.0;
+		for (int i = 0; i < 200; i++) {
+			double mid = (lo + hi) / 2.0;
+			if (apex(gravity, mid) < targetApex) {
+				lo = mid;
+			} else {
+				hi = mid;
+			}
+		}
+		return (lo + hi) / 2.0;
 	}
 
 	private static double round4(double v) { return Math.round(v * 10000.0) / 10000.0; }
@@ -1458,6 +1535,157 @@ public final class HarnessMain {
 		check(constant(GiantSizeBehavior.class, "MAX_LIFT_BLOCKS") > 0,
 				"the upward search has a bounded limit rather than looping forever");
 	}
+
+	/** The rest of Giant Size's kit: health, step-up, jump, damage, reach. */
+	private static void giantSizeKit() {
+		section("Giant Size: the full kit");
+		HarnessBootstrap.init();
+
+		// --- 2a: +10 hearts -------------------------------------------------------
+		checkNear(constant(GiantSizeBehavior.class, "HEALTH_BONUS"), 20.0, 1e-9,
+				"health bonus is +20.0 raw = +10 hearts");
+		double maxHealth = ranged(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH)
+				.getDefaultValue() + 20.0;
+		checkNear(maxHealth, 40.0, 1e-9, "resulting max health is 40 (20 hearts)");
+		checkNear(ranged(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH)
+						.sanitizeValue(maxHealth), 40.0, 1e-9,
+				"40 is not clamped -- MAX_HEALTH's ceiling is 1024");
+
+		// --- 2b: STEP_HEIGHT ------------------------------------------------------
+		var step = ranged(net.minecraft.world.entity.ai.attributes.Attributes.STEP_HEIGHT);
+		checkNear(step.getDefaultValue(), 0.6, 1e-9, "STEP_HEIGHT default is 0.6");
+		checkNear(step.getMinValue(), 0.0, 1e-9, "STEP_HEIGHT minimum is 0.0");
+		checkNear(step.getMaxValue(), 10.0, 1e-9, "STEP_HEIGHT maximum is 10.0");
+		check(net.minecraft.world.entity.ai.attributes.DefaultAttributes
+						.getSupplier(net.minecraft.world.entity.EntityType.PLAYER)
+						.hasAttribute(net.minecraft.world.entity.ai.attributes.Attributes.STEP_HEIGHT),
+				"players actually have STEP_HEIGHT -- checked, not assumed");
+		double stepResult = step.getDefaultValue()
+				+ constant(GiantSizeBehavior.class, "STEP_HEIGHT_BONUS");
+		checkNear(stepResult, 2.0, 1e-9, "resulting step height is exactly 2.0");
+		check(stepResult >= 2.0,
+				"which is the whole target: a 2-block ledge walked up without jumping");
+		checkNear(step.sanitizeValue(stepResult), 2.0, 1e-9, "2.0 is not clamped");
+
+		// --- 2c: double jump, DERIVED --------------------------------------------
+		double vanillaApex = apex(0.08);
+		double jumpBonus = constant(GiantSizeBehavior.class, "JUMP_BONUS");
+		double jump = JUMP_DEFAULT * (1.0 + jumpBonus);
+		double giantApex = apex(0.08, jump);
+		checkNear(giantApex / vanillaApex, 2.0, 0.001,
+				"apex is genuinely 2x vanilla (" + round4(vanillaApex) + " -> " + round4(giantApex) + ")");
+
+		// The point of deriving against the real integration rather than the closed
+		// form: sqrt(2) is the intuitive answer and it is WRONG.
+		double naive = JUMP_DEFAULT * Math.sqrt(2.0);
+		check(apex(0.08, naive) / vanillaApex < 1.90,
+				"the intuitive sqrt(2) on the attribute gives only "
+						+ round4(apex(0.08, naive) / vanillaApex) + "x, not 2x -- the 0.98 air drag "
+						+ "costs proportionally more at higher launch velocity");
+		checkNear(jumpStrengthForApex(0.08, vanillaApex * 2.0), jump, 1e-4,
+				"the shipped jump strength is what solving the integration backwards produces");
+		checkNear(ranged(net.minecraft.world.entity.ai.attributes.Attributes.JUMP_STRENGTH)
+						.sanitizeValue(jump), jump, 1e-9,
+				"the resulting jump strength is inside JUMP_STRENGTH's range");
+
+		// --- 2d: damage reduction rides IRON SKIN's hook, not a new one ------------
+		checkNear(constant(GiantSizeBehavior.class, "DAMAGE_MULTIPLIER"), 0.75, 1e-6,
+				"damage multiplier is 0.75 = -25%");
+		check(Checks.classReferences(com.entropymod.entropy.EffectHooks.class, "GiantSizeBehavior"),
+				"EffectHooks itself reads Giant Size -- the reduction goes through the "
+						+ "existing damageTakenMultiplier, not a parallel mechanism");
+		check(!Checks.hasMethod(com.entropymod.entropy.EffectHooks.class, "giantDamageMultiplier"),
+				"no second damage hook was introduced alongside Iron Skin's");
+		float ironSkin = (float) constant(
+				com.entropymod.entropy.behavior.IronSkinBehavior.class, "MULTIPLIER");
+		float fragile = (float) constant(
+				com.entropymod.entropy.behavior.FragileBehavior.class, "MULTIPLIER");
+		checkNear(0.75 * ironSkin, 0.60, 1e-4,
+				"stacked with Iron Skin it is 0.60 -- multiplicative, so it cannot reach zero");
+		check(0.75 * fragile > 0.0 && 0.75 * fragile < 1.0,
+				"stacked with Fragile it is still a net reduction (" + round4(0.75 * fragile) + ")");
+
+		// --- 2e: reach ------------------------------------------------------------
+		// SCALE raises the eye, and the reach check measures FROM the eye, so an
+		// unmodified 5x player cannot touch the ground they stand on.
+		double eye = 1.62;
+		double scale = 1.0 + constant(GiantSizeBehavior.class, "AMOUNT");
+		double giantEye = eye * scale;
+		checkNear(giantEye, 8.1, 1e-9, "at 5x the eye sits 8.1 blocks above the feet");
+
+		var blockRange =
+				ranged(net.minecraft.world.entity.ai.attributes.Attributes.BLOCK_INTERACTION_RANGE);
+		var entityRange =
+				ranged(net.minecraft.world.entity.ai.attributes.Attributes.ENTITY_INTERACTION_RANGE);
+		checkNear(blockRange.getDefaultValue(), 4.5, 1e-9, "BLOCK_INTERACTION_RANGE default is 4.5");
+		checkNear(entityRange.getDefaultValue(), 3.0, 1e-9, "ENTITY_INTERACTION_RANGE default is 3.0");
+
+		check(blockRange.getDefaultValue() < giantEye,
+				"WITHOUT a reach bonus a 5x player cannot reach the block at their feet: "
+						+ "needs " + giantEye + ", has " + blockRange.getDefaultValue());
+		double reachBonus = constant(GiantSizeBehavior.class, "REACH_BONUS");
+		check(blockRange.getDefaultValue() + reachBonus > giantEye,
+				"with the bonus they can: block reach "
+						+ (blockRange.getDefaultValue() + reachBonus) + " vs the 8.1 needed");
+		check(blockRange.getDefaultValue() + 2.0 < giantEye,
+				"the originally-specified +2 would NOT have been enough ("
+						+ (blockRange.getDefaultValue() + 2.0) + " vs 8.1) -- which is why it is larger");
+		checkNear(reachBonus, giantEye - eye, 0.03,
+				"the bonus is sized to the eye-height increase, restoring vanilla-equivalent "
+						+ "reach relative to the giant's own body");
+		check(blockRange.sanitizeValue(blockRange.getDefaultValue() + reachBonus)
+						== blockRange.getDefaultValue() + reachBonus
+						&& entityRange.sanitizeValue(entityRange.getDefaultValue() + reachBonus)
+								== entityRange.getDefaultValue() + reachBonus,
+				"both resulting ranges are inside the attributes' range");
+	}
+
+	private static net.minecraft.world.entity.ai.attributes.RangedAttribute ranged(
+			net.minecraft.core.Holder<net.minecraft.world.entity.ai.attributes.Attribute> holder) {
+		return (net.minecraft.world.entity.ai.attributes.RangedAttribute) holder.value();
+	}
+
+	/**
+	 * Both reworked effects apply several attributes at once, so "idempotent" now
+	 * has to mean "every one of them is", not just the first.
+	 */
+	private static void multiAttributeIdempotency() {
+		section("Multi-attribute effects: every change is idempotent");
+		HarnessBootstrap.init();
+
+		for (String id : List.of(EmbraceTheMoonBehavior.ID, GiantSizeBehavior.ID)) {
+			AttributeEffectBehavior behavior = (AttributeEffectBehavior) EffectBehaviors.get(id);
+			List<AttributeEffectBehavior.Change> changes = behavior.changes();
+			check(changes.size() > 1, id + " really is a multi-attribute effect (" + changes.size() + ")");
+
+			for (AttributeEffectBehavior.Change change : changes) {
+				String name = net.minecraft.core.registries.BuiltInRegistries.ATTRIBUTE
+						.getKey(change.attribute().value()).getPath();
+				var instance = new net.minecraft.world.entity.ai.attributes.AttributeInstance(
+						change.attribute(), a -> {});
+				double afterFirst = 0;
+				for (int i = 0; i < 10; i++) {
+					instance.addOrUpdateTransientModifier(
+							new net.minecraft.world.entity.ai.attributes.AttributeModifier(
+									AttributeEffectBehavior.modifierId(id),
+									change.amount(), change.operation()));
+					if (i == 0) {
+						afterFirst = instance.getValue();
+					}
+				}
+				checkNear(instance.getValue(), afterFirst, 1e-9,
+						id + "/" + name + ": ten applications leave the value where one put it");
+				check(instance.getModifiers().size() == 1,
+						id + "/" + name + ": one modifier, not ten stacked copies");
+
+				// remove() must clear every change too, or a future un-apply leaks.
+				instance.removeModifier(AttributeEffectBehavior.modifierId(id));
+				checkNear(instance.getValue(), instance.getBaseValue(), 1e-9,
+						id + "/" + name + ": removal restores the base value");
+			}
+		}
+	}
+
 
 	/** Both branches driven for real against the shipped decision function. */
 	private static void behemothGauntletsBothCases() {
@@ -1634,14 +1862,14 @@ public final class HarnessMain {
 		// --- idempotency, against the REAL AttributeInstance --------------------
 		// This is the guarantee the respawn/rejoin design rests on: apply() runs an
 		// unbounded number of times, so the value must not move after the first.
-		for (String id : List.of(ExtremeGravityBehavior.ID, GiantSizeBehavior.ID)) {
+		for (String id : List.of(EmbraceTheMoonBehavior.ID, GiantSizeBehavior.ID)) {
 			net.minecraft.world.entity.ai.attributes.AttributeInstance instance =
 					instanceFor(id.equals(GiantSizeBehavior.ID)
 							? net.minecraft.world.entity.ai.attributes.Attributes.SCALE
 							: net.minecraft.world.entity.ai.attributes.Attributes.GRAVITY);
 			double amount = constant(
-					id.equals(GiantSizeBehavior.ID) ? GiantSizeBehavior.class : ExtremeGravityBehavior.class,
-					"AMOUNT");
+					id.equals(GiantSizeBehavior.ID) ? GiantSizeBehavior.class : EmbraceTheMoonBehavior.class,
+					id.equals(GiantSizeBehavior.ID) ? "AMOUNT" : "GRAVITY_AMOUNT");
 			var op = id.equals(GiantSizeBehavior.ID)
 					? net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADD_VALUE
 					: net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL;

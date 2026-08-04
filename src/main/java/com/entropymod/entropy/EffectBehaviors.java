@@ -66,7 +66,7 @@ public final class EffectBehaviors {
 		register(BadReputationBehavior.ID, new BadReputationBehavior());
 
 		// ---------- TIER 2 GOOD ----------
-		register(ExtremeGravityBehavior.ID, new ExtremeGravityBehavior());
+		register(EmbraceTheMoonBehavior.ID, new EmbraceTheMoonBehavior());
 		register(CreativeFlightBehavior.ID, new CreativeFlightBehavior());
 		register(BehemothGauntletsBehavior.ID, new BehemothGauntletsBehavior());
 		register(CrouchInvincibilityBehavior.ID, new CrouchInvincibilityBehavior());

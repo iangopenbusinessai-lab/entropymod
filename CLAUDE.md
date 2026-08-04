@@ -1944,11 +1944,11 @@ and wired through the ordinary three-step recipe.
 
 | Effect | Phase / category | Mechanism |
 |---|---|---|
-| Extreme Gravity | GOOD / MOVEMENT | attribute (`GRAVITY`) |
+| Embrace the Moon | GOOD / MOVEMENT | attributes (gravity + jump + safe fall) |
 | Creative Flight | GOOD / MOVEMENT | `Abilities.mayfly` |
 | Behemoth Gauntlets | GOOD / COMBAT | mixin on `Player.attack` |
 | Crouch Invincibility | GOOD / SURVIVAL | mixin on `ServerPlayer.hurtServer` |
-| Giant Size | BAD / DEBUFF | attribute (`SCALE`) + collision fixup |
+| Giant Size | BAD / DEBUFF | six attributes + collision fixup + Iron Skin's hook |
 | Slashed Pockets | BAD / GEAR | two mixins + a tick sweep |
 | Flamboyant | BAD / SURVIVAL | mixin on `ServerPlayer.hurtServer` |
 
@@ -1961,7 +1961,11 @@ state vanilla already syncs (`ClientboundPlayerAbilitiesPacket` for flight), or
 purely server-authoritative damage. **`ClientEffectsPayload` was not touched.**
 The one partial exception is recorded under Slashed Pockets below.
 
-#### Extreme Gravity: the attribute OPERATION is a safety property
+#### Extreme Gravity: the attribute OPERATION is a safety property (SUPERSEDED)
+> **Renamed to Embrace the Moon and retuned to -78%** — see the section above.
+> The reasoning below still holds; its NUMBERS are the old -65% version and
+> are kept only to show how much the stacking margin shrank.
+
 Ships at **-65% via `ADD_MULTIPLIED_TOTAL`**, giving gravity **0.028** (35% of
 vanilla's 0.08). Apex numbers from the same per-tick simulation that reproduces
 vanilla's known 1.2522-block jump:
@@ -2031,6 +2035,143 @@ time (bounded, `MAX_LIFT_BLOCKS = 8`) for a free position and `snapTo` it.
 - **Giving up is a valid outcome.** Walled in deep underground, the player
   suffocates — the honest consequence of becoming enormous in a tunnel. Logged,
   not silently swallowed.
+
+#### Extreme Gravity is now EMBRACE THE MOON — renamed, and much bigger
+The id changed from `extreme_gravity` to `embrace_the_moon`, so a save from
+before the rename carries an id this build no longer defines. Handled like any
+unknown id — skipped with a warning at load, rest of the run intact — exactly as
+when `heavy_footsteps` became `exposed`.
+
+It is now three attributes rather than one: gravity, jump strength, and safe fall
+distance.
+
+| case | gravity | jump | apex | airtime | terminal v |
+|---|---|---|---|---|---|
+| vanilla | 0.0800 | 0.42000 | 1.252 | 12t | 3.92/t |
+| Moon Walker (Tier 1) | 0.0560 | 0.42000 | 1.657 | 16t | 2.74/t |
+| *old* Extreme Gravity (-65%) | 0.0280 | 0.42000 | 2.866 | 29t | 1.37/t |
+| gravity change alone (-78%) | 0.0176 | 0.42000 | 4.065 | 44t | 0.86/t |
+| **as shipped, with the jump bonus** | **0.0176** | **0.44940** | **4.567** | **47t** | **0.86/t** |
+
+A jump clears about **4.5 blocks** and hangs for 2.35 seconds — **276% of Moon
+Walker's apex**.
+
+**The jump bonus is +7% on the attribute, which is +12.35% apex.** Apex goes
+roughly as the *square* of launch velocity, so taking the wanted apex percentage
+as the attribute percentage overshoots by about double. Solved backwards against
+the real integration: +10% apex needs +5.68%, +15% needs +8.48%.
+
+#### `SAFE_FALL_DISTANCE` is a real attribute — the threshold, not the multiplier
+This was an open question and it resolved cleanly: **no mixin, nothing faked.**
+It is a registered `RangedAttribute` (**default 3.0, min -1024, max 1024**),
+present on the player, and its consumer is verified in bytecode:
+
+```
+calculateFallPower(d)        = d + 1e-6 - getAttributeValue(SAFE_FALL_DISTANCE)
+calculateFallDamage(d, mult) = floor(calculateFallPower(d) * mult
+                                     * getAttributeValue(FALL_DAMAGE_MULTIPLIER))
+```
+
+**So it is genuinely a different mechanic from `FALL_DAMAGE_MULTIPLIER`**, which
+scales what is left *after* the subtraction and is what Featherlight and Glass
+Jaw use. Doubling 3.0 → 6.0:
+
+| fall | vanilla | with this |
+|---|---|---|
+| 3 blocks | 0 | 0 |
+| 6 blocks | 3 | **0** |
+| 7 blocks | 4 | 1 |
+| 20 blocks | 17 | 14 |
+
+The reduction is a **constant 3 damage at every height** — that is the signature
+of a moved threshold rather than a scaled remainder, and the harness asserts it
+specifically so the two mechanics cannot be quietly conflated later.
+
+#### The gravity stacking margin did NOT survive the increase — recheck, don't inherit
+**This is the durable lesson from the retune.** Last session established that
+`ADD_MULTIPLIED_TOTAL` was safer than `ADD_MULTIPLIED_BASE` for gravity. It was
+tempting to treat that as settled and move on. Recomputed at -78%:
+
+| operation | stacked with Moon Walker | outcome |
+|---|---|---|
+| **ADD_MULTIPLIED_TOTAL (shipped)** | **+0.01232** | apex 5.8, airtime 63t — floaty, playable |
+| ADD_MULTIPLIED_BASE | **-0.00640** | **NEGATIVE — launched upward, permanently** |
+
+At the old -65% the additive form still landed at **+0.004** — barely positive,
+but positive. At -78% it **crosses zero**. `GRAVITY`'s clamp floors at -1.0, so
+`sanitizeValue` passes a negative straight through. Multiplicative composition
+cannot reach zero for any amount greater than -1, whatever else stacks.
+
+**The rule: a safety margin computed at one magnitude is not evidence about
+another.** Both the old and the new numbers are asserted, so the harness records
+that the margin genuinely shrank rather than merely restating the conclusion.
+
+#### Giant Size grew a full kit — and one part of it is a repair, not a buff
+5x `SCALE` and the upward-rescue mitigation are unchanged. Added: **+10 hearts**,
+**2-block step-up**, **double jump**, **-25% damage taken**, **+6.5 reach**.
+
+- **`STEP_HEIGHT` is a real player attribute** (default 0.6, min 0.0, max 10.0),
+  and `LivingEntity.maxUpStep()` is literally
+  `getAttributeValue(Attributes.STEP_HEIGHT)`. No mixin. Set to exactly **2.0**.
+  Note `Entity.maxUpStep()` returns a hardcoded `0.0f` — `LivingEntity` overrides
+  it, so the attribute only reaches living entities.
+- **Damage reduction rides Iron Skin's existing hook.** One term added to
+  `EffectHooks.damageTakenMultiplier`, no parallel mechanism. Composes
+  multiplicatively: with Iron Skin it is 0.60, with Fragile 0.9375, and it can
+  never reach zero. Asserted, including that no second damage hook was added.
+
+#### Doubling jump height is NOT ×√2 — the drag eats the difference
+| approach | jump strength | apex | ratio |
+|---|---|---|---|
+| intuitive ×√2 (+41.42%) | 0.59397 | 2.324 | **1.856x** |
+| **derived (+47.222%)** | **0.61833** | **2.504** | **2.0000x** |
+
+The closed form `v²/2g` says √2. The real per-tick integration includes a `0.98`
+air drag that costs proportionally more at higher launch velocity, so √2 lands
+**7% short**. The harness solves the integration backwards and asserts the
+shipped constant matches — copy that approach for any future jump tuning rather
+than reaching for the closed form.
+
+#### SCALE does NOT extend reach — it actively BREAKS it
+Investigated to decide whether a reach bonus was a buff or a necessity. Three
+facts, all javap-verified:
+
+- `Player.entityInteractionRange()` and `blockInteractionRange()` are **each a
+  bare `getAttributeValue(...)` and nothing else.** No scale term anywhere.
+- `EntityDimensions.scale(f)` multiplies **`eyeHeight`** along with width and
+  height, so at 5x the eye sits **8.1 blocks** above the feet (1.62 × 5).
+- `isWithinBlockInteractionRange` measures from **`getEyePosition()`**.
+
+**So an unmodified 5x player cannot reach the block they are standing on** — 8.1
+blocks away against a default reach of 4.5. Not a difficulty; they could not
+mine, place or open anything at ground level.
+
+The bonus is sized from that: the eye rose by 6.48 blocks, so reach is extended
+by **+6.5** to restore vanilla-equivalent reach *relative to the giant's own
+body*. Final: block 11.0, entity 9.5, both far below the 64.0 ceiling.
+
+**This is larger than the +2 originally specified, deliberately** — +2 gives 6.5,
+still short of the 8.1 needed, so the effect would have shipped unable to touch
+the ground. One constant (`REACH_BONUS`) if a smaller number is wanted.
+
+**General lesson: any future effect that changes `SCALE` must also consider
+reach**, because raising the eye silently shortens every interaction.
+
+#### `AttributeEffectBehavior` now takes several attributes
+Both reworked effects are multi-attribute (3 and 6), which the base class did not
+support. Rather than have them implement `EffectBehavior` directly and re-type
+the idempotency rules, the base class grew a `List<Change>` constructor — the
+"fix the abstraction rather than the caller" case CLAUDE.md already calls for.
+**Every existing single-attribute subclass is untouched**; the old constructor
+delegates.
+
+**The same modifier `Identifier` is used for every attribute of one effect, and
+that is correct rather than a collision** — modifier ids only need to be unique
+*within one `AttributeInstance`*, and each attribute has its own.
+
+The harness now drives idempotency **per change**, not just for the first one:
+ten applications, value unmoved, exactly one modifier, and removal restores the
+base. "Idempotent" for a multi-attribute effect has to mean all of them.
 
 #### Behemoth Gauntlets: the hook, and why "unarmed" is broader than it sounds
 +20 flat bare-handed, x0.25 with anything in hand. **No attribute can express
@@ -2323,7 +2464,7 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 380 checks currently: the tuning constants as
+same numbers kept being re-derived. 450 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble
@@ -2796,6 +2937,45 @@ One consequence the old note predicted is now real and handled: a saved run can
 be loaded by a build whose registry has changed. Unknown effect ids are skipped
 with a warning rather than failing the load, and every codec field is optional
 so an older save still opens.
+
+### 13. Is Giant Size still a BAD effect? — OPEN, deliberately NOT decided
+**Giant Size is still filed BAD, and that classification is now questionable.**
+Recorded here rather than settled quietly in either direction, because the effect
+changed a lot after the phase was chosen.
+
+**When it was filed BAD** it was 5x size and nothing else: you fit almost
+nowhere, you suffocate if you grow in a tunnel, and you are an enormous target.
+That reading was straightforward.
+
+**What it is now** — 5x size, **+10 hearts**, **double jump height**, **2-block
+step-up**, **-25% damage taken**, and **+6.5 blocks of reach**. Four of those
+five additions are unambiguous power, and the fifth (reach) is a repair without
+which the effect is unplayable rather than merely harsh.
+
+The case each way, stated so the decision is made on the real numbers:
+
+- **Still BAD.** The size penalty is severe and permanent: a 9-block-tall,
+  3-block-wide player cannot enter caves, ravines, mineshafts, villages or any
+  ordinary build. That is most of Minecraft. The stat bonuses do not buy any of
+  it back, and the suffocation risk on every apply is real.
+- **Now GOOD.** 20 hearts with 25% damage reduction is roughly 26 effective
+  hearts, on top of mobility that outclasses several Tier 1 GOOD effects
+  outright. A player offered this among three curses would likely take it
+  *hoping* to get it, which is the practical test of a curse.
+
+**Whichever way it goes, two things must move with it.** The phase field is not
+the only thing keyed on this:
+
+- **Anti-stacking.** It is `DEBUFF`, a category currently shared only with
+  Exposed, Upside-Down Camera and Bad Reputation — all BAD. Moving it to GOOD
+  would make it the only GOOD effect in that category, which changes what those
+  curses compete with.
+- **The counterplay rule.** BAD effects below entropy 40 must be
+  counterplay-survivable; it is `true` today. As a GOOD effect that flag stops
+  meaning anything, and the entropy 25-50 range should be re-examined at the same
+  time.
+
+**No code change was made in either direction.** The phase is exactly as it was.
 
 ### 11. A separate armour-durability curse — OPEN, deliberately unspecified
 Clumsy Digger used to hit armour and the elytra, because

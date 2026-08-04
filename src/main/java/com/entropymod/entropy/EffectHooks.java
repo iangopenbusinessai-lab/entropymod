@@ -12,6 +12,7 @@ import com.entropymod.entropy.behavior.GreenThumbBehavior;
 import com.entropymod.entropy.behavior.LeakyPocketsBehavior;
 import com.entropymod.entropy.behavior.FastLearnerBehavior;
 import com.entropymod.entropy.behavior.FragileBehavior;
+import com.entropymod.entropy.behavior.GiantSizeBehavior;
 import com.entropymod.entropy.behavior.FrostWalkerInnateBehavior;
 import com.entropymod.entropy.behavior.GrowlingStomachBehavior;
 import com.entropymod.entropy.behavior.ExposedBehavior;
@@ -81,6 +82,12 @@ public final class EffectHooks {
 		}
 		if (acquired.contains(FragileBehavior.ID)) {
 			multiplier *= FragileBehavior.MULTIPLIER;
+		}
+		// Giant Size rides the SAME hook rather than getting its own -- one door
+		// between the damage mixin and the run state, so three effects compose
+		// multiplicatively instead of three mechanisms racing to clamp one number.
+		if (acquired.contains(GiantSizeBehavior.ID)) {
+			multiplier *= GiantSizeBehavior.DAMAGE_MULTIPLIER;
 		}
 		return multiplier;
 	}

@@ -113,8 +113,8 @@ public final class EffectRegistry {
 				EffectCategory.DEBUFF, EffectPhase.BAD, 0, 25, true);
 
 		// --- TIER 2 GOOD (entropy 25-50) --- first Tier 2 GOOD content.
-		register("extreme_gravity", "Extreme Gravity",
-				"Gravity cut to a third -- jump 2.9 blocks and drift down slowly",
+		register("embrace_the_moon", "Embrace the Moon",
+				"Lunar gravity -- jump 4.5 blocks, drift down slowly, and land safely from twice as high",
 				EffectCategory.MOVEMENT, EffectPhase.GOOD, 25, 50, true);
 		register("creative_flight", "Creative Flight",
 				"You can fly, permanently, in Survival",
@@ -141,7 +141,8 @@ public final class EffectRegistry {
 				EffectCategory.UTILITY, EffectPhase.BAD, 25, 50, true);
 
 		register("giant_size", "Giant Size",
-				"You are five times your normal size and fit almost nowhere",
+				"Five times your size: +10 hearts, double jump, 2-block steps, "
+						+ "-25% damage taken -- but you fit almost nowhere",
 				EffectCategory.DEBUFF, EffectPhase.BAD, 25, 50, true);
 		register("slashed_pockets", "Slashed Pockets",
 				"The top two rows of your inventory are torn open and unusable",

@@ -7,6 +7,8 @@ import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 
+import java.util.List;
+
 /**
  * Base class for effects that are nothing more than a permanent attribute
  * modifier. Fourteen of the twenty Tier 1 effects are exactly this, so the
@@ -41,46 +43,86 @@ import net.minecraft.world.entity.ai.attributes.AttributeModifier;
  */
 public abstract class AttributeEffectBehavior implements EffectBehavior {
 
-	private final Holder<Attribute> attribute;
-	private final double amount;
-	private final AttributeModifier.Operation operation;
+	/**
+	 * One attribute change. An effect is a list of these.
+	 *
+	 * @param attribute which attribute
+	 * @param amount    the modifier amount, in that operation's units
+	 * @param operation see the note on {@code ADD_MULTIPLIED_BASE} vs
+	 *                  {@code ADD_MULTIPLIED_TOTAL} in the class javadoc
+	 */
+	public record Change(Holder<Attribute> attribute, double amount,
+						 AttributeModifier.Operation operation) {}
 
+	private final List<Change> changes;
+
+	/** Single-attribute effect -- what most effects are. */
 	protected AttributeEffectBehavior(Holder<Attribute> attribute, double amount,
 									  AttributeModifier.Operation operation) {
-		this.attribute = attribute;
-		this.amount = amount;
-		this.operation = operation;
+		this(List.of(new Change(attribute, amount, operation)));
 	}
 
-	/** Stable, unique, derived -- no hardcoded UUID table to drift out of sync. */
+	/**
+	 * Multi-attribute effect.
+	 *
+	 * <p>Added when Tier 2 grew effects that are several attributes at once
+	 * (Embrace the Moon is gravity + jump + safe-fall; Giant Size is five). The
+	 * alternative was for those to implement {@link EffectBehavior} directly and
+	 * re-type the idempotency rules -- which is exactly the "fix the abstraction
+	 * rather than the caller" case CLAUDE.md calls out. Every existing
+	 * single-attribute subclass is untouched.
+	 */
+	protected AttributeEffectBehavior(List<Change> changes) {
+		this.changes = List.copyOf(changes);
+	}
+
+	/**
+	 * Stable, unique, derived -- no hardcoded UUID table to drift out of sync.
+	 *
+	 * <p><b>The same id is used for every attribute of a multi-attribute effect,
+	 * and that is correct rather than a collision:</b> modifier ids only have to
+	 * be unique <em>within one {@code AttributeInstance}</em>, and each attribute
+	 * has its own. Giving each change its own id would break nothing but would
+	 * make removal and the harness's idempotency check needlessly harder to state.
+	 */
 	public static Identifier modifierId(String effectId) {
 		return EntropyMod.id("effect/" + effectId);
 	}
 
+	/** The changes this effect applies. Exposed so the harness can drive them. */
+	public List<Change> changes() {
+		return changes;
+	}
+
 	@Override
 	public void apply(EffectContext ctx) {
-		AttributeInstance instance = ctx.target().getAttribute(attribute);
-		if (instance == null) {
-			// Only reachable if an attribute isn't present on the player entity type.
-			// Log rather than throw: one broken effect must not break the pick loop.
-			EntropyMod.LOGGER.error("Effect '{}' targets an attribute the player does not have -- skipped.",
-					ctx.effect().id());
-			return;
+		for (Change change : changes) {
+			AttributeInstance instance = ctx.target().getAttribute(change.attribute());
+			if (instance == null) {
+				// Only reachable if an attribute isn't present on the player entity type.
+				// Log rather than throw: one broken effect must not break the pick loop,
+				// and one missing attribute must not skip the effect's other changes.
+				EntropyMod.LOGGER.error("Effect '{}' targets an attribute the player does not have "
+						+ "-- that change skipped.", ctx.effect().id());
+				continue;
+			}
+			// addOrUpdate, NOT add -- see the class javadoc. This is the idempotency.
+			instance.addOrUpdateTransientModifier(new AttributeModifier(
+					modifierId(ctx.effect().id()), change.amount(), change.operation()));
 		}
-		// addOrUpdate, NOT add -- see the class javadoc. This is the idempotency.
-		instance.addOrUpdateTransientModifier(
-				new AttributeModifier(modifierId(ctx.effect().id()), amount, operation));
 		afterApply(ctx);
 	}
 
 	@Override
 	public void remove(EffectContext ctx) {
-		AttributeInstance instance = ctx.target().getAttribute(attribute);
-		if (instance == null) {
-			return;
+		for (Change change : changes) {
+			AttributeInstance instance = ctx.target().getAttribute(change.attribute());
+			if (instance == null) {
+				continue;
+			}
+			// removeModifier(Identifier) returns false when absent -- safe to call blind.
+			instance.removeModifier(modifierId(ctx.effect().id()));
 		}
-		// removeModifier(Identifier) returns false when absent -- safe to call blind.
-		instance.removeModifier(modifierId(ctx.effect().id()));
 		afterRemove(ctx);
 	}
 
