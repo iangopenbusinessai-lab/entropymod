@@ -1939,7 +1939,7 @@ Start — a second player already online, and anyone joining mid-run.
 
 #### The Tier 2 content batch — 7 effects, and what each one needed
 The first Tier 2 *content* batch, after the three input/camera effects. Registry
-is now **44 effects: 21 GOOD, 23 BAD**. All seven are entropy 25-50, permanent,
+is now **47 effects: 23 GOOD, 24 BAD** (three added by the survival batch). All seven are entropy 25-50, permanent,
 and wired through the ordinary three-step recipe.
 
 | Effect | Phase / category | Mechanism |
@@ -2035,6 +2035,162 @@ time (bounded, `MAX_LIFT_BLOCKS = 8`) for a free position and `snapTo` it.
 - **Giving up is a valid outcome.** Walled in deep underground, the player
   suffocates — the honest consequence of becoming enormous in a tunnel. Logged,
   not silently swallowed.
+
+#### The survival batch — 3 effects, plus Embrace the Moon's second fall mechanic
+Registry is now **47 effects: 23 GOOD, 24 BAD**.
+
+| Effect | Phase / category | Entropy | Mechanism |
+|---|---|---|---|
+| Slippery Grip | BAD / MOVEMENT | 25-50 | two `setSprinting` mixins |
+| Glass Cannon Pact | GOOD / COMBAT | **40-60** | two attributes |
+| Second Chance | GOOD / SURVIVAL | 25-50 | `checkTotemDeathProtection` mixin + run flag |
+
+Glass Cannon Pact sits **above the rest of Tier 2** deliberately: the health cost
+is permanent and compounds with whatever a long run has already accumulated.
+
+#### Embrace the Moon now has BOTH fall mechanics, and they don't collide
+The doubled `SAFE_FALL_DISTANCE` threshold is joined by a **-50%
+`FALL_DAMAGE_MULTIPLIER`**. Stacked, not swapped: the threshold decides *whether*
+there is damage, the multiplier scales *how much*.
+
+| fall | vanilla | threshold only | as shipped |
+|---|---|---|---|
+| 6 blocks | 3 | 0 | **0** |
+| 10 blocks | 7 | 4 | **2** |
+| 20 blocks | 17 | 14 | **7** |
+| 40 blocks | 37 | 34 | **17** |
+
+**Three effects now write to `FALL_DAMAGE_MULTIPLIER`** — this, Featherlight and
+Glass Jaw — and no-repeat permits holding them together. Checked on a real
+`AttributeInstance` rather than reasoned about:
+
+- **They cannot clobber each other.** Each effect's modifier is keyed on its own
+  `Identifier` (`entropymod:effect/<id>`), so the instance holds three distinct
+  modifiers and vanilla's `calculateValue` combines all of them.
+- **No double-application.** `addOrUpdateTransientModifier` replaces by id, so ten
+  re-applications leave *two* modifiers, not twenty — asserted directly.
+
+**The operation differs on purpose, and it matters.** Featherlight (-0.40) and
+Glass Jaw (+0.40) are `ADD_MULTIPLIED_BASE`, accumulating additively — exact
+inverses that cancel to 1.0, which is their design. The new term is
+`ADD_MULTIPLIED_TOTAL`, applied after that pool:
+
+| held | multiplier | effective |
+|---|---|---|
+| this alone | 1.0 × 0.5 | **0.50** |
+| + Featherlight | (1 − 0.4) × 0.5 | **0.30** |
+| + Glass Jaw | (1 + 0.4) × 0.5 | **0.70** |
+| + both | (1 − 0.4 + 0.4) × 0.5 | **0.50** |
+
+As `ADD_MULTIPLIED_BASE` it would have landed at **0.10** with Featherlight — a
+90% reduction neither effect claims. Note the stacking *risk* here is nothing
+like `GRAVITY`'s: this attribute floors at 0.0, which is merely full immunity.
+
+#### Slippery Grip: refuse the transition, don't repair it afterwards
+The hook is **`LivingEntity.setSprinting(boolean)` with the argument forced
+false**. Both alternatives were investigated and both are worse:
+
+- **Clearing the sprint key in the input record does not work.** `LocalPlayer`
+  starts a sprint from three distinct triggers — the sprint key,
+  double-tap-forward, and the sprint toggle — and it calls `setSprinting` from
+  **four** separate places. The latter triggers never consult the key bit, so
+  intercepting it would block one path of three and look intermittently broken.
+- **Force-clearing a flag every tick works but is worse.** It leaves a one-tick
+  sprint window every tick, and since the client decides sprinting locally and
+  applies its own speed modifier, the client would believe it is moving faster
+  than the server allows — rubber-banding.
+
+`LivingEntity` is the right level: it **overrides** `Entity.setSprinting`, and
+neither `Player` nor `ServerPlayer` overrides it again, so one target covers the
+whole chain. It is also where vanilla adds and removes
+`SPEED_MODIFIER_SPRINTING`, so passing `false` makes **vanilla's own code** strip
+the speed bonus — nothing is undone by hand.
+
+**There are two mixins and the client one is load-bearing.** `EffectHooks`
+answers "no effect" client-side by design, so the common mixin cannot see the
+effect there; without the client twin (reading `ClientRunState`, which
+`ClientEffectsPayload` already populates) the client would apply a sprint speed
+modifier the server does not have. **Contrast Slashed Pockets**, whose client gap
+is cosmetic — this one is not.
+
+Both are `@ModifyVariable`, deliberately: they **chain**, each independently
+forcing false. Two cancellable `@Inject`s would race, since the first to cancel
+stops the rest.
+
+#### Second Chance: ride the Totem of Undying's own escape hatch
+The hook is **`LivingEntity.checkTotemDeathProtection(DamageSource)`**. Its
+caller in `hurtServer` is, javap-verified:
+
+```java
+if (this.isDeadOrDying()) {
+    if (!this.checkTotemDeathProtection(source)) {
+        ... death sound, die(source) ...
+    }
+}
+```
+
+So **returning `true` skips the death branch outright** — no death message, no
+drops, no respawn screen — because vanilla's own control flow says so, rather
+than because each was suppressed individually.
+
+**Two consequences that decide the implementation:**
+
+- **Restoring health is mandatory, not decoration.** This runs *after* health has
+  been reduced to zero. A `true` return with no `setHealth` leaves the player
+  alive on an empty bar and dead again next tick. Vanilla's own totem branch does
+  the same `setHealth` for the same reason.
+- **The `BYPASSES_INVULNERABILITY` check is kept**, mirroring vanilla's own first
+  line: `/kill` and the void still kill. An effect that survived `/kill` would be
+  a debugging trap.
+
+Injected at HEAD and cancelling, so Second Chance is checked **before** a totem in
+hand — the run's one-shot is spent and the totem is kept. `checkTotemDeathProtection`
+is `private`, so the subclass-override trap cannot apply; it does run for every
+living entity, which is what the `instanceof Player` guard is for.
+
+**"Once per run" is a run flag, not the acquired set** — one
+`optionalFieldOf("second_chance_used", false)` in `EntropyManager`'s existing
+codec, exactly the store and shape Second Guess uses. Consuming does two things
+and **only the first enforces "once"**:
+
+1. The persisted flag is set. Survives respawn, relog and save/reload, and
+   **re-acquiring cannot refund it**.
+2. The id is dropped from `AcquiredEffects` — presentation, not enforcement, and
+   it deliberately makes the effect eligible to be offered again, which the flag
+   renders inert.
+
+A design resting on the acquired set alone would eventually be wrong: the repeat
+fallback can legitimately re-offer an already-taken effect once a phase's pool
+empties. All of this is asserted, including that an *unspent* Second Chance also
+survives a reload — the flag is not quietly defaulting to spent.
+
+**`AcquiredEffects.remove` is new and is not a general un-pick.** Effects are
+permanent; it exists for the one shape that consumes itself. Do not reach for it
+to build a temporary effect.
+
+#### Glass Cannon Pact: the health floor is safe, and stays safe stacked
+`MAX_HEALTH` floors at **1.0**, not 0 — `sanitizeValue(0)` and
+`sanitizeValue(-100)` both return 1.0. So unlike `GRAVITY`, whose -1.0 floor makes
+over-stacking catastrophic, **stacked health penalties bottom out harmlessly at
+half a heart** and the attribute system can never kill the player by itself.
+
+Checked explicitly against Brittle Bones rather than by analogy:
+
+| held | sum | max health |
+|---|---|---|
+| vanilla | 0 | 20.0 (10 hearts) |
+| this alone | -2.0 | 18.0 (9 hearts) |
+| Brittle Bones alone | -4.0 | 16.0 (8 hearts) |
+| **both** | **-6.0** | **14.0 (7 hearts)** |
+
+They are in **different categories** (COMBAT and SURVIVAL), so anti-stacking does
+not separate them — the pairing is ordinary, not an edge case. Twenty stacked
+would still leave the player alive, asserted.
+
+Current health is clamped on apply, same as Brittle Bones: lowering max health
+does not lower current health, so a player at 20/20 would otherwise display more
+hearts than they have. **`ATTACK_DAMAGE` is not client-syncable**, so the tooltip
+will not show the +50% — the same known cosmetic gap Steady Hands has.
 
 #### Extreme Gravity is now EMBRACE THE MOON — renamed, and much bigger
 The id changed from `extreme_gravity` to `embrace_the_moon`, so a save from
@@ -2464,7 +2620,7 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 450 checks currently: the tuning constants as
+same numbers kept being re-derived. 547 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble

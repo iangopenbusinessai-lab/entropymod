@@ -54,6 +54,27 @@ public final class AcquiredEffects {
 		return ids.contains(effectId);
 	}
 
+	/**
+	 * Drops an effect from the run.
+	 *
+	 * <p><b>Effects are permanent, so this is not a general un-pick.</b> It exists
+	 * for the one shape that genuinely consumes itself -- Second Chance, which
+	 * spends itself the moment it saves the player. Do not reach for it to build a
+	 * temporary effect: that was removed deliberately, and re-growing it here
+	 * would reintroduce the lifetime ambiguity {@link EffectDefinition} exists to
+	 * prevent.
+	 *
+	 * <p>Removing an id makes the effect eligible to be offered again, since
+	 * no-repeat reads this same set. That is correct for a consumed effect and is
+	 * <em>not</em> what stops it firing twice -- a persisted run flag does. Same
+	 * rule Second Guess follows: the flag is on the run, not on the effect.
+	 *
+	 * @return true if it was present
+	 */
+	public boolean remove(String effectId) {
+		return ids.remove(effectId);
+	}
+
 	/** Ids in pick order. Unmodifiable. */
 	public Set<String> ids() {
 		return Collections.unmodifiableSet(ids);

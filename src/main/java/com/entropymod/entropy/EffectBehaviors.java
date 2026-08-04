@@ -70,9 +70,12 @@ public final class EffectBehaviors {
 		register(CreativeFlightBehavior.ID, new CreativeFlightBehavior());
 		register(BehemothGauntletsBehavior.ID, new BehemothGauntletsBehavior());
 		register(CrouchInvincibilityBehavior.ID, new CrouchInvincibilityBehavior());
+		register(SecondChanceBehavior.ID, new SecondChanceBehavior());
+		register(GlassCannonPactBehavior.ID, new GlassCannonPactBehavior());
 
 		// ---------- TIER 2 BAD ----------
 		register(GiantSizeBehavior.ID, new GiantSizeBehavior());
+		register(SlipperyGripBehavior.ID, new SlipperyGripBehavior());
 		register(SlashedPocketsBehavior.ID, new SlashedPocketsBehavior());
 		register(FlamboyantBehavior.ID, new FlamboyantBehavior());
 		register(RandomizedControlsBehavior.ID, new RandomizedControlsBehavior());

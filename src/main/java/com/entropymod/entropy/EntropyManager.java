@@ -1,6 +1,7 @@
 package com.entropymod.entropy;
 
 import com.entropymod.EntropyMod;
+import com.entropymod.entropy.behavior.SecondChanceBehavior;
 import com.entropymod.entropy.behavior.SecondGuessBehavior;
 import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.OpenChoicePayload;
@@ -71,6 +72,11 @@ public class EntropyManager extends SavedData {
 			PickRecord.CODEC.listOf().optionalFieldOf("history", List.of()).forGetter(m -> m.history),
 			Codec.BOOL.optionalFieldOf("reroll_used", false).forGetter(m -> m.rerollUsed),
 			Codec.STRING.optionalFieldOf("move_scramble", "").forGetter(m -> m.moveScramble),
+			// Second Chance's one-shot, in the SAME store as Second Guess's. See
+			// consumeSecondChance for why the flag rather than the acquired set is
+			// what enforces "once". Position matches the constructor parameter order.
+			Codec.BOOL.optionalFieldOf("second_chance_used", false)
+					.forGetter(m -> m.secondChanceUsed),
 			// Optional WITHOUT a default, unlike every other field here, so the codec
 			// constructor can tell "this save predates run states" from "this save
 			// says NOT_STARTED" and migrate the first case. See the constructor.
@@ -125,6 +131,17 @@ public class EntropyManager extends SavedData {
 	private String moveScramble = "";
 
 	/**
+	 * Second Chance's one-shot, spent for the whole run.
+	 *
+	 * <p>Deliberately the same shape and the same store as {@link #rerollUsed}
+	 * rather than a parallel mechanism. Because it lives on the run, re-acquiring
+	 * Second Chance cannot refund it -- which the acquired set alone could not
+	 * guarantee, since the repeat fallback can re-offer an already-taken effect
+	 * once a phase's pool empties.
+	 */
+	private boolean secondChanceUsed = false;
+
+	/**
 	 * Where the run is in its lifecycle. <b>Gates the whole tick loop</b> -- see
 	 * {@link #tick}.
 	 *
@@ -173,7 +190,7 @@ public class EntropyManager extends SavedData {
 	/** Codec constructor. */
 	private EntropyManager(int entropy, int pickCount, boolean gameOver, int entropyCap, int intervalTicks,
 						   List<String> acquiredIds, List<PickRecord> history, boolean rerollUsed,
-						   String moveScramble, Optional<String> runState,
+						   String moveScramble, boolean secondChanceUsed, Optional<String> runState,
 						   Map<String, KeybindSnapshot> keybindSnapshots) {
 		this.entropy = entropy;
 		this.pickCount = pickCount;
@@ -183,6 +200,7 @@ public class EntropyManager extends SavedData {
 		acquiredIds.forEach(this.acquired::add);
 		this.history.addAll(history);
 		this.rerollUsed = rerollUsed;
+		this.secondChanceUsed = secondChanceUsed;
 		// A malformed value from a hand-edited or newer save degrades to vanilla
 		// controls rather than reaching input handling and throwing every tick.
 		this.moveScramble = MovementScramble.isValid(moveScramble) ? moveScramble : "";
@@ -525,6 +543,75 @@ public class EntropyManager extends SavedData {
 		keybindSnapshots.put(uuid, snapshot);
 		setDirty();
 		return true;
+	}
+
+	/**
+	 * Whether Second Chance can still save someone: the effect is held and the
+	 * run's one save is unspent.
+	 */
+	public boolean isSecondChanceAvailable() {
+		return !secondChanceUsed && acquired.contains(SecondChanceBehavior.ID);
+	}
+
+	/**
+	 * Spends Second Chance to save a player from a killing blow.
+	 *
+	 * <p>Called from the {@code checkTotemDeathProtection} mixin, at the moment
+	 * vanilla has already zeroed the player's health and is deciding whether to
+	 * run the death branch. <b>Restoring health here is mandatory</b> -- returning
+	 * true without it leaves the player alive on an empty bar and dead again next
+	 * tick. Vanilla's own totem branch does the same {@code setHealth} for the same
+	 * reason.
+	 *
+	 * <p>Ordering matters and follows the lesson from Second Guess's button bug:
+	 * <b>the flag is set before anything else</b>, so nothing downstream -- the
+	 * sync, a re-entrant damage event -- can observe an unspent Second Chance that
+	 * has in fact just fired.
+	 *
+	 * @return true if the save happened and death should be skipped
+	 */
+	public boolean consumeSecondChance(ServerPlayer player) {
+		if (!spendSecondChance()) {
+			return false;
+		}
+		player.setHealth(SecondChanceBehavior.SURVIVE_HEALTH);
+		player.invulnerableTime = SecondChanceBehavior.INVULNERABLE_TICKS;
+		player.sendSystemMessage(Component.literal(
+				"[Entropy] Second Chance burns away -- you survive on one heart."));
+
+		// The client's cached acquired set has to lose it too, or a client-side
+		// effect would keep acting on an effect the run no longer holds.
+		syncToAll(player.level().getServer());
+		EntropyMod.LOGGER.info("Second Chance consumed by {} -- {} effect(s) remain.",
+				player.getName().getString(), acquired.size());
+		return true;
+	}
+
+	/**
+	 * The run-state half of {@link #consumeSecondChance}, split out so the
+	 * once-per-run rule can be driven headlessly against the real shipped code --
+	 * the full version needs a live {@code ServerPlayer} the harness cannot build.
+	 *
+	 * <p>Order is deliberate: the flag is set first, so nothing downstream can
+	 * observe an unspent Second Chance that has in fact already fired. That is the
+	 * same ordering lesson Second Guess's reroll button was fixed with.
+	 *
+	 * @return true only on the call that actually spends it
+	 */
+	public boolean spendSecondChance() {
+		if (!isSecondChanceAvailable()) {
+			return false;
+		}
+		secondChanceUsed = true;
+		// Dropping the id is presentation, not enforcement -- the flag above is what
+		// makes this once-per-run. See AcquiredEffects.remove.
+		acquired.remove(SecondChanceBehavior.ID);
+		setDirty();
+		return true;
+	}
+
+	public boolean isSecondChanceUsed() {
+		return secondChanceUsed;
 	}
 
 	/** Tells one player the run state and their own frozen keybinds. */

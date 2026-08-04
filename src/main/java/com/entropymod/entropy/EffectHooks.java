@@ -19,9 +19,12 @@ import com.entropymod.entropy.behavior.ExposedBehavior;
 import com.entropymod.entropy.behavior.IronSkinBehavior;
 import com.entropymod.entropy.behavior.IronStomachBehavior;
 import com.entropymod.entropy.behavior.IronWillBehavior;
+import com.entropymod.entropy.behavior.SecondChanceBehavior;
+import com.entropymod.entropy.behavior.SlipperyGripBehavior;
 import com.entropymod.entropy.behavior.SlowLearnerBehavior;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.util.RandomSource;
@@ -306,6 +309,38 @@ public final class EffectHooks {
 	public static boolean hasSlashedPockets(Player player) {
 		AcquiredEffects acquired = acquired(player);
 		return acquired != null && acquired.contains(SlashedPocketsBehavior.ID);
+	}
+
+	/** True if this player must never sprint (Slippery Grip). */
+	public static boolean preventsSprinting(Player player) {
+		AcquiredEffects acquired = acquired(player);
+		return acquired != null && acquired.contains(SlipperyGripBehavior.ID);
+	}
+
+	/**
+	 * Second Chance's death save. Returns true if the player was rescued and
+	 * vanilla should skip its death branch entirely.
+	 *
+	 * <p>Called from the {@code checkTotemDeathProtection} mixin, so by this point
+	 * vanilla has already zeroed the health -- everything that restores it lives in
+	 * {@code EntropyManager.consumeSecondChance}, which also spends the run flag.
+	 *
+	 * <p>The {@code BYPASSES_INVULNERABILITY} test mirrors vanilla's own first line
+	 * in that method, deliberately: {@code /kill} and the void must still kill. An
+	 * effect that survived {@code /kill} would be a debugging trap.
+	 */
+	public static boolean trySecondChance(Player player, DamageSource source) {
+		if (!(player instanceof ServerPlayer serverPlayer)) {
+			return false;
+		}
+		if (source != null && source.is(DamageTypeTags.BYPASSES_INVULNERABILITY)) {
+			return false;
+		}
+		MinecraftServer server = serverPlayer.level().getServer();
+		if (server == null) {
+			return false;
+		}
+		return EntropyManager.get(server).consumeSecondChance(serverPlayer);
 	}
 
 	/** True if villagers should overcharge this player (Bad Reputation). */

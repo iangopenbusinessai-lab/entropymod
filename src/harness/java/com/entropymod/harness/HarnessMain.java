@@ -15,6 +15,12 @@ import com.entropymod.entropy.EffectBehaviors;
 import com.entropymod.entropy.EffectCategory;
 import com.entropymod.entropy.behavior.BadReputationBehavior;
 import com.entropymod.entropy.behavior.BehemothGauntletsBehavior;
+import com.entropymod.entropy.behavior.BrittleBonesBehavior;
+import com.entropymod.entropy.behavior.FeatherlightBehavior;
+import com.entropymod.entropy.behavior.GlassCannonPactBehavior;
+import com.entropymod.entropy.behavior.GlassJawBehavior;
+import com.entropymod.entropy.behavior.SecondChanceBehavior;
+import com.entropymod.entropy.behavior.SlipperyGripBehavior;
 import com.entropymod.entropy.behavior.CreativeFlightBehavior;
 import com.entropymod.entropy.behavior.CrouchInvincibilityBehavior;
 import com.entropymod.entropy.behavior.EmbraceTheMoonBehavior;
@@ -98,6 +104,11 @@ public final class HarnessMain {
 		giantSizeAttribute();
 		giantSizeKit();
 		multiAttributeIdempotency();
+		survivalBatchWiring();
+		fallDamageStacking();
+		glassCannonHealthFloor();
+		secondChanceOnce();
+		survivalBatchInvariants();
 		behemothGauntletsBothCases();
 		flamboyantFireOnly();
 		crouchInvincibilityGate();
@@ -1925,6 +1936,335 @@ public final class HarnessMain {
 	private static net.minecraft.world.entity.ai.attributes.AttributeInstance instanceFor(
 			net.minecraft.core.Holder<net.minecraft.world.entity.ai.attributes.Attribute> attribute) {
 		return new net.minecraft.world.entity.ai.attributes.AttributeInstance(attribute, a -> {});
+	}
+
+
+	// ------------------------------------------------------------------
+	// Survival batch: fall-damage stacking, Slippery Grip, Glass Cannon Pact,
+	// Second Chance.
+	// ------------------------------------------------------------------
+
+	private static final List<String> SURVIVAL_BATCH = List.of(
+			SlipperyGripBehavior.ID, GlassCannonPactBehavior.ID, SecondChanceBehavior.ID);
+
+	private static void survivalBatchWiring() {
+		section("Survival batch: registration and wiring");
+		HarnessBootstrap.init();
+
+		for (String id : SURVIVAL_BATCH) {
+			EffectDefinition def = EffectRegistry.byId(id);
+			check(def != null, id + " is registered in EffectRegistry");
+			if (def == null) {
+				continue;
+			}
+			check(def.minEntropy() >= 25, id + " starts at entropy 25 or later");
+			check(def.phase() != EffectPhase.BAD || def.counterplay(),
+					id + " is counterplay-survivable if BAD");
+			check(EffectBehaviors.get(id).getClass().getSimpleName().endsWith("Behavior"),
+					id + " resolves to a real behavior, not the MISSING no-op");
+		}
+
+		// Glass Cannon Pact was placed at the top of Tier 2 deliberately.
+		EffectDefinition pact = EffectRegistry.byId(GlassCannonPactBehavior.ID);
+		check(pact.minEntropy() == 40 && pact.maxEntropy() == 60,
+				"Glass Cannon Pact sits at entropy 40-60, above the rest of Tier 2");
+		check(EffectRegistry.byId(SlipperyGripBehavior.ID).phase() == EffectPhase.BAD,
+				"Slippery Grip is BAD");
+		check(pact.phase() == EffectPhase.GOOD
+						&& EffectRegistry.byId(SecondChanceBehavior.ID).phase() == EffectPhase.GOOD,
+				"Glass Cannon Pact and Second Chance are GOOD");
+
+		check(EffectBehaviors.definitionsWithoutBehavior().isEmpty()
+						&& EffectBehaviors.behaviorsWithoutDefinition().isEmpty(),
+				"no id mismatches anywhere after this batch");
+	}
+
+	/**
+	 * Part 0: the two fall-damage mechanics stack, and the three effects that now
+	 * share {@code FALL_DAMAGE_MULTIPLIER} compose without clobbering.
+	 */
+	private static void fallDamageStacking() {
+		section("Embrace the Moon: fall-damage threshold AND multiplier");
+		HarnessBootstrap.init();
+
+		double safeFall = 3.0 + constant(EmbraceTheMoonBehavior.class, "SAFE_FALL_BONUS");
+		double fallAmount = constant(EmbraceTheMoonBehavior.class, "FALL_DAMAGE_AMOUNT");
+		checkNear(fallAmount, -0.50, 1e-9, "the multiplier term is -50%");
+
+		// Both mechanics together, against vanilla's own formula.
+		check(fallDamage(10, safeFall, 0.5) == 2 && fallDamage(10, 3.0, 1.0) == 7,
+				"10-block fall: 2 damage instead of vanilla's 7");
+		check(fallDamage(20, safeFall, 0.5) == 7 && fallDamage(20, 3.0, 1.0) == 17,
+				"20-block fall: 7 instead of 17");
+		check(fallDamage(40, safeFall, 0.5) == 17 && fallDamage(40, 3.0, 1.0) == 37,
+				"40-block fall: 17 instead of 37");
+		check(fallDamage(6, safeFall, 0.5) == 0,
+				"the threshold still does its own job: 6 blocks is harmless");
+		// The two are genuinely different mechanics, not one dressed as the other.
+		check(fallDamage(20, safeFall, 1.0) == 14 && fallDamage(20, 3.0, 0.5) == 8,
+				"threshold-only and multiplier-only give different answers (14 vs 8), "
+						+ "so stacking them is not a double-application of one mechanic");
+
+		// --- composition on the REAL AttributeInstance ---------------------------
+		// Three effects now write to this attribute and no-repeat permits holding
+		// them together, so the question is whether they clobber each other.
+		var attr = net.minecraft.world.entity.ai.attributes.Attributes.FALL_DAMAGE_MULTIPLIER;
+		double featherlight = -0.40;
+		double glassJaw = 0.40;
+
+		checkNear(composeFallMultiplier(attr, true, false, false), 0.50, 1e-6,
+				"Embrace the Moon alone: 0.50");
+		checkNear(composeFallMultiplier(attr, true, true, false), 0.30, 1e-6,
+				"+ Featherlight: 0.30 (multiplicative, not the 0.10 an additive term would give)");
+		checkNear(composeFallMultiplier(attr, true, false, true), 0.70, 1e-6,
+				"+ Glass Jaw: 0.70");
+		checkNear(composeFallMultiplier(attr, true, true, true), 0.50, 1e-6,
+				"+ both: 0.50, since Featherlight and Glass Jaw are exact inverses");
+		checkNear(composeFallMultiplier(attr, false, true, true), 1.0, 1e-6,
+				"without this effect the existing pair still cancels to vanilla");
+
+		// Distinct ids are what make them additive rather than one overwriting another.
+		check(!AttributeEffectBehavior.modifierId(EmbraceTheMoonBehavior.ID)
+						.equals(AttributeEffectBehavior.modifierId(FeatherlightBehavior.ID)),
+				"each effect's modifier has its own Identifier, so they cannot clobber");
+		check(composeFallMultiplier(attr, true, true, false)
+						!= composeFallMultiplier(attr, false, true, false),
+				"and all three are genuinely present at once rather than the last one winning");
+
+		// Re-application must refresh, not accumulate -- the whole idempotency rule.
+		var instance = new net.minecraft.world.entity.ai.attributes.AttributeInstance(attr, a -> {});
+		for (int i = 0; i < 10; i++) {
+			addModifier(instance, EmbraceTheMoonBehavior.ID, fallAmount,
+					net.minecraft.world.entity.ai.attributes.AttributeModifier
+							.Operation.ADD_MULTIPLIED_TOTAL);
+			addModifier(instance, FeatherlightBehavior.ID, featherlight,
+					net.minecraft.world.entity.ai.attributes.AttributeModifier
+							.Operation.ADD_MULTIPLIED_BASE);
+		}
+		check(instance.getModifiers().size() == 2,
+				"ten re-applications of both leave exactly two modifiers, not twenty");
+		checkNear(instance.getValue(), 0.30, 1e-6, "and the value is unchanged by the repeats");
+		check(glassJaw > 0, "Glass Jaw's sign is unchanged by this work");
+	}
+
+	private static void addModifier(
+			net.minecraft.world.entity.ai.attributes.AttributeInstance instance,
+			String effectId, double amount,
+			net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation op) {
+		instance.addOrUpdateTransientModifier(
+				new net.minecraft.world.entity.ai.attributes.AttributeModifier(
+						AttributeEffectBehavior.modifierId(effectId), amount, op));
+	}
+
+	/** Builds a real AttributeInstance holding whichever of the three effects are selected. */
+	private static double composeFallMultiplier(
+			net.minecraft.core.Holder<net.minecraft.world.entity.ai.attributes.Attribute> attr,
+			boolean moon, boolean featherlight, boolean glassJaw) {
+		var instance = new net.minecraft.world.entity.ai.attributes.AttributeInstance(attr, a -> {});
+		if (moon) {
+			addModifier(instance, EmbraceTheMoonBehavior.ID,
+					constant(EmbraceTheMoonBehavior.class, "FALL_DAMAGE_AMOUNT"),
+					net.minecraft.world.entity.ai.attributes.AttributeModifier
+							.Operation.ADD_MULTIPLIED_TOTAL);
+		}
+		if (featherlight) {
+			addModifier(instance, FeatherlightBehavior.ID, -0.40,
+					net.minecraft.world.entity.ai.attributes.AttributeModifier
+							.Operation.ADD_MULTIPLIED_BASE);
+		}
+		if (glassJaw) {
+			addModifier(instance, GlassJawBehavior.ID, 0.40,
+					net.minecraft.world.entity.ai.attributes.AttributeModifier
+							.Operation.ADD_MULTIPLIED_BASE);
+		}
+		return instance.getValue();
+	}
+
+	/** Vanilla's formula, with the fall-damage multiplier as a parameter. */
+	private static int fallDamage(double distance, double safeFallDistance, double multiplier) {
+		return Math.max(0, (int) Math.floor((distance + 1.0e-6 - safeFallDistance) * multiplier));
+	}
+
+	private static void glassCannonHealthFloor() {
+		section("Glass Cannon Pact: the health floor, alone and stacked");
+		HarnessBootstrap.init();
+
+		var health = ranged(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
+		checkNear(health.getMinValue(), 1.0, 1e-9,
+				"MAX_HEALTH floors at 1.0, not 0 -- unlike GRAVITY's -1.0");
+
+		double pact = constant(GlassCannonPactBehavior.class, "HEALTH_PENALTY");
+		double brittle = -4.0; // BrittleBonesBehavior passes this inline to super
+		checkNear(pact, -2.0, 1e-9, "the penalty is -2.0 raw = -1 heart");
+
+		checkNear(health.getDefaultValue() + pact, 18.0, 1e-9, "alone: 18 health (9 hearts)");
+		checkNear(health.getDefaultValue() + brittle, 16.0, 1e-9,
+				"Brittle Bones alone: 16 health (8 hearts)");
+		double both = health.getDefaultValue() + pact + brittle;
+		checkNear(both, 14.0, 1e-9, "BOTH stacked: 14 health (7 hearts) -- nowhere near the floor");
+		checkNear(health.sanitizeValue(both), both, 1e-9, "and not clamped");
+
+		// The structural guarantee: unlike gravity, over-stacking here bottoms out
+		// harmlessly. Driven against the real sanitizeValue rather than asserted.
+		checkNear(health.sanitizeValue(0.0), 1.0, 1e-9,
+				"sanitizeValue(0) is 1.0 -- half a heart, never zero");
+		checkNear(health.sanitizeValue(-100.0), 1.0, 1e-9,
+				"sanitizeValue(-100) is also 1.0, so no number of stacked penalties can kill");
+		check(health.sanitizeValue(health.getDefaultValue() + pact * 20) >= 1.0,
+				"twenty of these stacked would still leave the player alive");
+
+		// They are in different categories, so anti-stacking does NOT separate them --
+		// the pairing above is ordinary, not an edge case.
+		check(EffectRegistry.byId(GlassCannonPactBehavior.ID).category()
+						!= EffectRegistry.byId(BrittleBonesBehavior.ID).category(),
+				"Glass Cannon Pact (COMBAT) and Brittle Bones (SURVIVAL) are different "
+						+ "categories, so anti-stacking permits holding both");
+
+		// The attack half.
+		double attack = constant(GlassCannonPactBehavior.class, "ATTACK_BONUS");
+		checkNear(attack, 0.50, 1e-9, "attack bonus is +50%");
+		check(Checks.hasMethod(GlassCannonPactBehavior.class, "afterApply"),
+				"current health is clamped on apply -- lowering max health does not "
+						+ "lower current health by itself");
+	}
+
+	/**
+	 * Second Chance fires exactly once per run, and neither a relog nor
+	 * re-acquiring the effect can refund it.
+	 */
+	private static void secondChanceOnce() {
+		section("Second Chance: once per run, and it stays spent");
+		HarnessBootstrap.init();
+
+		EntropyManager manager = new EntropyManager();
+		manager.startRun();
+		check(!manager.isSecondChanceAvailable(),
+				"unavailable before the effect is acquired");
+		check(!manager.spendSecondChance(), "and cannot be spent");
+
+		manager.acquired().add(SecondChanceBehavior.ID);
+		check(manager.isSecondChanceAvailable(), "available once acquired");
+
+		check(manager.spendSecondChance(), "the first killing blow spends it");
+		check(manager.isSecondChanceUsed(), "the run flag is set");
+		check(!manager.acquired().contains(SecondChanceBehavior.ID),
+				"and the effect is dropped from the acquired set");
+
+		// The heart of the requirement.
+		check(!manager.spendSecondChance(), "a SECOND killing blow does not");
+		for (int i = 0; i < 5; i++) {
+			check(!manager.spendSecondChance(), "still refused on repeat attempt " + (i + 1));
+		}
+
+		// Re-acquiring must not refund it. This is why the flag, not the acquired
+		// set, is what enforces "once" -- the repeat fallback can legitimately
+		// re-offer an already-taken effect once a phase's pool empties.
+		manager.acquired().add(SecondChanceBehavior.ID);
+		check(manager.acquired().contains(SecondChanceBehavior.ID),
+				"the effect can be re-acquired (the repeat fallback allows it)");
+		check(!manager.isSecondChanceAvailable(),
+				"but it is still unavailable -- the run flag outranks the acquired set");
+		check(!manager.spendSecondChance(), "and re-acquiring does not refund the save");
+
+		// Across a relog, which for a SavedData means across the codec.
+		EntropyManager reloaded = reencode(manager);
+		check(reloaded.isSecondChanceUsed(), "the spent flag survives a save/reload");
+		check(!reloaded.isSecondChanceAvailable(),
+				"so a relog cannot refund it either, even holding the effect again");
+		check(!reloaded.spendSecondChance(), "and it still cannot be spent after reloading");
+
+		// A run that never spent it must still be able to.
+		EntropyManager fresh = new EntropyManager();
+		fresh.startRun();
+		fresh.acquired().add(SecondChanceBehavior.ID);
+		EntropyManager freshReloaded = reencode(fresh);
+		check(freshReloaded.isSecondChanceAvailable(),
+				"an UNSPENT Second Chance survives a reload too -- the flag is not "
+						+ "defaulting to spent");
+		check(freshReloaded.spendSecondChance(), "and can still be spent after the reload");
+
+		// Same store as Second Guess, not a parallel one.
+		check(Checks.classReferences(EntropyManager.class, "second_chance_used"),
+				"the flag lives in EntropyManager's own codec, beside reroll_used");
+		check(Checks.classReferences(com.entropymod.entropy.EffectHooks.class,
+						"BYPASSES_INVULNERABILITY"),
+				"the hook still lets /kill and the void through, matching vanilla's "
+						+ "own first line in checkTotemDeathProtection");
+		checkNear(constant(SecondChanceBehavior.class, "SURVIVE_HEALTH"), 2.0, 1e-6,
+				"the save leaves the player on 1 heart");
+		check(constant(SecondChanceBehavior.class, "INVULNERABLE_TICKS") > 0,
+				"with a brief window of immunity so the same blow cannot re-land");
+	}
+
+	/** Idempotency, no-repeat and persistence across this batch. */
+	private static void survivalBatchInvariants() {
+		section("Survival batch: idempotency, no-repeat, persistence");
+		HarnessBootstrap.init();
+
+		// Attribute effects in this batch: every change idempotent.
+		AttributeEffectBehavior pact =
+				(AttributeEffectBehavior) EffectBehaviors.get(GlassCannonPactBehavior.ID);
+		for (AttributeEffectBehavior.Change change : pact.changes()) {
+			String name = net.minecraft.core.registries.BuiltInRegistries.ATTRIBUTE
+					.getKey(change.attribute().value()).getPath();
+			var instance = new net.minecraft.world.entity.ai.attributes.AttributeInstance(
+					change.attribute(), a -> {});
+			double afterFirst = 0;
+			for (int i = 0; i < 10; i++) {
+				addModifier(instance, GlassCannonPactBehavior.ID, change.amount(), change.operation());
+				if (i == 0) {
+					afterFirst = instance.getValue();
+				}
+			}
+			checkNear(instance.getValue(), afterFirst, 1e-9,
+					"glass_cannon_pact/" + name + ": ten applications do not move the value");
+			check(instance.getModifiers().size() == 1,
+					"glass_cannon_pact/" + name + ": one modifier, not ten");
+		}
+
+		// Embrace the Moon gained a fourth change this session.
+		AttributeEffectBehavior moon =
+				(AttributeEffectBehavior) EffectBehaviors.get(EmbraceTheMoonBehavior.ID);
+		check(moon.changes().size() == 4,
+				"Embrace the Moon now applies four attributes (gravity, jump, safe fall, "
+						+ "fall multiplier)");
+
+		// The two hook-driven ones hold no state of their own, which is what makes
+		// them idempotent and respawn-safe for free.
+		for (String id : List.of(SlipperyGripBehavior.ID, SecondChanceBehavior.ID)) {
+			check(EffectBehaviors.get(id) instanceof com.entropymod.entropy.HookEffectBehavior,
+					id + " is a HookEffectBehavior -- apply() is final and empty, so there is "
+							+ "no per-player state to re-apply or leak");
+		}
+
+		// No-repeat.
+		AcquiredEffects acquired = new AcquiredEffects();
+		SURVIVAL_BATCH.forEach(acquired::add);
+		for (int entropy : new int[] {25, 45, 60}) {
+			for (EffectPhase phase : EffectPhase.values()) {
+				EffectRegistry.RollResult roll = EffectRegistry.roll(
+						phase, entropy, new java.util.Random(99),
+						acquired.ids(), acquired.occupiedCategories());
+				if (roll.repeatFallback()) {
+					continue;
+				}
+				for (EffectDefinition offered : roll.choices()) {
+					check(!SURVIVAL_BATCH.contains(offered.id()),
+							"no-repeat holds at entropy " + entropy + "/" + phase
+									+ ": '" + offered.id() + "' was not re-offered");
+				}
+			}
+		}
+
+		// Persistence.
+		EntropyManager saved = new EntropyManager();
+		SURVIVAL_BATCH.forEach(id -> saved.acquired().add(id));
+		EntropyManager reloaded = reencode(saved);
+		for (String id : SURVIVAL_BATCH) {
+			check(reloaded.acquired().contains(id), id + " survives a save/reload");
+		}
+		check(reloaded.acquired().unknownIds().isEmpty(),
+				"every id in this batch is defined after a reload");
 	}
 
 	private HarnessMain() {}

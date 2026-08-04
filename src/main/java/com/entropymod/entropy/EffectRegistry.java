@@ -12,10 +12,10 @@ import java.util.stream.Collectors;
  * need to be added -- the timer, GUI, and networking code never change when you
  * add effect #47.
  *
- * <p><b>Current content: 44 effects — 21 GOOD and 23 BAD, all permanent.</b>
- * Tier 1 is 34 (17 GOOD / 17 BAD) at entropy 0-25; Tier 2 is 10 (4 GOOD /
- * 6 BAD) at entropy 25-50. It is a baseline, not the finished game: Tiers 3-4
- * and the odd/signature effects still slot in the same way.
+ * <p><b>Current content: 47 effects — 23 GOOD and 24 BAD, all permanent.</b>
+ * Tier 1 is 34 (17 GOOD / 17 BAD) at entropy 0-25; Tier 2 is 13 at entropy
+ * 25-50, plus Glass Cannon Pact at 40-60. It is a baseline, not the finished
+ * game: Tiers 3-4 and the odd/signature effects still slot in the same way.
  *
  * <p>Every effect is permanent — see {@link EffectDefinition} for why there is
  * no duration field.
@@ -122,6 +122,12 @@ public final class EffectRegistry {
 		register("behemoth_gauntlets", "Behemoth Gauntlets",
 				"+20 damage bare-handed, but anything you hold hits for a quarter",
 				EffectCategory.COMBAT, EffectPhase.GOOD, 25, 50, true);
+		register("second_chance", "Second Chance",
+				"Once per run, a killing blow leaves you on one heart instead of dead",
+				EffectCategory.SURVIVAL, EffectPhase.GOOD, 25, 50, true);
+		register("glass_cannon_pact", "Glass Cannon Pact",
+				"+50% attack damage, but one heart less to survive on",
+				EffectCategory.COMBAT, EffectPhase.GOOD, 40, 60, true);
 		register("crouch_invincibility", "Crouch Invincibility",
 				"Nothing can hurt you while you are sneaking",
 				EffectCategory.SURVIVAL, EffectPhase.GOOD, 25, 50, true);
@@ -140,6 +146,9 @@ public final class EffectRegistry {
 				"You jump on your own every 5-30 seconds",
 				EffectCategory.UTILITY, EffectPhase.BAD, 25, 50, true);
 
+		register("slippery_grip", "Slippery Grip",
+				"You can never sprint again",
+				EffectCategory.MOVEMENT, EffectPhase.BAD, 25, 50, true);
 		register("giant_size", "Giant Size",
 				"Five times your size: +10 hearts, double jump, 2-block steps, "
 						+ "-25% damage taken -- but you fit almost nowhere",

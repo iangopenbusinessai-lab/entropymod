@@ -5,6 +5,7 @@ import com.entropymod.entropy.MovementScramble;
 import com.entropymod.entropy.RunState;
 import com.entropymod.entropy.behavior.RandomJumpBehavior;
 import com.entropymod.entropy.behavior.RandomizedControlsBehavior;
+import com.entropymod.entropy.behavior.SlipperyGripBehavior;
 import com.entropymod.entropy.behavior.UpsideDownCameraBehavior;
 
 import java.util.HashSet;
@@ -118,6 +119,17 @@ public final class ClientRunState {
 	 */
 	public static String moveScramble() {
 		return EFFECTS.contains(RandomizedControlsBehavior.ID) ? moveScramble : "";
+	}
+
+	/**
+	 * Slippery Grip, read by {@code ClientSprintMixin}.
+	 *
+	 * <p>The client needs its own answer here rather than deferring to the server:
+	 * refusing the sprint locally is what stops the client applying a speed
+	 * modifier the server does not have. See that mixin.
+	 */
+	public static boolean preventsSprinting() {
+		return EFFECTS.contains(SlipperyGripBehavior.ID);
 	}
 
 	public static boolean hasUpsideDownCamera() {
