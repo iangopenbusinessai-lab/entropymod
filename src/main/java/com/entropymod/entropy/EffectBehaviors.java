@@ -65,7 +65,16 @@ public final class EffectBehaviors {
 		register(ClumsyDiggerBehavior.ID, new ClumsyDiggerBehavior());
 		register(BadReputationBehavior.ID, new BadReputationBehavior());
 
+		// ---------- TIER 2 GOOD ----------
+		register(ExtremeGravityBehavior.ID, new ExtremeGravityBehavior());
+		register(CreativeFlightBehavior.ID, new CreativeFlightBehavior());
+		register(BehemothGauntletsBehavior.ID, new BehemothGauntletsBehavior());
+		register(CrouchInvincibilityBehavior.ID, new CrouchInvincibilityBehavior());
+
 		// ---------- TIER 2 BAD ----------
+		register(GiantSizeBehavior.ID, new GiantSizeBehavior());
+		register(SlashedPocketsBehavior.ID, new SlashedPocketsBehavior());
+		register(FlamboyantBehavior.ID, new FlamboyantBehavior());
 		register(RandomizedControlsBehavior.ID, new RandomizedControlsBehavior());
 		register(UpsideDownCameraBehavior.ID, new UpsideDownCameraBehavior());
 		register(RandomJumpBehavior.ID, new RandomJumpBehavior());

@@ -6,6 +6,7 @@ import com.entropymod.entropy.EntropyAttributes;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.entropy.growth.BlightTouchedTrample;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
+import com.entropymod.entropy.growth.SlashedPocketsSweep;
 import com.entropymod.network.ChoiceMadePayload;
 import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.HistoryRequestPayload;
@@ -169,6 +170,11 @@ public class EntropyMod implements ModInitializer {
 			EntropyManager.get(server).tick(server);
 			GreenThumbGrowth.tick(server);
 			BlightTouchedTrample.tick(server);
+			// Slashed Pockets' unconditional backstop: Slot.mayPlace and
+			// Inventory.getFreeSlot cover the two paths a player can take, but
+			// neither sees a slot written directly (commands, other mods). Returns
+			// on the first check for anyone without the effect.
+			SlashedPocketsSweep.tick(server);
 		});
 
 		// Both services' state is transient, not part of the run, so neither is

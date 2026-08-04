@@ -10,7 +10,17 @@ import com.entropymod.entropy.KeybindSnapshot;
 import com.entropymod.entropy.MovementScramble;
 import com.entropymod.entropy.RerollState;
 import com.entropymod.entropy.RunState;
+import com.entropymod.entropy.EffectBehaviors;
+import com.entropymod.entropy.EffectCategory;
 import com.entropymod.entropy.behavior.BadReputationBehavior;
+import com.entropymod.entropy.behavior.BehemothGauntletsBehavior;
+import com.entropymod.entropy.behavior.CreativeFlightBehavior;
+import com.entropymod.entropy.behavior.CrouchInvincibilityBehavior;
+import com.entropymod.entropy.behavior.ExtremeGravityBehavior;
+import com.entropymod.entropy.behavior.FlamboyantBehavior;
+import com.entropymod.entropy.behavior.GiantSizeBehavior;
+import com.entropymod.entropy.behavior.MoonWalkerBehavior;
+import com.entropymod.entropy.behavior.SlashedPocketsBehavior;
 import com.entropymod.entropy.behavior.BlightTouchedBehavior;
 import com.entropymod.entropy.behavior.ClumsyDiggerBehavior;
 import com.entropymod.entropy.behavior.RandomJumpBehavior;
@@ -82,6 +92,14 @@ public final class HarnessMain {
 		runStatePersistence();
 		runLifecyclePayloadRoundTrip();
 		endedStateNotBuilt();
+		tier2BatchWiring();
+		extremeGravityPhysics();
+		giantSizeAttribute();
+		behemothGauntletsBothCases();
+		flamboyantFireOnly();
+		crouchInvincibilityGate();
+		slashedPocketsSlots();
+		tier2BatchIdempotencyAndPersistence();
 		System.exit(Checks.summary());
 	}
 
@@ -1268,6 +1286,417 @@ public final class HarnessMain {
 				"no endRun() -- the three paths into ENDED are still unbuilt");
 		check(!Checks.hasMethod(EntropyManager.class, "getDeathCount"),
 				"no run-wide death counter yet (that belongs with the end screen)");
+	}
+
+	// ------------------------------------------------------------------
+	// Tier 2 content batch: seven effects.
+	// ------------------------------------------------------------------
+
+	private static final List<String> TIER2_BATCH = List.of(
+			ExtremeGravityBehavior.ID, CreativeFlightBehavior.ID, BehemothGauntletsBehavior.ID,
+			CrouchInvincibilityBehavior.ID, GiantSizeBehavior.ID, SlashedPocketsBehavior.ID,
+			FlamboyantBehavior.ID);
+
+	private static void tier2BatchWiring() {
+		section("Tier 2 batch: registration and wiring");
+
+		// Touching EffectBehaviors class-inits EntropyAttributes against a frozen
+		// registry, so the harness needs Fabric's ordering reproduced first.
+		HarnessBootstrap.init();
+
+		for (String id : TIER2_BATCH) {
+			EffectDefinition def = EffectRegistry.byId(id);
+			check(def != null, id + " is registered in EffectRegistry");
+			if (def == null) {
+				continue;
+			}
+			check(def.minEntropy() == 25 && def.maxEntropy() == 50,
+					id + " is Tier 2 (entropy 25-50), got "
+							+ def.minEntropy() + "-" + def.maxEntropy());
+			// Bad effects below entropy 40 must be survivable -- Tier 2 starts at 25,
+			// so every BAD effect in this batch is inside that window.
+			check(def.phase() != EffectPhase.BAD || def.counterplay(),
+					id + " is counterplay-survivable if BAD (required below entropy 40)");
+		}
+
+		check(EffectRegistry.byId(ExtremeGravityBehavior.ID).phase() == EffectPhase.GOOD
+						&& EffectRegistry.byId(CreativeFlightBehavior.ID).phase() == EffectPhase.GOOD
+						&& EffectRegistry.byId(BehemothGauntletsBehavior.ID).phase() == EffectPhase.GOOD
+						&& EffectRegistry.byId(CrouchInvincibilityBehavior.ID).phase() == EffectPhase.GOOD,
+				"the four GOOD effects are registered GOOD");
+		check(EffectRegistry.byId(GiantSizeBehavior.ID).phase() == EffectPhase.BAD
+						&& EffectRegistry.byId(SlashedPocketsBehavior.ID).phase() == EffectPhase.BAD
+						&& EffectRegistry.byId(FlamboyantBehavior.ID).phase() == EffectPhase.BAD,
+				"the three BAD effects are registered BAD");
+
+		// Anti-stacking is keyed on category, so a collision inside one phase means
+		// the two can never be offered together -- worth knowing, not a bug.
+		check(EffectRegistry.byId(ExtremeGravityBehavior.ID).category() == EffectCategory.MOVEMENT
+						&& EffectRegistry.byId(CreativeFlightBehavior.ID).category() == EffectCategory.MOVEMENT,
+				"Extreme Gravity and Creative Flight are both MOVEMENT -- anti-stacking keeps "
+						+ "flight and low gravity apart, which is the intended exclusivity");
+
+		// The compiler cannot check id strings against EffectRegistry; this is the
+		// same validation that runs at mod init.
+		check(EffectBehaviors.definitionsWithoutBehavior().isEmpty(),
+				"every registered effect has a behavior: "
+						+ EffectBehaviors.definitionsWithoutBehavior());
+		check(EffectBehaviors.behaviorsWithoutDefinition().isEmpty(),
+				"no behavior is registered under an unknown id: "
+						+ EffectBehaviors.behaviorsWithoutDefinition());
+		for (String id : TIER2_BATCH) {
+			check(EffectBehaviors.get(id).getClass().getSimpleName().endsWith("Behavior"),
+					id + " resolves to a real behavior, not the MISSING no-op");
+		}
+	}
+
+	/**
+	 * Extreme Gravity's value, its distinctness from Moon Walker, and -- the part
+	 * that actually matters -- why its attribute operation differs.
+	 */
+	private static void extremeGravityPhysics() {
+		section("Extreme Gravity: value, distinctness, and stacking safety");
+
+		double amount = constant(ExtremeGravityBehavior.class, "AMOUNT");
+		double moonWalker = -0.30; // MoonWalkerBehavior passes this inline to super
+		double base = 0.08;        // GRAVITY's registered default, verified against the live registry
+
+		check(amount <= -0.60 && amount >= -0.70,
+				"the reduction is inside the specified -60%..-70% band (" + amount + ")");
+
+		double gravity = base * (1.0 + amount);
+		checkNear(gravity, 0.028, 1e-9, "resulting gravity");
+		check(gravity > 0.0,
+				"gravity stays strictly positive -- 0 would leave the player floating "
+						+ "with no way down, and GRAVITY's clamp floors at -1.0, not 0");
+
+		double moonGravity = base * (1.0 + moonWalker);
+		checkNear(apex(gravity), 2.866, 0.002, "Extreme Gravity jump apex (blocks)");
+		checkNear(apex(moonGravity), 1.657, 0.002, "Moon Walker jump apex (blocks)");
+		checkNear(apex(base), 1.2522, 0.002,
+				"the model still reproduces vanilla's known 1.2522-block jump");
+		check(apex(gravity) > apex(moonGravity) * 1.5,
+				"Extreme Gravity is meaningfully distinct from Moon Walker, not a nudge: "
+						+ Math.round(apex(gravity) / apex(moonGravity) * 100) + "% of its apex");
+		check(apex(gravity) > 2.5 && apex(moonGravity) < 2.0,
+				"it clears a 2.5-block ledge where Moon Walker cannot");
+
+		// The operation is a safety property. ADD_MULTIPLIED_TOTAL composes
+		// multiplicatively and can never reach zero; ADD_MULTIPLIED_BASE sums.
+		double stackedTotal = base * (1.0 + moonWalker) * (1.0 + amount);
+		double stackedBase = base * (1.0 + moonWalker + amount);
+		check(stackedTotal > 0.015,
+				"stacked with Moon Walker it stays playable (" + round4(stackedTotal) + ")");
+		check(stackedBase < stackedTotal / 4.0,
+				"had it used ADD_MULTIPLIED_BASE the same pairing would give "
+						+ round4(stackedBase) + " -- near-zero gravity");
+		// 9.9 vs 3.8 blocks -- a 2.6x difference. The threshold is deliberately below
+		// the measured ratio rather than equal to it, so a retune that keeps the
+		// property does not fail the check.
+		check(apex(stackedBase) > 2.5 * apex(stackedTotal),
+				"and an apex of " + round1(apex(stackedBase)) + " blocks vs "
+						+ round1(apex(stackedTotal)) + " -- which is why the operation differs "
+						+ "from Moon Walker's");
+	}
+
+	/**
+	 * Vanilla's per-tick vertical integration: integrate, then apply gravity and
+	 * the 0.98 air drag. Validated against the known vanilla apex above.
+	 */
+	private static double apex(double gravity) {
+		double jump = 0.41999998688697815; // JUMP_STRENGTH's registered default
+		double y = 0.0;
+		double v = jump;
+		double best = 0.0;
+		for (int t = 0; t < 4000; t++) {
+			y += v;
+			v = (v - gravity) * 0.98;
+			best = Math.max(best, y);
+			if (y <= 0 && v < 0) {
+				break;
+			}
+		}
+		return best;
+	}
+
+	private static double round4(double v) { return Math.round(v * 10000.0) / 10000.0; }
+	private static double round1(double v) { return Math.round(v * 10.0) / 10.0; }
+
+	private static void giantSizeAttribute() {
+		section("Giant Size: the SCALE attribute is real and in range");
+		HarnessBootstrap.init();
+
+		net.minecraft.world.entity.ai.attributes.RangedAttribute scale =
+				(net.minecraft.world.entity.ai.attributes.RangedAttribute)
+						net.minecraft.world.entity.ai.attributes.Attributes.SCALE.value();
+
+		checkNear(scale.getDefaultValue(), 1.0, 1e-9, "SCALE default");
+		checkNear(scale.getMinValue(), 0.0625, 1e-9, "SCALE minimum");
+		checkNear(scale.getMaxValue(), 16.0, 1e-9, "SCALE maximum");
+
+		// Present on the PLAYER entity type specifically -- SCALE comes from
+		// LivingEntity.createLivingAttributes(), not Player.createAttributes(), so
+		// "it exists" and "players have it" are separate claims.
+		check(net.minecraft.world.entity.ai.attributes.DefaultAttributes
+						.getSupplier(net.minecraft.world.entity.EntityType.PLAYER)
+						.hasAttribute(net.minecraft.world.entity.ai.attributes.Attributes.SCALE),
+				"players actually have SCALE -- checked against DefaultAttributes, not assumed");
+
+		double amount = constant(GiantSizeBehavior.class, "AMOUNT");
+		double result = scale.getDefaultValue() + amount; // ADD_VALUE against base 1.0
+		checkNear(result, 5.0, 1e-9, "resulting scale is the specified ~5x");
+		checkNear(scale.sanitizeValue(result), result, 1e-9,
+				"5.0 is not clamped -- it is well inside [0.0625, 16.0]");
+
+		check(Checks.hasMethod(GiantSizeBehavior.class, "afterApply"),
+				"a collision mitigation exists at all -- Entity.refreshDimensions() skips "
+						+ "fudgePositionAfterSizeChange for players, so vanilla will NOT push a "
+						+ "grown player out of blocks");
+		check(Checks.classReferences(GiantSizeBehavior.class, "noCollision")
+						&& Checks.classReferences(GiantSizeBehavior.class, "snapTo"),
+				"the mitigation actually tests for collision and moves the player");
+		check(constant(GiantSizeBehavior.class, "MAX_LIFT_BLOCKS") > 0,
+				"the upward search has a bounded limit rather than looping forever");
+	}
+
+	/** Both branches driven for real against the shipped decision function. */
+	private static void behemothGauntletsBothCases() {
+		section("Behemoth Gauntlets: empty hand vs. held item");
+
+		float bonus = (float) constant(BehemothGauntletsBehavior.class, "UNARMED_BONUS");
+		float armed = (float) constant(BehemothGauntletsBehavior.class, "ARMED_MULTIPLIER");
+		checkNear(bonus, 20.0, 1e-6, "unarmed bonus is the specified flat +20");
+		checkNear(armed, 0.25, 1e-6, "armed multiplier is the specified -75%");
+
+		// A vanilla bare-handed hit is 1.0; a diamond sword swing is about 7.
+		checkNear(BehemothGauntletsBehavior.damageFor(1.0f, true), 21.0, 1e-4,
+				"EMPTY HAND: a 1-damage punch becomes 21");
+		checkNear(BehemothGauntletsBehavior.damageFor(7.0f, false), 1.75, 1e-4,
+				"HELD ITEM: a 7-damage sword swing becomes 1.75");
+
+		check(BehemothGauntletsBehavior.damageFor(7.0f, true)
+						> BehemothGauntletsBehavior.damageFor(7.0f, false),
+				"the two branches genuinely differ for the same input damage");
+		check(BehemothGauntletsBehavior.damageFor(1.0f, true)
+						> BehemothGauntletsBehavior.damageFor(7.0f, false),
+				"punching out-damages a diamond sword -- the point of the effect");
+
+		// Additive unarmed, multiplicative armed: a crit or a Strength potion should
+		// scale the penalty rather than be swallowed by a flat number.
+		checkNear(BehemothGauntletsBehavior.damageFor(0.0f, false), 0.0, 1e-6,
+				"the armed branch is multiplicative, so zero damage stays zero");
+		checkNear(BehemothGauntletsBehavior.damageFor(0.0f, true), 20.0, 1e-6,
+				"the unarmed branch is additive, so it applies even to a zero-damage hit");
+
+		check(Checks.classReferences(com.entropymod.entropy.EffectHooks.class, "getWeaponItem"),
+				"the hook decides on getWeaponItem() -- the main-hand stack -- rather than "
+						+ "guessing from an item tag");
+	}
+
+	private static void flamboyantFireOnly() {
+		section("Flamboyant: fire specifically, not damage generally");
+
+		float multiple = (float) constant(FlamboyantBehavior.class, "LETHAL_HEALTH_MULTIPLE");
+		check(multiple > 1.0f, "the lethal amount is a multiple of max health, not a fixed number");
+		check(Float.isFinite(multiple * 20.0f),
+				"it stays finite -- Float.MAX_VALUE would risk non-finite damage maths downstream");
+
+		// Armour caps at 80% reduction and Resistance at a further 80%; Iron Skin is
+		// another 20%. Even all three together must not leave the player alive.
+		float lethal = FlamboyantBehavior.lethalDamage(1.0f, 20.0f);
+		check(lethal * 0.2f * 0.2f * 0.8f > 20.0f,
+				"survives worst-case mitigation (armour + Resistance + Iron Skin) and is still lethal");
+		checkNear(FlamboyantBehavior.lethalDamage(1.0f, 20.0f), 20.0f * multiple, 1e-3,
+				"lethal damage scales with max health");
+		check(FlamboyantBehavior.lethalDamage(Float.MAX_VALUE, 20.0f) == Float.MAX_VALUE,
+				"an already-larger amount is left alone rather than scaled down");
+
+		// THE regression check: the gate is the fire tag, and nothing else.
+		check(Checks.classReferences(com.entropymod.entropy.EffectHooks.class, "IS_FIRE"),
+				"the hook gates on the vanilla #minecraft:is_fire damage-type tag");
+
+		Set<String> fire = resolveDamageTypeTag("is_fire");
+		check(fire.contains("minecraft:on_fire") && fire.contains("minecraft:in_fire")
+						&& fire.contains("minecraft:lava") && fire.contains("minecraft:campfire")
+						&& fire.contains("minecraft:hot_floor"),
+				"the shipped tag covers burning, standing in fire, lava, campfires and magma");
+		// Read from the jar rather than restated, so this is a claim about game data.
+		for (String notFire : List.of("minecraft:fall", "minecraft:drown", "minecraft:mob_attack",
+				"minecraft:player_attack", "minecraft:cactus", "minecraft:out_of_world",
+				"minecraft:explosion", "minecraft:starve", "minecraft:magic")) {
+			check(!fire.contains(notFire),
+					"NON-FIRE regression: " + notFire + " is not in #is_fire, so it stays ordinary damage");
+		}
+	}
+
+	/** Reads a shipped damage-type tag out of the Minecraft jar on the classpath. */
+	private static Set<String> resolveDamageTypeTag(String name) {
+		String path = "/data/minecraft/tags/damage_type/" + name + ".json";
+		try (java.io.InputStream in = HarnessMain.class.getResourceAsStream(path)) {
+			if (in == null) {
+				throw new IllegalStateException("Tag not found on the classpath: " + path);
+			}
+			String json = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+			Set<String> out = new java.util.LinkedHashSet<>();
+			java.util.regex.Matcher m =
+					java.util.regex.Pattern.compile("\"([a-z0-9_.-]+:[a-z0-9_./-]+)\"").matcher(json);
+			while (m.find()) {
+				out.add(m.group(1));
+			}
+			return out;
+		} catch (java.io.IOException e) {
+			throw new IllegalStateException("Could not read " + path, e);
+		}
+	}
+
+	private static void crouchInvincibilityGate() {
+		section("Crouch Invincibility: only while actually sneaking");
+
+		// The gate needs a live Player, which cannot be built headlessly -- but WHICH
+		// vanilla method it consults is visible in the compiled hook, and the two
+		// candidates behave differently (pose vs. raw key state).
+		check(Checks.classReferences(com.entropymod.entropy.EffectHooks.class, "isCrouching"),
+				"the hook consults isCrouching() -- vanilla's pose state, matching what the "
+						+ "player sees on screen");
+		check(!Checks.classReferences(com.entropymod.entropy.EffectHooks.class, "isShiftKeyDown"),
+				"and NOT isShiftKeyDown(), the raw input flag, which disagrees when a player "
+						+ "is crouched under a 1-block gap or shifting while forced upright");
+
+		check(Checks.hasMethod(com.entropymod.entropy.EffectHooks.class, "ignoresAllDamage"),
+				"the gate is a single hook, so there is one place the sneak test can live");
+
+		// Evaluated per hit rather than latched: the check lives in the hook the
+		// damage mixin calls, not in apply(). A behavior with no state cannot latch.
+		check(CrouchInvincibilityBehavior.class.getSuperclass()
+						== com.entropymod.entropy.HookEffectBehavior.class,
+				"it is a HookEffectBehavior, whose apply() is final and empty -- so there is "
+						+ "no per-player state that could latch 'has sneaked' into 'is sneaking'");
+		check(Checks.classReferences(com.entropymod.mixin.ServerPlayerDamageMixin.class,
+						"ignoresAllDamage"),
+				"the damage mixin calls the gate on every hit");
+	}
+
+	private static void slashedPocketsSlots() {
+		section("Slashed Pockets: which slots, in this version's layout");
+		HarnessBootstrap.init();
+
+		int first = (int) constant(SlashedPocketsBehavior.class, "FIRST_LOCKED_SLOT");
+		int last = (int) constant(SlashedPocketsBehavior.class, "LAST_LOCKED_SLOT");
+		check(first == 9 && last == 26, "locked range is slots 9-26 (got " + first + "-" + last + ")");
+		check(SlashedPocketsBehavior.lockedSlotCount() == 18,
+				"that is 18 slots -- exactly half of the 36 main inventory slots");
+
+		// Read from the live Inventory class, so this is a claim about the game.
+		check(net.minecraft.world.entity.player.Inventory.INVENTORY_SIZE == 36,
+				"INVENTORY_SIZE is 36");
+		check(net.minecraft.world.entity.player.Inventory.SELECTION_SIZE == 9,
+				"SELECTION_SIZE (the hotbar) is 9");
+		check(SlashedPocketsBehavior.lockedSlotCount() * 2
+						== net.minecraft.world.entity.player.Inventory.INVENTORY_SIZE,
+				"the locked half is exactly half of the main inventory");
+
+		// The hotbar must stay usable, or the effect is unplayable rather than harsh.
+		for (int slot = 0; slot <= 8; slot++) {
+			check(net.minecraft.world.entity.player.Inventory.isHotbarSlot(slot)
+							&& !SlashedPocketsBehavior.isLocked(slot),
+					"hotbar slot " + slot + " is never locked");
+		}
+		check(!SlashedPocketsBehavior.isLocked(27) && !SlashedPocketsBehavior.isLocked(35),
+				"the bottom storage row (27-35) stays usable");
+		check(SlashedPocketsBehavior.isLocked(9) && SlashedPocketsBehavior.isLocked(17)
+						&& SlashedPocketsBehavior.isLocked(18) && SlashedPocketsBehavior.isLocked(26),
+				"both locked rows are locked end to end");
+
+		// Equipment lives at 40/41/42, outside the main list entirely, so armour and
+		// the offhand cannot be caught by an index test.
+		check(!SlashedPocketsBehavior.isLocked(
+						net.minecraft.world.entity.player.Inventory.SLOT_OFFHAND)
+						&& !SlashedPocketsBehavior.isLocked(
+								net.minecraft.world.entity.player.Inventory.SLOT_BODY_ARMOR)
+						&& !SlashedPocketsBehavior.isLocked(
+								net.minecraft.world.entity.player.Inventory.SLOT_SADDLE),
+				"offhand, body armour and saddle slots are outside the locked range");
+
+		check(Checks.classReferences(SlashedPocketsBehavior.class, "isFreshPick"),
+				"the one-time drop is gated on a fresh pick, so it cannot re-fire on every "
+						+ "respawn, rejoin and dimension change");
+	}
+
+	/**
+	 * The three guarantees the whole permanent-effect design rests on, applied to
+	 * this batch: apply is idempotent, an effect is never offered twice, and the
+	 * acquired set survives a save.
+	 */
+	private static void tier2BatchIdempotencyAndPersistence() {
+		section("Tier 2 batch: idempotency, no-repeat and persistence");
+		HarnessBootstrap.init();
+
+		// --- idempotency, against the REAL AttributeInstance --------------------
+		// This is the guarantee the respawn/rejoin design rests on: apply() runs an
+		// unbounded number of times, so the value must not move after the first.
+		for (String id : List.of(ExtremeGravityBehavior.ID, GiantSizeBehavior.ID)) {
+			net.minecraft.world.entity.ai.attributes.AttributeInstance instance =
+					instanceFor(id.equals(GiantSizeBehavior.ID)
+							? net.minecraft.world.entity.ai.attributes.Attributes.SCALE
+							: net.minecraft.world.entity.ai.attributes.Attributes.GRAVITY);
+			double amount = constant(
+					id.equals(GiantSizeBehavior.ID) ? GiantSizeBehavior.class : ExtremeGravityBehavior.class,
+					"AMOUNT");
+			var op = id.equals(GiantSizeBehavior.ID)
+					? net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADD_VALUE
+					: net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL;
+
+			double after1 = 0;
+			for (int i = 0; i < 10; i++) {
+				instance.addOrUpdateTransientModifier(
+						new net.minecraft.world.entity.ai.attributes.AttributeModifier(
+								com.entropymod.entropy.AttributeEffectBehavior.modifierId(id), amount, op));
+				if (i == 0) {
+					after1 = instance.getValue();
+				}
+			}
+			checkNear(instance.getValue(), after1, 1e-9,
+					id + ": applying 10 times leaves the value where one application put it");
+			check(instance.getModifiers().size() == 1,
+					id + ": exactly one modifier, not ten stacked copies");
+		}
+
+		// --- no-repeat ----------------------------------------------------------
+		AcquiredEffects acquired = new AcquiredEffects();
+		TIER2_BATCH.forEach(acquired::add);
+		for (int entropy : new int[] {25, 37, 50}) {
+			for (EffectPhase phase : EffectPhase.values()) {
+				EffectRegistry.RollResult roll = EffectRegistry.roll(
+						phase, entropy, new java.util.Random(1234),
+						acquired.ids(), acquired.occupiedCategories());
+				if (roll.repeatFallback()) {
+					continue; // the pool legitimately ran dry; that path is covered elsewhere
+				}
+				for (EffectDefinition offered : roll.choices()) {
+					check(!TIER2_BATCH.contains(offered.id()),
+							"no-repeat holds at entropy " + entropy + "/" + phase
+									+ ": already-acquired '" + offered.id() + "' was not re-offered");
+				}
+			}
+		}
+
+		// --- persistence --------------------------------------------------------
+		// grantEffect needs a live server to dispatch behaviors, so persistence is
+		// driven through the acquired set, which is what the codec actually writes.
+		EntropyManager saved = new EntropyManager();
+		TIER2_BATCH.forEach(id -> saved.acquired().add(id));
+		EntropyManager reloaded = reencode(saved);
+		for (String id : TIER2_BATCH) {
+			check(reloaded.acquired().contains(id),
+					id + " survives a save/reload in the acquired set");
+		}
+		check(reloaded.acquired().unknownIds().isEmpty(),
+				"every id in this batch is still defined after a reload -- no stale ids");
+	}
+
+	private static net.minecraft.world.entity.ai.attributes.AttributeInstance instanceFor(
+			net.minecraft.core.Holder<net.minecraft.world.entity.ai.attributes.Attribute> attribute) {
+		return new net.minecraft.world.entity.ai.attributes.AttributeInstance(attribute, a -> {});
 	}
 
 	private HarnessMain() {}

@@ -1937,6 +1937,243 @@ client can see for itself that the server holds nothing for it and capture
 unprompted. That one predicate covers every case except the player who clicks
 Start — a second player already online, and anyone joining mid-run.
 
+#### The Tier 2 content batch — 7 effects, and what each one needed
+The first Tier 2 *content* batch, after the three input/camera effects. Registry
+is now **44 effects: 21 GOOD, 23 BAD**. All seven are entropy 25-50, permanent,
+and wired through the ordinary three-step recipe.
+
+| Effect | Phase / category | Mechanism |
+|---|---|---|
+| Extreme Gravity | GOOD / MOVEMENT | attribute (`GRAVITY`) |
+| Creative Flight | GOOD / MOVEMENT | `Abilities.mayfly` |
+| Behemoth Gauntlets | GOOD / COMBAT | mixin on `Player.attack` |
+| Crouch Invincibility | GOOD / SURVIVAL | mixin on `ServerPlayer.hurtServer` |
+| Giant Size | BAD / DEBUFF | attribute (`SCALE`) + collision fixup |
+| Slashed Pockets | BAD / GEAR | two mixins + a tick sweep |
+| Flamboyant | BAD / SURVIVAL | mixin on `ServerPlayer.hurtServer` |
+
+**None of the seven needed client-side awareness**, and that was checked per
+effect rather than carried over from the input/camera cluster. The reason is
+uniform: each is either a **client-syncable attribute** (`GRAVITY` and `SCALE`
+both report `isClientSyncable() == true`, verified against the live registry, so
+the client predicts movement and renders the giant model for free), vanilla
+state vanilla already syncs (`ClientboundPlayerAbilitiesPacket` for flight), or
+purely server-authoritative damage. **`ClientEffectsPayload` was not touched.**
+The one partial exception is recorded under Slashed Pockets below.
+
+#### Extreme Gravity: the attribute OPERATION is a safety property
+Ships at **-65% via `ADD_MULTIPLIED_TOTAL`**, giving gravity **0.028** (35% of
+vanilla's 0.08). Apex numbers from the same per-tick simulation that reproduces
+vanilla's known 1.2522-block jump:
+
+| | gravity | apex | airtime | terminal velocity |
+|---|---|---|---|---|
+| vanilla | 0.0800 | 1.252 | 12t | 3.92/t |
+| Moon Walker (Tier 1) | 0.0560 | 1.657 | 16t | 2.74/t |
+| **Extreme Gravity** | **0.0280** | **2.866** | **29t** | **1.37/t** |
+
+So it clears a **2.5-block ledge** where Moon Walker clears 1.5 — **173% of Moon
+Walker's apex** and nearly double the airtime. Distinct mechanics, not two points
+on one slider.
+
+**The operation differs from Moon Walker's deliberately, and this is the durable
+finding.** Verified in `AttributeInstance.calculateValue`'s bytecode:
+
+- `ADD_MULTIPLIED_BASE` accumulates **additively** (`value += base * amount`), so
+  two reductions sum: -30% and -65% together are -95%.
+- `ADD_MULTIPLIED_TOTAL` composes **multiplicatively** (`value *= 1 + amount`),
+  which for any amount > -1 **can never reach zero however many stack**.
+
+That matters because **`GRAVITY`'s clamp gives no protection in the dangerous
+direction** — its floor is -1.0, so `sanitizeValue` passes 0.0 straight through
+(float forever, no way down) and negative values through unchanged (launched
+upward permanently). Anti-stacking normally keeps two MOVEMENT effects apart, but
+it is a *soft* rule dropped first when the pool empties, so the pairing is
+genuinely reachable. Measured:
+
+| stacked with Moon Walker | gravity | apex | airtime |
+|---|---|---|---|
+| as shipped (`TOTAL`) | 0.0196 | 3.755 | 40t |
+| had it used `BASE` | 0.0040 | **9.891** | **150t** (7.5s) |
+
+**Any future gravity effect should use `ADD_MULTIPLIED_TOTAL`.** Moon Walker is
+left on `BASE` on purpose — it ships, it is tuned, and changing it would alter an
+effect already played.
+
+#### Giant Size: SCALE exists, and vanilla will NOT save you from it
+**Verdict: buildable, no blocker.** `minecraft:scale` is a real registered
+`RangedAttribute` — **default 1.0, min 0.0625, max 16.0** — read out of the live
+registry, not a wiki. It is granted by `LivingEntity.createLivingAttributes()`,
+so **players have it**; confirmed by querying
+`DefaultAttributes.getSupplier(EntityType.PLAYER)` directly rather than reasoning
+from the builder chain. 5x sits well inside the range. No mixin, no faked scaling.
+
+It is also **client-syncable**, so model, hitbox and camera height follow with no
+payload of this mod's own.
+
+**The apply-time collision risk is real, and this is the finding that mattered:**
+
+> `Entity.refreshDimensions()` calls `fudgePositionAfterSizeChange(...)` — the
+> routine that nudges a grown entity out of blocks it now overlaps — **only after
+> an `instanceof Player` check that branches past it for players.** Verified in
+> bytecode.
+
+So vanilla explicitly declines to rescue a player who grows inside terrain.
+Growing 5x in a 2-block corridor leaves them embedded and suffocating, caused
+entirely by the mod. `GiantSizeBehavior.afterApply` mitigates: refresh
+dimensions, and if the new bounding box collides, search **upward** a block at a
+time (bounded, `MAX_LIFT_BLOCKS = 8`) for a free position and `snapTo` it.
+
+- **Idempotent**, which is mandatory — a player already free collides with
+  nothing and is not moved. `apply` runs again on every respawn and rejoin.
+- **Upward only**: downward pushes into the ground, sideways has no principled
+  search order.
+- **Giving up is a valid outcome.** Walled in deep underground, the player
+  suffocates — the honest consequence of becoming enormous in a tunnel. Logged,
+  not silently swallowed.
+
+#### Behemoth Gauntlets: the hook, and why "unarmed" is broader than it sounds
++20 flat bare-handed, x0.25 with anything in hand. **No attribute can express
+this** — `ATTACK_DAMAGE` is one number read once per swing and already *includes*
+the held weapon's own modifier, so no value of it is both.
+
+The hook is a `@ModifyArg` on `Player.attack`'s call to
+`Entity.hurtOrSimulate(DamageSource, float)`, `index = 1`. javap-verified as
+occurring **exactly once** inside `attack` (so `defaultRequire: 1` is
+unambiguous), and it sits after the attribute, cooldown scale, enchantments and
+crit multiplier — so this composes with all of them.
+
+**The discriminator is `getWeaponItem().isEmpty()`, i.e. the main-hand stack. So
+holding *anything* — a sword, a pickaxe, a stack of dirt — counts as armed.**
+Deliberate: it is the only distinction available at that point that does not
+require inventing a definition of "weapon", and it makes the effect legible.
+
+**Known limit:** the sweep attack deals damage through a separate
+`doSweepAttack` call and is not scaled — which only arises in the armed case the
+effect pushes players away from anyway.
+
+#### ServerPlayer.hurtServer is the right damage target — and hurtServer is overridden TWICE
+Flamboyant and Crouch Invincibility both target **`ServerPlayer.hurtServer`**,
+not `LivingEntity.hurtServer` where Iron Skin and Fragile live. The
+subclass-override trap is live here and was checked rather than assumed:
+
+- **`ServerPlayer` overrides `hurtServer`, and `Player` overrides it again.**
+  Both do call through (`ServerPlayer` -> `Player` -> `Avatar` ->
+  `LivingEntity`), which is why the existing Iron Skin mixin works at all — but
+  **`ServerPlayer.hurtServer` has three early returns before it reaches that
+  super call**, so only the outermost override sees every hit.
+- Targeting the player class directly makes both effects player-only by
+  construction, with no `instanceof` guard to forget.
+- `ServerPlayer` is concrete with no subclass in the jar.
+
+**Flamboyant amplifies rather than killing directly.** The fire damage is raised
+to `maxHealth x 1000` so vanilla keeps ownership of the death: cause-specific
+death message ("burned to death", "tried to swim in lava"), sound, drops,
+statistics, advancements. A direct `kill()` would report a generic death for a
+very specific cause. Scaled from max health, not a fixed number, so armour
+(80% cap), Resistance (a further 80%) and Iron Skin (20%) applied downstream
+cannot leave the player on a sliver. Finite on purpose — `Float.MAX_VALUE` risks
+non-finite arithmetic in vanilla's own damage maths.
+
+Gated on the vanilla tag **`#minecraft:is_fire`**, whose shipped contents were
+read out of the jar: `in_fire, campfire, on_fire, lava, hot_floor,
+unattributed_fireball, fireball`. The harness asserts membership *and*
+non-membership of `fall`, `drown`, `mob_attack`, `player_attack`, `cactus`,
+`out_of_world`, `explosion`, `starve` and `magic` — "kills you on any damage" is
+the obvious way to get this wrong and would be indistinguishable in casual play.
+
+**Crouch Invincibility gates on `isCrouching()`, not `isShiftKeyDown()`** —
+vanilla's pose-derived state, matching what the player sees, rather than the raw
+input flag. The two disagree when a player is crouched under a 1-block gap or
+shifting while forced upright. Evaluated per hit rather than latched, which
+falls out of it being a `HookEffectBehavior` with a final empty `apply` — there
+is no per-player state that *could* latch "has sneaked" into "is sneaking".
+
+**Interaction, deliberate:** a run holding both survives fire while crouching.
+The invincibility check cancels at HEAD before the amplification can reach a
+player who is taking zero anyway. That is the coherent reading of "zero damage
+from any source", and it is asserted so it cannot silently invert.
+
+#### Slashed Pockets: which slots, and why three enforcement points
+The 36 main slots are four rows of nine. Top to bottom on screen:
+
+| row | slots | locked |
+|---|---|---|
+| storage, top | 9-17 | **yes** |
+| storage, middle | 18-26 | **yes** |
+| storage, bottom | 27-35 | no |
+| hotbar | 0-8 | no |
+
+So **"the upper half" is slots 9-26** — the top two rows as displayed, exactly 18
+of 36. **The reading is recorded because it is not the only possible one:** "half
+the inventory" could have meant half of the 27-slot storage area, which is 13.5
+slots and would cut a row in two. Splitting on a row boundary at the true halfway
+point of the whole main inventory is the only reading that is both exactly half
+and visually clean. Equipment is outside the range by construction
+(`SLOT_OFFHAND = 40`, `SLOT_BODY_ARMOR = 41`, `SLOT_SADDLE = 42`).
+
+Three enforcement points, because no one of them is sufficient:
+
+- **`Slot.mayPlace`** — refuses manual placement and shift-clicks. Injected at
+  RETURN so it can only ever *remove* permission. Scoped by
+  `container instanceof Inventory`, so chests and furnaces are untouched.
+- **`Inventory.getFreeSlot`** — keeps automatic pickup out. **Without this the
+  sweep would be doing all the work, visibly:** items would land and be spat back
+  out a tick later, so walking over a pile of drops would make them bounce.
+- **`SlashedPocketsSweep`, a per-tick service** — the backstop, and the only one
+  that makes "inaccessible" unconditional. Commands, other mods and any vanilla
+  path calling `setItem` bypass the first two. Third shape alongside attribute
+  and mixin, same as `GreenThumbGrowth`; costs one hash lookup for players
+  without the effect.
+
+The one-time drop is gated on `isFreshPick()` — **not** on the slots being empty.
+`apply` runs again on every respawn and rejoin, and re-running the drop there
+would be harmless only *by accident* (because the sweep keeps them empty), which
+is a poor reason for a side effect to be correct.
+
+**This is the one effect in the batch where the client would benefit from
+knowing.** `EffectHooks` returns "no effect" client-side, so client-side
+prediction still permits the placement and the server corrects it — the item
+snaps back. Cosmetic only: the server is authoritative and the sweep is
+unconditional. The clean fix, if it ever grates, is a client-side reader of
+`ClientRunState` for `mayPlace`; deliberately not built, since it would mean two
+mixins racing on one method for one frame of polish.
+
+#### `/entropygrant` is NOT gated by the run-lifecycle state
+Confirmed in bytecode: `grantEffect` contains **zero** references to `runState`,
+so it works exactly the same before and after Start — the same way it already
+bypasses entropy and pick count.
+
+**But in practice you must click Start first anyway**, for a different reason:
+the start panel is modal, `shouldCloseOnEsc()` is false, and a client-tick guard
+re-opens it whenever the state is `NOT_STARTED`. Chat is therefore unreachable
+until the run starts, so the command cannot be *typed*. Granting from a server
+console while `NOT_STARTED` does work — which is exactly the Randomized Controls
+edge case recorded above.
+
+#### The headless harness can now load mod classes — `HarnessBootstrap`
+CLAUDE.md described this before it existed as a file; it exists now, in
+`src/harness`. Plain `Bootstrap.bootStrap()` is **not** enough: vanilla freezes
+`BuiltInRegistries` at the end of it, and merely touching `EffectBehaviors`
+constructs `MagneticBootsBehavior`, which class-inits `EntropyAttributes`, which
+registers into a frozen registry and dies with `ExceptionInInitializerError`.
+
+`HarnessBootstrap.init()` reproduces Fabric's ordering: bootstrap, reflectively
+unfreeze `ATTRIBUTE`, register, then **bind the holders** — reading the value out
+of `MappedRegistry.byValue` directly, because every public accessor that would
+bind a `Holder.Reference` routes through the unbound `value()` call you are
+trying to fix. It is idempotent so each section can call it without coordinating.
+
+This unlocked the check that matters most: **idempotency against the real
+`AttributeInstance`** — apply ten times, assert the value has not moved and that
+exactly one modifier exists rather than ten stacked copies.
+
+`Checks.classReferences(Class, String)` is also new: it scans a compiled class's
+constant pool for a name. It is the tool for "*which* vanilla method does this
+hook call" when calling it for real would need a live entity — reflection cannot
+tell two boolean-returning methods apart, but the callee's name is a UTF8 entry
+in the caller's constant pool. It can prove presence or absence, not location.
+
 #### Debug output has to reach the player, not just the log
 `/entropyhistory` was reported as a hard regression — "prints nothing in-game
 despite picks having been made" — and was suspected to be a `SavedData` migration
@@ -2086,7 +2323,7 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 259 checks currently: the tuning constants as
+same numbers kept being re-derived. 380 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble
@@ -2095,7 +2332,12 @@ tracking rules, `/entropygrant`'s contract, Clumsy Digger's whole per-tier
 durability table and its tools-only scope gate, Bad Reputation's whole price
 table, `OpenChoicePayload`'s codec round-trip, the run-start gate and its
 save migration, the keybind snapshot's write-once rule, and an assertion that the
-`ENDED` half of the run lifecycle is genuinely absent rather than half-present.
+`ENDED` half of the run lifecycle is genuinely absent rather than half-present,
+and the whole Tier 2 content batch -- its registration and wiring, Extreme
+Gravity's physics and stacking safety, Giant Size's SCALE range, Behemoth
+Gauntlets' two branches driven individually, Flamboyant's fire-only gate against
+the shipped tag, Crouch Invincibility's sneak test, Slashed Pockets' slot range,
+and attribute idempotency against a real `AttributeInstance`.
 
 **The start gate is tested by ticking with a `null` server, and that is the
 assertion rather than a shortcut.** `triggerPick` dereferences the server almost

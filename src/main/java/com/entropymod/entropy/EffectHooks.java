@@ -2,8 +2,12 @@ package com.entropymod.entropy;
 
 import com.entropymod.EntropyMod;
 import com.entropymod.entropy.behavior.BadReputationBehavior;
+import com.entropymod.entropy.behavior.BehemothGauntletsBehavior;
 import com.entropymod.entropy.behavior.BeastWhispererBehavior;
 import com.entropymod.entropy.behavior.ClumsyDiggerBehavior;
+import com.entropymod.entropy.behavior.CrouchInvincibilityBehavior;
+import com.entropymod.entropy.behavior.FlamboyantBehavior;
+import com.entropymod.entropy.behavior.SlashedPocketsBehavior;
 import com.entropymod.entropy.behavior.GreenThumbBehavior;
 import com.entropymod.entropy.behavior.LeakyPocketsBehavior;
 import com.entropymod.entropy.behavior.FastLearnerBehavior;
@@ -21,6 +25,8 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.tags.DamageTypeTags;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 
@@ -220,6 +226,79 @@ public final class EffectHooks {
 				extra, stack.getItemName().getString(), stack.getMaxDamage(),
 				player.getName().getString());
 		return extra;
+	}
+
+	/**
+	 * Scales one melee hit for Behemoth Gauntlets: {@code +20} bare-handed,
+	 * {@code x0.25} with anything in hand.
+	 *
+	 * <p>Read by the {@code Player.attack} redirect at the point the fully
+	 * computed damage is handed to the target. The empty-hand test is
+	 * {@code getWeaponItem().isEmpty()}, which for a player is the main-hand
+	 * stack -- see {@link BehemothGauntletsBehavior} for why "holding anything"
+	 * rather than "holding a weapon" is the deliberate rule.
+	 */
+	public static float meleeDamage(Player player, float damage) {
+		AcquiredEffects acquired = acquired(player);
+		if (acquired == null || !acquired.contains(BehemothGauntletsBehavior.ID)) {
+			return damage;
+		}
+		return BehemothGauntletsBehavior.damageFor(damage, player.getWeaponItem().isEmpty());
+	}
+
+	/**
+	 * True if this hit should be ignored entirely (Crouch Invincibility).
+	 *
+	 * <p>Gated on {@code isCrouching()} -- vanilla's pose-derived state, matching
+	 * what the player sees -- rather than the raw {@code isShiftKeyDown()} input
+	 * flag, and evaluated per hit so standing up ends the protection immediately.
+	 */
+	public static boolean ignoresAllDamage(Player player) {
+		AcquiredEffects acquired = acquired(player);
+		return acquired != null
+				&& acquired.contains(CrouchInvincibilityBehavior.ID)
+				&& player.isCrouching();
+	}
+
+	/**
+	 * Amplifies fire damage to a certainly-lethal amount (Flamboyant), or returns
+	 * it unchanged.
+	 *
+	 * <p>Gated on the vanilla {@code #minecraft:is_fire} damage-type tag, so it
+	 * covers standing in fire, burning, lava, campfires, magma blocks and both
+	 * fireball types -- and nothing else. Every non-fire source passes through
+	 * untouched, which the harness asserts explicitly.
+	 *
+	 * <p>Scaled from max health rather than being a fixed number so that armour,
+	 * Resistance, absorption and Iron Skin -- all applied after this point --
+	 * cannot leave the player alive on a sliver.
+	 */
+	public static float fireDamage(Player player, DamageSource source, float damage) {
+		AcquiredEffects acquired = acquired(player);
+		if (acquired == null
+				|| !acquired.contains(FlamboyantBehavior.ID)
+				|| source == null
+				|| !source.is(DamageTypeTags.IS_FIRE)) {
+			return damage;
+		}
+		return FlamboyantBehavior.lethalDamage(damage, player.getMaxHealth());
+	}
+
+	/**
+	 * True if this inventory slot is locked shut for this player (Slashed
+	 * Pockets). Read by the slot-placement and free-slot mixins.
+	 */
+	public static boolean isInventorySlotLocked(Player player, int slot) {
+		AcquiredEffects acquired = acquired(player);
+		return acquired != null
+				&& acquired.contains(SlashedPocketsBehavior.ID)
+				&& SlashedPocketsBehavior.isLocked(slot);
+	}
+
+	/** True if this player has Slashed Pockets at all. Cheap gate for the per-tick sweep. */
+	public static boolean hasSlashedPockets(Player player) {
+		AcquiredEffects acquired = acquired(player);
+		return acquired != null && acquired.contains(SlashedPocketsBehavior.ID);
 	}
 
 	/** True if villagers should overcharge this player (Bad Reputation). */

@@ -12,12 +12,10 @@ import java.util.stream.Collectors;
  * need to be added -- the timer, GUI, and networking code never change when you
  * add effect #47.
  *
- * <p><b>Current content: Tier 1 — 28 effects, 15 GOOD and 13 BAD, all permanent,
- * all entropy 0-25.</b> This grew from the original 11-effect placeholder set
- * through the 20-effect Tier 1 batch, three movement/physics effects, and five
- * mixin-driven ones. It is a baseline, not the finished game: Tiers 2-4
- * and the odd/signature effects still slot in the same way, and the entropy
- * ranges here deliberately all overlap because there is only one tier so far.
+ * <p><b>Current content: 44 effects — 21 GOOD and 23 BAD, all permanent.</b>
+ * Tier 1 is 34 (17 GOOD / 17 BAD) at entropy 0-25; Tier 2 is 10 (4 GOOD /
+ * 6 BAD) at entropy 25-50. It is a baseline, not the finished game: Tiers 3-4
+ * and the odd/signature effects still slot in the same way.
  *
  * <p>Every effect is permanent — see {@link EffectDefinition} for why there is
  * no duration field.
@@ -114,6 +112,20 @@ public final class EffectRegistry {
 		register("bad_reputation", "Bad Reputation", "Villagers charge you more",
 				EffectCategory.DEBUFF, EffectPhase.BAD, 0, 25, true);
 
+		// --- TIER 2 GOOD (entropy 25-50) --- first Tier 2 GOOD content.
+		register("extreme_gravity", "Extreme Gravity",
+				"Gravity cut to a third -- jump 2.9 blocks and drift down slowly",
+				EffectCategory.MOVEMENT, EffectPhase.GOOD, 25, 50, true);
+		register("creative_flight", "Creative Flight",
+				"You can fly, permanently, in Survival",
+				EffectCategory.MOVEMENT, EffectPhase.GOOD, 25, 50, true);
+		register("behemoth_gauntlets", "Behemoth Gauntlets",
+				"+20 damage bare-handed, but anything you hold hits for a quarter",
+				EffectCategory.COMBAT, EffectPhase.GOOD, 25, 50, true);
+		register("crouch_invincibility", "Crouch Invincibility",
+				"Nothing can hurt you while you are sneaking",
+				EffectCategory.SURVIVAL, EffectPhase.GOOD, 25, 50, true);
+
 		// --- TIER 2 BAD (entropy 25-50) ---
 		// The first client-side effects in the project: all three act on systems that
 		// only exist on the client (KeyboardInput, Camera), which is why they need
@@ -127,6 +139,16 @@ public final class EffectRegistry {
 		register("random_jump", "Random Jump",
 				"You jump on your own every 5-30 seconds",
 				EffectCategory.UTILITY, EffectPhase.BAD, 25, 50, true);
+
+		register("giant_size", "Giant Size",
+				"You are five times your normal size and fit almost nowhere",
+				EffectCategory.DEBUFF, EffectPhase.BAD, 25, 50, true);
+		register("slashed_pockets", "Slashed Pockets",
+				"The top two rows of your inventory are torn open and unusable",
+				EffectCategory.GEAR, EffectPhase.BAD, 25, 50, true);
+		register("flamboyant", "Flamboyant",
+				"Catching fire kills you outright",
+				EffectCategory.SURVIVAL, EffectPhase.BAD, 25, 50, true);
 
 		// TODO: Tiers 3-4 + odd/signature effects go here, same pattern.
 		// See entropy-modpack-effects.md for the full list to port over.

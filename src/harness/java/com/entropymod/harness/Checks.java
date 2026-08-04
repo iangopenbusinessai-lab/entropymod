@@ -84,6 +84,37 @@ final class Checks {
 		return false;
 	}
 
+	/**
+	 * Whether a compiled class's constant pool mentions a given name.
+	 *
+	 * <p>The tool for asserting <em>which</em> vanilla method a hook calls, when
+	 * calling it for real would need a live entity the harness cannot build. Two
+	 * methods that both return a boolean are indistinguishable by reflection;
+	 * they are not indistinguishable in the bytecode, because the callee's name is
+	 * a UTF8 entry in the caller's constant pool.
+	 *
+	 * <p>Deliberately crude -- it does not parse the class file, it scans it. That
+	 * is enough for the question being asked ("does this reference
+	 * {@code isCrouching} rather than {@code isShiftKeyDown}") and has no
+	 * dependency on a bytecode library. It can only prove a reference is
+	 * <em>present</em> or <em>absent</em>, not where it is used.
+	 */
+	static boolean classReferences(Class<?> owner, String name) {
+		String resource = "/" + owner.getName().replace('.', '/') + ".class";
+		try (java.io.InputStream in = owner.getResourceAsStream(resource)) {
+			if (in == null) {
+				throw new IllegalStateException("Could not read class file for " + owner.getName());
+			}
+			byte[] bytes = in.readAllBytes();
+			// The constant pool stores names as modified UTF-8; for ASCII identifiers
+			// that is byte-for-byte ISO-8859-1, which never fails to decode.
+			String raw = new String(bytes, java.nio.charset.StandardCharsets.ISO_8859_1);
+			return raw.contains(name);
+		} catch (java.io.IOException e) {
+			throw new IllegalStateException("Could not read class file for " + owner.getName(), e);
+		}
+	}
+
 	static int summary() {
 		System.out.println();
 		System.out.println("---------------------------------------------");
