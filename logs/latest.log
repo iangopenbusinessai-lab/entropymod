@@ -1,1 +1,207 @@
-[04:42:07] [main/INFO]: Randomized Movement Controls: scramble for this run is FLBR (input order FBLR)
+[20:56:38] [main/INFO]: Randomized Movement Controls: scramble for this run is BFLR (input order FBLR)
+[20:56:38] [main/INFO]: Run started. Entropy loop is live: interval 3600 ticks, cap 100.
+[20:56:38] [main/INFO]: Run started. Entropy loop is live: interval 3600 ticks, cap 100.
+[20:56:38] [main/INFO]: Run started. Entropy loop is live: interval 3600 ticks, cap 100.
+[20:56:45] [main/INFO]: Registered custom attribute: entropymod:pickup_range
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon is registered in EffectRegistry
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon is Tier 2 (entropy 25-50), got 25-50
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon is counterplay-survivable if BAD (required below entropy 40)
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  creative_flight is registered in EffectRegistry
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  creative_flight is Tier 2 (entropy 25-50), got 25-50
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  creative_flight is counterplay-survivable if BAD (required below entropy 40)
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  behemoth_gauntlets is registered in EffectRegistry
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  behemoth_gauntlets is Tier 2 (entropy 25-50), got 25-50
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  behemoth_gauntlets is counterplay-survivable if BAD (required below entropy 40)
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  crouch_invincibility is registered in EffectRegistry
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  crouch_invincibility is Tier 2 (entropy 25-50), got 25-50
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  crouch_invincibility is counterplay-survivable if BAD (required below entropy 40)
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  giant_size is registered in EffectRegistry
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  giant_size is Tier 2 (entropy 25-50), got 25-50
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  giant_size is counterplay-survivable if BAD (required below entropy 40)
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  slashed_pockets is registered in EffectRegistry
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  slashed_pockets is Tier 2 (entropy 25-50), got 25-50
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  slashed_pockets is counterplay-survivable if BAD (required below entropy 40)
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  flamboyant is registered in EffectRegistry
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  flamboyant is Tier 2 (entropy 25-50), got 25-50
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  flamboyant is counterplay-survivable if BAD (required below entropy 40)
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  the four GOOD effects are registered GOOD
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  the three BAD effects are registered BAD
+[20:56:45] [main/INFO]: [STDOUT]:   PASS  Embrace the Moon and Creative Flight are both MOVEMENT -- anti-stacking keeps flight and low gravity apart, which is the intended exclusivity
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  every registered effect has a behavior: []
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  no behavior is registered under an unknown id: []
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon resolves to a real behavior, not the MISSING no-op
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  creative_flight resolves to a real behavior, not the MISSING no-op
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  behemoth_gauntlets resolves to a real behavior, not the MISSING no-op
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  crouch_invincibility resolves to a real behavior, not the MISSING no-op
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size resolves to a real behavior, not the MISSING no-op
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  slashed_pockets resolves to a real behavior, not the MISSING no-op
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  flamboyant resolves to a real behavior, not the MISSING no-op
+[20:56:46] [main/INFO]: [STDOUT]: == Embrace the Moon: value, distinctness, and stacking safety
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the reduction is inside the specified -75%..-80% band (-0.78)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  resulting gravity  (expected 0.0176, got 0.017599999999999998)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  gravity stays strictly positive -- 0 would leave the player floating with no way down, and GRAVITY's clamp floors at -1.0, not 0
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  apex from the gravity change alone  (expected 4.065, got 4.064976633130144)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  apex as shipped, with the jump bonus  (expected 4.567, got 4.566961027376)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the jump bonus lands inside the intended +10-15% apex band (12.35%)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  a naive '+12% on the attribute' would overshoot the target apex -- which is why this is solved, not assumed
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  Moon Walker jump apex (blocks)  (expected 1.657, got 1.6572897297141307)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the model still reproduces vanilla's known 1.2522-block jump  (expected 1.2522, got 1.252203277664432)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  Embrace the Moon is meaningfully distinct from Moon Walker, not a nudge: 276% of its apex
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  it clears a 4-block ledge where Moon Walker cannot clear 2
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  safe fall distance is doubled, 3 -> 6 blocks  (expected 6.0, got 6.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  a 1-block fall is harmless (vanilla would deal 0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  a 2-block fall is harmless (vanilla would deal 0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  a 3-block fall is harmless (vanilla would deal 0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  a 4-block fall is harmless (vanilla would deal 1)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  a 5-block fall is harmless (vanilla would deal 2)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  a 6-block fall is harmless (vanilla would deal 3)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  7 blocks: 1 damage instead of vanilla's 4
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  20 blocks: 14 instead of 17 -- the threshold moves, it is not a multiplier
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the reduction is a constant 3 damage at every height -- a subtracted threshold, not a scaled remainder like Featherlight
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  ADD_MULTIPLIED_TOTAL stacked with Moon Walker stays positive (0.0123)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  and stays playable: apex 5.8, airtime 63t
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  had it used ADD_MULTIPLIED_BASE the same pairing would now give -0.0064 -- NEGATIVE gravity, launched upward permanently
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  at last session's -65% that additive form was still (barely) positive at 0.004 -- so the safety margin was NOT inherited, it had to be rechecked
+[20:56:46] [main/INFO]: [STDOUT]: == Giant Size: the SCALE attribute is real and in range
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  SCALE default  (expected 1.0, got 1.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  SCALE minimum  (expected 0.0625, got 0.0625)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  SCALE maximum  (expected 16.0, got 16.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  players actually have SCALE -- checked against DefaultAttributes, not assumed
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  resulting scale is the specified ~5x  (expected 5.0, got 5.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  5.0 is not clamped -- it is well inside [0.0625, 16.0]  (expected 5.0, got 5.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  a collision mitigation exists at all -- Entity.refreshDimensions() skips fudgePositionAfterSizeChange for players, so vanilla will NOT push a grown player out of blocks
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the mitigation actually tests for collision and moves the player
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the upward search has a bounded limit rather than looping forever
+[20:56:46] [main/INFO]: [STDOUT]: == Giant Size: the full kit
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  health bonus is +20.0 raw = +10 hearts  (expected 20.0, got 20.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  resulting max health is 40 (20 hearts)  (expected 40.0, got 40.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  40 is not clamped -- MAX_HEALTH's ceiling is 1024  (expected 40.0, got 40.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  STEP_HEIGHT default is 0.6  (expected 0.6, got 0.6)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  STEP_HEIGHT minimum is 0.0  (expected 0.0, got 0.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  STEP_HEIGHT maximum is 10.0  (expected 10.0, got 10.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  players actually have STEP_HEIGHT -- checked, not assumed
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  resulting step height is exactly 2.0  (expected 2.0, got 2.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  which is the whole target: a 2-block ledge walked up without jumping
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  2.0 is not clamped  (expected 2.0, got 2.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  apex is genuinely 2x vanilla (1.2522 -> 2.5044)  (expected 2.0, got 1.9999551154151978)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the intuitive sqrt(2) on the attribute gives only 1.8558x, not 2x -- the 0.98 air drag costs proportionally more at higher launch velocity
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the shipped jump strength is what solving the integration backwards produces  (expected 0.618332380694747, got 0.6183399129598972)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the resulting jump strength is inside JUMP_STRENGTH's range  (expected 0.618332380694747, got 0.618332380694747)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  damage multiplier is 0.75 = -25%  (expected 0.75, got 0.75)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  EffectHooks itself reads Giant Size -- the reduction goes through the existing damageTakenMultiplier, not a parallel mechanism
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  no second damage hook was introduced alongside Iron Skin's
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  stacked with Iron Skin it is 0.60 -- multiplicative, so it cannot reach zero  (expected 0.6, got 0.6000000089406967)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  stacked with Fragile it is still a net reduction (0.9375)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  at 5x the eye sits 8.1 blocks above the feet  (expected 8.1, got 8.100000000000001)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  BLOCK_INTERACTION_RANGE default is 4.5  (expected 4.5, got 4.5)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  ENTITY_INTERACTION_RANGE default is 3.0  (expected 3.0, got 3.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  WITHOUT a reach bonus a 5x player cannot reach the block at their feet: needs 8.100000000000001, has 4.5
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  with the bonus they can: block reach 11.0 vs the 8.1 needed
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the originally-specified +2 would NOT have been enough (6.5 vs 8.1) -- which is why it is larger
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the bonus is sized to the eye-height increase, restoring vanilla-equivalent reach relative to the giant's own body  (expected 6.480000000000001, got 6.5)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  both resulting ranges are inside the attributes' range
+[20:56:46] [main/INFO]: [STDOUT]: == Multi-attribute effects: every change is idempotent
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon really is a multi-attribute effect (3)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon/gravity: ten applications leave the value where one put it  (expected 0.017599999999999998, got 0.017599999999999998)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon/gravity: one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon/gravity: removal restores the base value  (expected 0.08, got 0.08)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon/jump_strength: ten applications leave the value where one put it  (expected 0.4493999859690666, got 0.4493999859690666)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon/jump_strength: one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon/jump_strength: removal restores the base value  (expected 0.41999998688697815, got 0.41999998688697815)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon/safe_fall_distance: ten applications leave the value where one put it  (expected 6.0, got 6.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon/safe_fall_distance: one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon/safe_fall_distance: removal restores the base value  (expected 3.0, got 3.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size really is a multi-attribute effect (6)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/scale: ten applications leave the value where one put it  (expected 5.0, got 5.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/scale: one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/scale: removal restores the base value  (expected 1.0, got 1.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/max_health: ten applications leave the value where one put it  (expected 40.0, got 40.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/max_health: one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/max_health: removal restores the base value  (expected 20.0, got 20.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/step_height: ten applications leave the value where one put it  (expected 2.0, got 2.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/step_height: one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/step_height: removal restores the base value  (expected 0.6, got 0.6)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/jump_strength: ten applications leave the value where one put it  (expected 0.6183323806947469, got 0.6183323806947469)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/jump_strength: one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/jump_strength: removal restores the base value  (expected 0.41999998688697815, got 0.41999998688697815)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/entity_interaction_range: ten applications leave the value where one put it  (expected 9.5, got 9.5)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/entity_interaction_range: one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/entity_interaction_range: removal restores the base value  (expected 3.0, got 3.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/block_interaction_range: ten applications leave the value where one put it  (expected 11.0, got 11.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/block_interaction_range: one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size/block_interaction_range: removal restores the base value  (expected 4.5, got 4.5)
+[20:56:46] [main/INFO]: [STDOUT]: == Behemoth Gauntlets: empty hand vs. held item
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  unarmed bonus is the specified flat +20  (expected 20.0, got 20.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  armed multiplier is the specified -75%  (expected 0.25, got 0.25)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  EMPTY HAND: a 1-damage punch becomes 21  (expected 21.0, got 21.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  HELD ITEM: a 7-damage sword swing becomes 1.75  (expected 1.75, got 1.75)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the two branches genuinely differ for the same input damage
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  punching out-damages a diamond sword -- the point of the effect
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the armed branch is multiplicative, so zero damage stays zero  (expected 0.0, got 0.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the unarmed branch is additive, so it applies even to a zero-damage hit  (expected 20.0, got 20.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the hook decides on getWeaponItem() -- the main-hand stack -- rather than guessing from an item tag
+[20:56:46] [main/INFO]: [STDOUT]: == Flamboyant: fire specifically, not damage generally
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the lethal amount is a multiple of max health, not a fixed number
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  it stays finite -- Float.MAX_VALUE would risk non-finite damage maths downstream
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  survives worst-case mitigation (armour + Resistance + Iron Skin) and is still lethal
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  lethal damage scales with max health  (expected 20000.0, got 20000.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  an already-larger amount is left alone rather than scaled down
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the hook gates on the vanilla #minecraft:is_fire damage-type tag
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the shipped tag covers burning, standing in fire, lava, campfires and magma
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  NON-FIRE regression: minecraft:fall is not in #is_fire, so it stays ordinary damage
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  NON-FIRE regression: minecraft:drown is not in #is_fire, so it stays ordinary damage
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  NON-FIRE regression: minecraft:mob_attack is not in #is_fire, so it stays ordinary damage
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  NON-FIRE regression: minecraft:player_attack is not in #is_fire, so it stays ordinary damage
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  NON-FIRE regression: minecraft:cactus is not in #is_fire, so it stays ordinary damage
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  NON-FIRE regression: minecraft:out_of_world is not in #is_fire, so it stays ordinary damage
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  NON-FIRE regression: minecraft:explosion is not in #is_fire, so it stays ordinary damage
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  NON-FIRE regression: minecraft:starve is not in #is_fire, so it stays ordinary damage
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  NON-FIRE regression: minecraft:magic is not in #is_fire, so it stays ordinary damage
+[20:56:46] [main/INFO]: [STDOUT]: == Crouch Invincibility: only while actually sneaking
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the hook consults isCrouching() -- vanilla's pose state, matching what the player sees on screen
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  and NOT isShiftKeyDown(), the raw input flag, which disagrees when a player is crouched under a 1-block gap or shifting while forced upright
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the gate is a single hook, so there is one place the sneak test can live
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  it is a HookEffectBehavior, whose apply() is final and empty -- so there is no per-player state that could latch 'has sneaked' into 'is sneaking'
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the damage mixin calls the gate on every hit
+[20:56:46] [main/INFO]: [STDOUT]: == Slashed Pockets: which slots, in this version's layout
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  locked range is slots 9-26 (got 9-26)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  that is 18 slots -- exactly half of the 36 main inventory slots
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  INVENTORY_SIZE is 36
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  SELECTION_SIZE (the hotbar) is 9
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the locked half is exactly half of the main inventory
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  hotbar slot 0 is never locked
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  hotbar slot 1 is never locked
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  hotbar slot 2 is never locked
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  hotbar slot 3 is never locked
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  hotbar slot 4 is never locked
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  hotbar slot 5 is never locked
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  hotbar slot 6 is never locked
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  hotbar slot 7 is never locked
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  hotbar slot 8 is never locked
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the bottom storage row (27-35) stays usable
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  both locked rows are locked end to end
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  offhand, body armour and saddle slots are outside the locked range
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  the one-time drop is gated on a fresh pick, so it cannot re-fire on every respawn, rejoin and dimension change
+[20:56:46] [main/INFO]: [STDOUT]: == Tier 2 batch: idempotency, no-repeat and persistence
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon: applying 10 times leaves the value where one application put it  (expected 0.017599999999999998, got 0.017599999999999998)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon: exactly one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size: applying 10 times leaves the value where one application put it  (expected 5.0, got 5.0)
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size: exactly one modifier, not ten stacked copies
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  no-repeat holds at entropy 25/GOOD: already-acquired 'second_guess' was not re-offered
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  no-repeat holds at entropy 25/GOOD: already-acquired 'beast_whisperer' was not re-offered
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  no-repeat holds at entropy 25/GOOD: already-acquired 'magnetic_boots' was not re-offered
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  no-repeat holds at entropy 25/BAD: already-acquired 'random_jump' was not re-offered
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  no-repeat holds at entropy 25/BAD: already-acquired 'dull_blade' was not re-offered
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  no-repeat holds at entropy 25/BAD: already-acquired 'unlucky' was not re-offered
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  no-repeat holds at entropy 37/BAD: already-acquired 'random_jump' was not re-offered
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  no-repeat holds at entropy 50/BAD: already-acquired 'random_jump' was not re-offered
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  embrace_the_moon survives a save/reload in the acquired set
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  creative_flight survives a save/reload in the acquired set
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  behemoth_gauntlets survives a save/reload in the acquired set
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  crouch_invincibility survives a save/reload in the acquired set
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  giant_size survives a save/reload in the acquired set
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  slashed_pockets survives a save/reload in the acquired set
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  flamboyant survives a save/reload in the acquired set
+[20:56:46] [main/INFO]: [STDOUT]:   PASS  every id in this batch is still defined after a reload -- no stale ids
+[20:56:46] [main/INFO]: [STDOUT]: ---------------------------------------------
+[20:56:46] [main/INFO]: [STDOUT]: 450 passed, 0 failed

@@ -1,24 +1,3 @@
-/summon skeleton ~5 ~ ~
-/entropyforcepick
-/fill ~100 ~100 ~ ~ ~100 ~
-/fill ~100 ~100 ~ ~ ~100 ~ stone
-/tp ~ ~100 ~
-/gamemode creative
-/gamemode survival
-/time setn ight
-/time set night
-/summon zombie ~40 ~ ~
-/time set day
-/gamemode survival
-/entropyforcepick
-/give qgosi dirt 129843
-/give @p dirt 9385
-/give @p dirt 6400
-/kill @e
-/give @p dirt 6400
-/kill @e
-/fill ~3 ~50 ~3 ~-3 ~50 ~-3 minecraft:farmland
-/tp ~ ~60 ~
 /gamemode creative
 /gamemode survival
 /give @p minecraft:acacia_trapdoor
@@ -48,3 +27,24 @@
 /give @p minecraft:pumpkin_seeds
 /give @p minecraft:melon_seeds
 /give @p bone
+/entropygrant randomized_controls
+/entropygrant upside_down_camera
+/entropygrant random_jump
+/entropyforcepick
+/entropygrant randomized_controls
+/entropygrant extreme_gravity
+/entropygrant giant_size
+/entropygrant flamboyant
+/give @p minecraft:flint_and_steel
+/entropygrant creative_flight
+/entropygrant slashed_pockets
+/give @p dirt 6400
+/time set night
+/summon giant
+/entropygrant behemoth_gauntlets
+/summon zombie ~ ~ ~
+/entropygrant crouch_invincibility
+/entropygrant giant_size
+/
+/entropygrant embrace_the_moon
+/entropygrant moon_walker
