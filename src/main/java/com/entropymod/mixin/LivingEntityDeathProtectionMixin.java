@@ -10,7 +10,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Second Chance: rides the Totem of Undying's own escape hatch.
+ * Phoenix Chambered Heart: rides the Totem of Undying's own escape hatch.
  *
  * <p>Targets {@code LivingEntity.checkTotemDeathProtection(DamageSource)}, whose
  * caller in {@code hurtServer} is, javap-verified:
@@ -30,10 +30,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * <p><b>The health restore is not optional.</b> This runs after health has
  * already been reduced to zero, so a {@code true} return with no
  * {@code setHealth} would leave the player alive on an empty bar and dead again
- * next tick. That restore lives in {@code EntropyManager.consumeSecondChance},
+ * next tick. That restore lives in {@code EntropyManager.consumePhoenixHeart},
  * alongside spending the run flag, so the two can never happen separately.
  *
- * <p>Injected at HEAD and cancelling, so Second Chance is checked <em>before</em>
+ * <p>Injected at HEAD and cancelling, so the Heart is checked <em>before</em>
  * a totem in hand -- the run's one-shot is spent first and the totem is kept.
  * Both would otherwise fire for the same blow.
  *
@@ -45,11 +45,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class LivingEntityDeathProtectionMixin {
 
 	@Inject(method = "checkTotemDeathProtection", at = @At("HEAD"), cancellable = true)
-	private void entropymod$secondChance(DamageSource source, CallbackInfoReturnable<Boolean> cir) {
+	private void entropymod$phoenixHeart(DamageSource source, CallbackInfoReturnable<Boolean> cir) {
 		if (!((Object) this instanceof Player player)) {
 			return;
 		}
-		if (EffectHooks.trySecondChance(player, source)) {
+		if (EffectHooks.tryPhoenixHeart(player, source)) {
 			cir.setReturnValue(true);
 		}
 	}

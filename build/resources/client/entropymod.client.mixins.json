@@ -5,6 +5,7 @@
 	"client": [
 		"EntropyModClientMixin",
 		"CameraMixin",
+		"ClientSprintMixin",
 		"KeyboardInputMixin"
 	],
 	"injectors": {

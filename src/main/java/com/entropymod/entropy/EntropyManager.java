@@ -1,7 +1,7 @@
 package com.entropymod.entropy;
 
 import com.entropymod.EntropyMod;
-import com.entropymod.entropy.behavior.SecondChanceBehavior;
+import com.entropymod.entropy.behavior.PhoenixChamberedHeartBehavior;
 import com.entropymod.entropy.behavior.SecondGuessBehavior;
 import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.OpenChoicePayload;
@@ -13,6 +13,8 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.util.datafix.DataFixTypes;
 import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.level.saveddata.SavedDataType;
@@ -72,11 +74,13 @@ public class EntropyManager extends SavedData {
 			PickRecord.CODEC.listOf().optionalFieldOf("history", List.of()).forGetter(m -> m.history),
 			Codec.BOOL.optionalFieldOf("reroll_used", false).forGetter(m -> m.rerollUsed),
 			Codec.STRING.optionalFieldOf("move_scramble", "").forGetter(m -> m.moveScramble),
-			// Second Chance's one-shot, in the SAME store as Second Guess's. See
-			// consumeSecondChance for why the flag rather than the acquired set is
+			// Phoenix Chambered Heart's one-shot, in the SAME store as Second Guess's.
+			// See consumePhoenixHeart for why the flag rather than the acquired set is
 			// what enforces "once". Position matches the constructor parameter order.
+			// The KEY keeps its pre-rename spelling on purpose -- changing it would
+			// hand a fresh save back to every world that had already spent one.
 			Codec.BOOL.optionalFieldOf("second_chance_used", false)
-					.forGetter(m -> m.secondChanceUsed),
+					.forGetter(m -> m.phoenixHeartUsed),
 			// Optional WITHOUT a default, unlike every other field here, so the codec
 			// constructor can tell "this save predates run states" from "this save
 			// says NOT_STARTED" and migrate the first case. See the constructor.
@@ -131,15 +135,20 @@ public class EntropyManager extends SavedData {
 	private String moveScramble = "";
 
 	/**
-	 * Second Chance's one-shot, spent for the whole run.
+	 * Phoenix Chambered Heart's one-shot, spent for the whole run.
 	 *
 	 * <p>Deliberately the same shape and the same store as {@link #rerollUsed}
 	 * rather than a parallel mechanism. Because it lives on the run, re-acquiring
-	 * Second Chance cannot refund it -- which the acquired set alone could not
+	 * the effect cannot refund it -- which the acquired set alone could not
 	 * guarantee, since the repeat fallback can re-offer an already-taken effect
 	 * once a phase's pool empties.
+	 *
+	 * <p><b>The persisted key stays {@code second_chance_used}</b>, from before the
+	 * effect was renamed. Renaming it would refund the save in every world that had
+	 * already spent one: {@code optionalFieldOf} would find no value under the new
+	 * name and default to false. The field name is cosmetic, the key is not.
 	 */
-	private boolean secondChanceUsed = false;
+	private boolean phoenixHeartUsed = false;
 
 	/**
 	 * Where the run is in its lifecycle. <b>Gates the whole tick loop</b> -- see
@@ -190,7 +199,7 @@ public class EntropyManager extends SavedData {
 	/** Codec constructor. */
 	private EntropyManager(int entropy, int pickCount, boolean gameOver, int entropyCap, int intervalTicks,
 						   List<String> acquiredIds, List<PickRecord> history, boolean rerollUsed,
-						   String moveScramble, boolean secondChanceUsed, Optional<String> runState,
+						   String moveScramble, boolean phoenixHeartUsed, Optional<String> runState,
 						   Map<String, KeybindSnapshot> keybindSnapshots) {
 		this.entropy = entropy;
 		this.pickCount = pickCount;
@@ -200,7 +209,7 @@ public class EntropyManager extends SavedData {
 		acquiredIds.forEach(this.acquired::add);
 		this.history.addAll(history);
 		this.rerollUsed = rerollUsed;
-		this.secondChanceUsed = secondChanceUsed;
+		this.phoenixHeartUsed = phoenixHeartUsed;
 		// A malformed value from a hand-edited or newer save degrades to vanilla
 		// controls rather than reaching input handling and throwing every tick.
 		this.moveScramble = MovementScramble.isValid(moveScramble) ? moveScramble : "";
@@ -546,72 +555,95 @@ public class EntropyManager extends SavedData {
 	}
 
 	/**
-	 * Whether Second Chance can still save someone: the effect is held and the
-	 * run's one save is unspent.
+	 * Whether Phoenix Chambered Heart can still save someone: the effect is held
+	 * and the run's one save is unspent.
 	 */
-	public boolean isSecondChanceAvailable() {
-		return !secondChanceUsed && acquired.contains(SecondChanceBehavior.ID);
+	public boolean isPhoenixHeartAvailable() {
+		return !phoenixHeartUsed && acquired.contains(PhoenixChamberedHeartBehavior.ID);
 	}
 
 	/**
-	 * Spends Second Chance to save a player from a killing blow.
+	 * Spends Phoenix Chambered Heart to save a player from a killing blow.
 	 *
 	 * <p>Called from the {@code checkTotemDeathProtection} mixin, at the moment
 	 * vanilla has already zeroed the player's health and is deciding whether to
-	 * run the death branch. <b>Restoring health here is mandatory</b> -- returning
-	 * true without it leaves the player alive on an empty bar and dead again next
-	 * tick. Vanilla's own totem branch does the same {@code setHealth} for the same
-	 * reason.
+	 * run the death branch.
+	 *
+	 * <p><b>The {@code setHealth} is mandatory and none of the three granted
+	 * effects can replace it.</b> Health Boost raises the ceiling without raising
+	 * current health, Absorption is a separate pool that the death check does not
+	 * consult, and Regeneration's first tick has not happened yet. Returning true
+	 * with the player still on zero leaves them alive on an empty bar and dead
+	 * again next tick. Vanilla's own totem branch sets health for the same reason,
+	 * to the same value.
+	 *
+	 * <p>The three grants are plain {@code MobEffectInstance}s -- what a potion or
+	 * a beacon hands out -- so the healing, the raised ceiling, the absorption pool
+	 * and, crucially, <b>all of the expiry</b> are vanilla's. See
+	 * {@link PhoenixChamberedHeartBehavior} for the numbers each one produces and
+	 * for why nothing needs cleaning up afterwards.
 	 *
 	 * <p>Ordering matters and follows the lesson from Second Guess's button bug:
 	 * <b>the flag is set before anything else</b>, so nothing downstream -- the
-	 * sync, a re-entrant damage event -- can observe an unspent Second Chance that
-	 * has in fact just fired.
+	 * sync, a re-entrant damage event -- can observe an unspent save that has in
+	 * fact just fired.
 	 *
 	 * @return true if the save happened and death should be skipped
 	 */
-	public boolean consumeSecondChance(ServerPlayer player) {
-		if (!spendSecondChance()) {
+	public boolean consumePhoenixHeart(ServerPlayer player) {
+		if (!spendPhoenixHeart()) {
 			return false;
 		}
-		player.setHealth(SecondChanceBehavior.SURVIVE_HEALTH);
-		player.invulnerableTime = SecondChanceBehavior.INVULNERABLE_TICKS;
+		// Alive first, then the effects -- see the javadoc. Order between the three
+		// grants themselves does not matter: Health Boost's ceiling is raised the
+		// instant it is added, before Regeneration's first tick can run.
+		player.setHealth(PhoenixChamberedHeartBehavior.SURVIVE_HEALTH);
+		player.invulnerableTime = PhoenixChamberedHeartBehavior.INVULNERABLE_TICKS;
+		player.addEffect(new MobEffectInstance(MobEffects.HEALTH_BOOST,
+				PhoenixChamberedHeartBehavior.HEALTH_BOOST_TICKS,
+				PhoenixChamberedHeartBehavior.AMPLIFIER));
+		player.addEffect(new MobEffectInstance(MobEffects.ABSORPTION,
+				PhoenixChamberedHeartBehavior.ABSORPTION_TICKS,
+				PhoenixChamberedHeartBehavior.AMPLIFIER));
+		player.addEffect(new MobEffectInstance(MobEffects.REGENERATION,
+				PhoenixChamberedHeartBehavior.REGENERATION_TICKS,
+				PhoenixChamberedHeartBehavior.AMPLIFIER));
 		player.sendSystemMessage(Component.literal(
-				"[Entropy] Second Chance burns away -- you survive on one heart."));
+				"[Entropy] Phoenix Chambered Heart burns away -- you rise from the ash."));
 
 		// The client's cached acquired set has to lose it too, or a client-side
 		// effect would keep acting on an effect the run no longer holds.
 		syncToAll(player.level().getServer());
-		EntropyMod.LOGGER.info("Second Chance consumed by {} -- {} effect(s) remain.",
+		EntropyMod.LOGGER.info("Phoenix Chambered Heart consumed by {} -- {} effect(s) remain.",
 				player.getName().getString(), acquired.size());
 		return true;
 	}
 
 	/**
-	 * The run-state half of {@link #consumeSecondChance}, split out so the
+	 * The run-state half of {@link #consumePhoenixHeart}, split out so the
 	 * once-per-run rule can be driven headlessly against the real shipped code --
 	 * the full version needs a live {@code ServerPlayer} the harness cannot build.
 	 *
 	 * <p>Order is deliberate: the flag is set first, so nothing downstream can
-	 * observe an unspent Second Chance that has in fact already fired. That is the
-	 * same ordering lesson Second Guess's reroll button was fixed with.
+	 * observe an unspent save that has in fact already fired. That is the same
+	 * ordering lesson Second Guess's reroll button was fixed with.
 	 *
 	 * @return true only on the call that actually spends it
 	 */
-	public boolean spendSecondChance() {
-		if (!isSecondChanceAvailable()) {
+	public boolean spendPhoenixHeart() {
+		if (!isPhoenixHeartAvailable()) {
 			return false;
 		}
-		secondChanceUsed = true;
+		phoenixHeartUsed = true;
 		// Dropping the id is presentation, not enforcement -- the flag above is what
 		// makes this once-per-run. See AcquiredEffects.remove.
-		acquired.remove(SecondChanceBehavior.ID);
+		acquired.remove(PhoenixChamberedHeartBehavior.ID);
 		setDirty();
 		return true;
 	}
 
-	public boolean isSecondChanceUsed() {
-		return secondChanceUsed;
+	public boolean isPhoenixHeartUsed() {
+		return phoenixHeartUsed;
 	}
 
 	/** Tells one player the run state and their own frozen keybinds. */

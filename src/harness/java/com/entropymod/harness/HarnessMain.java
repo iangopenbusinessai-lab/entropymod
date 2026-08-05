@@ -19,7 +19,7 @@ import com.entropymod.entropy.behavior.BrittleBonesBehavior;
 import com.entropymod.entropy.behavior.FeatherlightBehavior;
 import com.entropymod.entropy.behavior.GlassCannonPactBehavior;
 import com.entropymod.entropy.behavior.GlassJawBehavior;
-import com.entropymod.entropy.behavior.SecondChanceBehavior;
+import com.entropymod.entropy.behavior.PhoenixChamberedHeartBehavior;
 import com.entropymod.entropy.behavior.SlipperyGripBehavior;
 import com.entropymod.entropy.behavior.CreativeFlightBehavior;
 import com.entropymod.entropy.behavior.CrouchInvincibilityBehavior;
@@ -107,7 +107,9 @@ public final class HarnessMain {
 		survivalBatchWiring();
 		fallDamageStacking();
 		glassCannonHealthFloor();
-		secondChanceOnce();
+		phoenixHeartOnce();
+		phoenixHeartGrants();
+		slipperyGripSpeed();
 		survivalBatchInvariants();
 		behemothGauntletsBothCases();
 		flamboyantFireOnly();
@@ -1941,11 +1943,11 @@ public final class HarnessMain {
 
 	// ------------------------------------------------------------------
 	// Survival batch: fall-damage stacking, Slippery Grip, Glass Cannon Pact,
-	// Second Chance.
+	// Phoenix Chambered Heart.
 	// ------------------------------------------------------------------
 
 	private static final List<String> SURVIVAL_BATCH = List.of(
-			SlipperyGripBehavior.ID, GlassCannonPactBehavior.ID, SecondChanceBehavior.ID);
+			SlipperyGripBehavior.ID, GlassCannonPactBehavior.ID, PhoenixChamberedHeartBehavior.ID);
 
 	private static void survivalBatchWiring() {
 		section("Survival batch: registration and wiring");
@@ -1971,8 +1973,8 @@ public final class HarnessMain {
 		check(EffectRegistry.byId(SlipperyGripBehavior.ID).phase() == EffectPhase.BAD,
 				"Slippery Grip is BAD");
 		check(pact.phase() == EffectPhase.GOOD
-						&& EffectRegistry.byId(SecondChanceBehavior.ID).phase() == EffectPhase.GOOD,
-				"Glass Cannon Pact and Second Chance are GOOD");
+						&& EffectRegistry.byId(PhoenixChamberedHeartBehavior.ID).phase() == EffectPhase.GOOD,
+				"Glass Cannon Pact and Phoenix Chambered Heart are GOOD");
 
 		check(EffectBehaviors.definitionsWithoutBehavior().isEmpty()
 						&& EffectBehaviors.behaviorsWithoutDefinition().isEmpty(),
@@ -2056,6 +2058,122 @@ public final class HarnessMain {
 						AttributeEffectBehavior.modifierId(effectId), amount, op));
 	}
 
+	/**
+	 * Slippery Grip: walking untouched, sprinting at exactly half of it, at more
+	 * than one baseline so "relative" is genuinely tested rather than a coincidence
+	 * of the default speed.
+	 */
+	private static void slipperyGripSpeed() {
+		section("Slippery Grip: sprinting lands at half the CURRENT walking speed");
+		HarnessBootstrap.init();
+
+		double vanillaSprint =
+				constant(SlipperyGripBehavior.class, "VANILLA_SPRINT_AMOUNT");
+		checkNear(vanillaSprint, 0.30000001192092896, 0.0,
+				"vanilla's SPEED_MODIFIER_SPRINTING amount, javap-verified from "
+						+ "LivingEntity's <clinit>, recorded exactly");
+		checkNear(constant(SlipperyGripBehavior.class, "SPRINT_FRACTION"), 0.5, 1e-12,
+				"the target is half the walking speed");
+
+		double compensator = SlipperyGripBehavior.compensatorAmount(vanillaSprint);
+		checkNear((1.0 + vanillaSprint) * (1.0 + compensator), 0.5, 1e-12,
+				"the compensator solves (1 + 0.3)(1 + c) = 0.5 -- one modifier both "
+						+ "cancels vanilla's sprint bonus and applies the -50%");
+		check(compensator < 0 && compensator > -1.0,
+				"and stays strictly inside (-1, 0), so the ADD_MULTIPLIED_TOTAL product "
+						+ "can never reach or cross zero however many factors stack");
+
+		// Baseline 1: a vanilla player. Baseline 2: stacked with Sure Footing, which
+		// is deliberately in a DIFFERENT pool (ADD_MULTIPLIED_BASE) -- if the effect
+		// were secretly absolute, the second baseline is where it would show.
+		double sureFooting = ((AttributeEffectBehavior) EffectBehaviors.get(SureFootingBehavior.ID))
+				.changes().get(0).amount();
+		for (boolean withSureFooting : new boolean[] {false, true}) {
+			String label = withSureFooting ? "with Sure Footing" : "vanilla baseline";
+
+			double walkClean = movementSpeed(false, false, withSureFooting);
+			double walkCursed = movementSpeed(true, false, withSureFooting);
+			// The literal requirement: not "close to", identical bits.
+			check(Double.doubleToRawLongBits(walkCursed) == Double.doubleToRawLongBits(walkClean),
+					label + ": WALKING is bit-identical with and without the curse (" + walkClean
+							+ ") -- the compensator only exists while sprinting");
+
+			double sprintClean = movementSpeed(false, true, withSureFooting);
+			double sprintCursed = movementSpeed(true, true, withSureFooting);
+			checkNear(sprintCursed, walkCursed * 0.5, 1e-12,
+					label + ": SPRINTING is exactly half the walking value (" + sprintCursed
+							+ " vs " + walkCursed + ")");
+			check(sprintClean > walkClean && sprintCursed < walkCursed,
+					label + ": and the sign is inverted -- vanilla sprinting is faster than "
+							+ "walking, cursed sprinting is slower");
+		}
+
+		// Genuinely relative: the two baselines must differ, or the check above would
+		// pass for a hardcoded number.
+		check(movementSpeed(true, false, true) != movementSpeed(true, false, false),
+				"the two baselines really are different walking speeds, so landing on half "
+						+ "of each is relative rather than a fixed value");
+		check(sureFooting > 0, "Sure Footing is still a positive speed bonus (+"
+				+ sureFooting + "), i.e. a real second baseline");
+
+		// Sprinting is ALLOWED now -- the old forced-false mixin is gone, not merely
+		// bypassed. A code path that still existed could be re-enabled by accident.
+		check(!Checks.classReferences(com.entropymod.entropy.EffectHooks.class,
+						"preventsSprinting"),
+				"the old preventsSprinting hook is deleted, not left returning false");
+		check(Checks.classReferences(com.entropymod.entropy.EffectHooks.class,
+						"halvesSprintSpeed"),
+				"and the replacement hook is what the mixin reads");
+		// The shipped runtime path must use the same arithmetic this section drove.
+		check(Checks.classReferences(
+						com.entropymod.entropy.behavior.SlipperyGripSprint.class,
+						"compensatorAmount"),
+				"SlipperyGripSprint derives its modifier from the same compensatorAmount, "
+						+ "rather than carrying a second copy of the number");
+		check(Checks.classReferences(
+						com.entropymod.entropy.behavior.SlipperyGripSprint.class,
+						"addOrUpdateTransientModifier"),
+				"and applies it with addOrUpdateTransientModifier -- addTransientModifier "
+						+ "would throw on the repeated setSprinting(true) calls vanilla makes");
+	}
+
+	/**
+	 * Movement speed as the real {@code AttributeInstance} computes it.
+	 *
+	 * <p>The entity plumbing is stood in for -- the harness cannot build a
+	 * {@code LivingEntity} -- but the arithmetic is not: the compensator comes from
+	 * the shipped {@link SlipperyGripBehavior#compensatorAmount}, the modifier id
+	 * from the shipped {@code modifierId}, and the composition from vanilla's own
+	 * {@code calculateValue}.
+	 */
+	private static double movementSpeed(boolean cursed, boolean sprinting, boolean sureFooting) {
+		var instance = instanceFor(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED);
+		instance.setBaseValue(0.1); // the player's real base
+		if (sureFooting) {
+			var change = ((AttributeEffectBehavior) EffectBehaviors.get(SureFootingBehavior.ID))
+					.changes().get(0);
+			addModifier(instance, SureFootingBehavior.ID, change.amount(), change.operation());
+		}
+		if (sprinting) {
+			// Vanilla's own modifier, exactly as LivingEntity.setSprinting adds it.
+			instance.addOrUpdateTransientModifier(
+					new net.minecraft.world.entity.ai.attributes.AttributeModifier(
+							net.minecraft.resources.Identifier.withDefaultNamespace(
+									SlipperyGripBehavior.VANILLA_SPRINT_ID_PATH),
+							SlipperyGripBehavior.VANILLA_SPRINT_AMOUNT,
+							net.minecraft.world.entity.ai.attributes.AttributeModifier
+									.Operation.ADD_MULTIPLIED_TOTAL));
+		}
+		// The compensator exists only while sprinting -- that is the whole mechanism.
+		if (cursed && sprinting) {
+			addModifier(instance, SlipperyGripBehavior.ID,
+					SlipperyGripBehavior.compensatorAmount(SlipperyGripBehavior.VANILLA_SPRINT_AMOUNT),
+					net.minecraft.world.entity.ai.attributes.AttributeModifier
+							.Operation.ADD_MULTIPLIED_TOTAL);
+		}
+		return instance.getValue();
+	}
+
 	/** Builds a real AttributeInstance holding whichever of the three effects are selected. */
 	private static double composeFallMultiplier(
 			net.minecraft.core.Holder<net.minecraft.world.entity.ai.attributes.Attribute> attr,
@@ -2129,59 +2247,59 @@ public final class HarnessMain {
 	}
 
 	/**
-	 * Second Chance fires exactly once per run, and neither a relog nor
+	 * Phoenix Chambered Heart fires exactly once per run, and neither a relog nor
 	 * re-acquiring the effect can refund it.
 	 */
-	private static void secondChanceOnce() {
-		section("Second Chance: once per run, and it stays spent");
+	private static void phoenixHeartOnce() {
+		section("Phoenix Chambered Heart: once per run, and it stays spent");
 		HarnessBootstrap.init();
 
 		EntropyManager manager = new EntropyManager();
 		manager.startRun();
-		check(!manager.isSecondChanceAvailable(),
+		check(!manager.isPhoenixHeartAvailable(),
 				"unavailable before the effect is acquired");
-		check(!manager.spendSecondChance(), "and cannot be spent");
+		check(!manager.spendPhoenixHeart(), "and cannot be spent");
 
-		manager.acquired().add(SecondChanceBehavior.ID);
-		check(manager.isSecondChanceAvailable(), "available once acquired");
+		manager.acquired().add(PhoenixChamberedHeartBehavior.ID);
+		check(manager.isPhoenixHeartAvailable(), "available once acquired");
 
-		check(manager.spendSecondChance(), "the first killing blow spends it");
-		check(manager.isSecondChanceUsed(), "the run flag is set");
-		check(!manager.acquired().contains(SecondChanceBehavior.ID),
+		check(manager.spendPhoenixHeart(), "the first killing blow spends it");
+		check(manager.isPhoenixHeartUsed(), "the run flag is set");
+		check(!manager.acquired().contains(PhoenixChamberedHeartBehavior.ID),
 				"and the effect is dropped from the acquired set");
 
 		// The heart of the requirement.
-		check(!manager.spendSecondChance(), "a SECOND killing blow does not");
+		check(!manager.spendPhoenixHeart(), "a SECOND killing blow does not");
 		for (int i = 0; i < 5; i++) {
-			check(!manager.spendSecondChance(), "still refused on repeat attempt " + (i + 1));
+			check(!manager.spendPhoenixHeart(), "still refused on repeat attempt " + (i + 1));
 		}
 
 		// Re-acquiring must not refund it. This is why the flag, not the acquired
 		// set, is what enforces "once" -- the repeat fallback can legitimately
 		// re-offer an already-taken effect once a phase's pool empties.
-		manager.acquired().add(SecondChanceBehavior.ID);
-		check(manager.acquired().contains(SecondChanceBehavior.ID),
+		manager.acquired().add(PhoenixChamberedHeartBehavior.ID);
+		check(manager.acquired().contains(PhoenixChamberedHeartBehavior.ID),
 				"the effect can be re-acquired (the repeat fallback allows it)");
-		check(!manager.isSecondChanceAvailable(),
+		check(!manager.isPhoenixHeartAvailable(),
 				"but it is still unavailable -- the run flag outranks the acquired set");
-		check(!manager.spendSecondChance(), "and re-acquiring does not refund the save");
+		check(!manager.spendPhoenixHeart(), "and re-acquiring does not refund the save");
 
 		// Across a relog, which for a SavedData means across the codec.
 		EntropyManager reloaded = reencode(manager);
-		check(reloaded.isSecondChanceUsed(), "the spent flag survives a save/reload");
-		check(!reloaded.isSecondChanceAvailable(),
+		check(reloaded.isPhoenixHeartUsed(), "the spent flag survives a save/reload");
+		check(!reloaded.isPhoenixHeartAvailable(),
 				"so a relog cannot refund it either, even holding the effect again");
-		check(!reloaded.spendSecondChance(), "and it still cannot be spent after reloading");
+		check(!reloaded.spendPhoenixHeart(), "and it still cannot be spent after reloading");
 
 		// A run that never spent it must still be able to.
 		EntropyManager fresh = new EntropyManager();
 		fresh.startRun();
-		fresh.acquired().add(SecondChanceBehavior.ID);
+		fresh.acquired().add(PhoenixChamberedHeartBehavior.ID);
 		EntropyManager freshReloaded = reencode(fresh);
-		check(freshReloaded.isSecondChanceAvailable(),
-				"an UNSPENT Second Chance survives a reload too -- the flag is not "
-						+ "defaulting to spent");
-		check(freshReloaded.spendSecondChance(), "and can still be spent after the reload");
+		check(freshReloaded.isPhoenixHeartAvailable(),
+				"an UNSPENT Phoenix Chambered Heart survives a reload too -- the flag is "
+						+ "not defaulting to spent");
+		check(freshReloaded.spendPhoenixHeart(), "and can still be spent after the reload");
 
 		// Same store as Second Guess, not a parallel one.
 		check(Checks.classReferences(EntropyManager.class, "second_chance_used"),
@@ -2190,10 +2308,123 @@ public final class HarnessMain {
 						"BYPASSES_INVULNERABILITY"),
 				"the hook still lets /kill and the void through, matching vanilla's "
 						+ "own first line in checkTotemDeathProtection");
-		checkNear(constant(SecondChanceBehavior.class, "SURVIVE_HEALTH"), 2.0, 1e-6,
-				"the save leaves the player on 1 heart");
-		check(constant(SecondChanceBehavior.class, "INVULNERABLE_TICKS") > 0,
+		checkNear(constant(PhoenixChamberedHeartBehavior.class, "SURVIVE_HEALTH"), 1.0, 1e-6,
+				"the save puts the player on half a heart -- the same value vanilla's own "
+						+ "totem branch uses, and mandatory because the hook runs at zero "
+						+ "health and none of the three grants raises current health");
+		check(constant(PhoenixChamberedHeartBehavior.class, "INVULNERABLE_TICKS") > 0,
 				"with a brief window of immunity so the same blow cannot re-land");
+	}
+
+	/**
+	 * The granted outcome: what vanilla's own formulas actually produce at
+	 * amplifier 9, and that expiry is vanilla's problem rather than ours.
+	 *
+	 * <p>Every number here is re-derived from the shipped constants against the
+	 * real vanilla rule, never restated -- {@code AttributeTemplate.create} is
+	 * {@code amount * (amplifier + 1)}, and Regeneration's cadence is
+	 * {@code 50 >> amplifier}.
+	 */
+	private static void phoenixHeartGrants() {
+		section("Phoenix Chambered Heart: the granted effects' real numbers");
+		HarnessBootstrap.init();
+
+		int amplifier = (int) constant(PhoenixChamberedHeartBehavior.class, "AMPLIFIER");
+		check(amplifier == 9, "amplifier 9 -- displayed level X, since vanilla builds the "
+				+ "label as \"potion.potency.\" + amplifier and potency.1 is \"II\"");
+
+		// --- Health Boost X and Absorption X ------------------------------------
+		// Both register amount 4.0 with ADD_VALUE; the per-level scaling is shared.
+		double perLevel = constant(PhoenixChamberedHeartBehavior.class, "PER_LEVEL_AMOUNT");
+		checkNear(perLevel, 4.0, 1e-9,
+				"vanilla registers 4.0 per level for both Health Boost and Absorption");
+		double granted = PhoenixChamberedHeartBehavior.grantedAmount();
+		checkNear(granted, 40.0, 1e-9,
+				"AttributeTemplate.create's amount * (amplifier + 1) gives +40.0 at level X");
+
+		// Against the REAL attribute, so the claim is about max health rather than
+		// about a number in this file.
+		var maxHealth = net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH;
+		var instance = instanceFor(maxHealth);
+		instance.setBaseValue(20.0);
+		instance.addOrUpdateTransientModifier(
+				new net.minecraft.world.entity.ai.attributes.AttributeModifier(
+						net.minecraft.resources.Identifier.withDefaultNamespace("effect.health_boost"),
+						granted,
+						net.minecraft.world.entity.ai.attributes.AttributeModifier
+								.Operation.ADD_VALUE));
+		checkNear(instance.getValue(), 60.0, 1e-9,
+				"Health Boost X takes a vanilla player from 20.0 to 60.0 max health (30 hearts)");
+
+		// --- composition with the PERMANENT max-health effects -------------------
+		// Same attribute, same operation, different Identifiers -- so they sum
+		// rather than clobber. This is the interaction the brief asked about.
+		addModifier(instance, GlassCannonPactBehavior.ID,
+				constant(GlassCannonPactBehavior.class, "HEALTH_PENALTY"),
+				net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADD_VALUE);
+		addModifier(instance, BrittleBonesBehavior.ID, -4.0,
+				net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADD_VALUE);
+		checkNear(instance.getValue(), 54.0, 1e-9,
+				"stacked with Glass Cannon Pact and Brittle Bones: 20 - 2 - 4 + 40 = 54.0, "
+						+ "so the temporary boost composes additively with the permanent ones");
+		check(instance.getModifiers().size() == 3,
+				"all three modifiers coexist on the instance -- distinct ids, no clobbering");
+
+		// Removing the vanilla effect's modifier must leave the mod's alone. That is
+		// what makes expiry safe: MobEffect.removeAttributeModifiers removes strictly
+		// by the template's own id.
+		instance.removeModifier(
+				net.minecraft.resources.Identifier.withDefaultNamespace("effect.health_boost"));
+		checkNear(instance.getValue(), 14.0, 1e-9,
+				"and when Health Boost expires the run's own -6.0 is exactly what is left");
+		check(instance.getModifiers().size() == 2,
+				"expiry removes one modifier, not the pool");
+
+		// --- Regeneration X ------------------------------------------------------
+		check(PhoenixChamberedHeartBehavior.regenerationInterval(0) == 50,
+				"Regeneration I heals every 50 ticks, per vanilla's 50 >> amplifier");
+		check(PhoenixChamberedHeartBehavior.regenerationInterval(amplifier) == 0,
+				"Regeneration X's shift SATURATES to 0, which vanilla reads as "
+						+ "'heal every tick' rather than 'never'");
+		check(PhoenixChamberedHeartBehavior.regenerationInterval(5) == 1
+						&& PhoenixChamberedHeartBehavior.regenerationInterval(6) == 0,
+				"saturation begins at amplifier 6, so level X is well past it and larger "
+						+ "amplifiers would change nothing");
+
+		int regenTicks = (int) constant(PhoenixChamberedHeartBehavior.class, "REGENERATION_TICKS");
+		check(regenTicks == 100, "Regeneration runs for 100 ticks (5 seconds)");
+		double healed = regenTicks * 1.0; // applyEffectTick heals exactly 1.0F
+		checkNear(healed, 100.0, 1e-9,
+				"which is up to 100.0 HP of healing -- 1.0 per tick, every tick");
+		double toFill = 60.0 - constant(PhoenixChamberedHeartBehavior.class, "SURVIVE_HEALTH");
+		check(healed > toFill,
+				"comfortably more than the " + (int) toFill + " HP needed to fill the boosted "
+						+ "bar, so the fill completes in about " + (int) toFill + " ticks and "
+						+ "the rest are no-ops (applyEffectTick checks health < maxHealth)");
+
+		// --- durations -----------------------------------------------------------
+		check(constant(PhoenixChamberedHeartBehavior.class, "HEALTH_BOOST_TICKS") == 600
+						&& constant(PhoenixChamberedHeartBehavior.class, "ABSORPTION_TICKS") == 600,
+				"Health Boost and Absorption both run 600 ticks (30 seconds)");
+
+		// --- expiry leaves nothing dangling, and it is vanilla that guarantees it --
+		// LivingEntity.onAttributeUpdated clamps health down when MAX_HEALTH falls and
+		// absorption down when MAX_ABSORPTION falls; MAX_ABSORPTION's default is 0.
+		var maxAbsorption = net.minecraft.world.entity.ai.attributes.Attributes.MAX_ABSORPTION;
+		checkNear(maxAbsorption.value().getDefaultValue(), 0.0, 1e-9,
+				"MAX_ABSORPTION defaults to 0.0, so the absorption pool drains itself on "
+						+ "expiry with no mod-side bookkeeping");
+		check(Checks.classReferences(net.minecraft.world.entity.LivingEntity.class,
+						"refreshDirtyAttributes"),
+				"and LivingEntity's own effect loop calls refreshDirtyAttributes, which is "
+						+ "what runs the clamps -- expiry is entirely vanilla's");
+
+		// The mod must own no timer for any of this.
+		check(!Checks.hasMethod(PhoenixChamberedHeartBehavior.class, "tick"),
+				"the effect has no tick method -- durations are MobEffectInstance's, not ours");
+		check(EffectBehaviors.get(PhoenixChamberedHeartBehavior.ID)
+						instanceof com.entropymod.entropy.HookEffectBehavior,
+				"and it is still a HookEffectBehavior: no per-player state to leak");
 	}
 
 	/** Idempotency, no-repeat and persistence across this batch. */
@@ -2229,13 +2460,13 @@ public final class HarnessMain {
 				"Embrace the Moon now applies four attributes (gravity, jump, safe fall, "
 						+ "fall multiplier)");
 
-		// The two hook-driven ones hold no state of their own, which is what makes
-		// them idempotent and respawn-safe for free.
-		for (String id : List.of(SlipperyGripBehavior.ID, SecondChanceBehavior.ID)) {
-			check(EffectBehaviors.get(id) instanceof com.entropymod.entropy.HookEffectBehavior,
-					id + " is a HookEffectBehavior -- apply() is final and empty, so there is "
-							+ "no per-player state to re-apply or leak");
-		}
+		// Phoenix Chambered Heart holds no state of its own, which is what makes it
+		// idempotent and respawn-safe for free. (Slippery Grip no longer qualifies:
+		// it has one thing to do on apply -- see slipperyGripSpeed.)
+		check(EffectBehaviors.get(PhoenixChamberedHeartBehavior.ID)
+						instanceof com.entropymod.entropy.HookEffectBehavior,
+				PhoenixChamberedHeartBehavior.ID + " is a HookEffectBehavior -- apply() is "
+						+ "final and empty, so there is no per-player state to re-apply or leak");
 
 		// No-repeat.
 		AcquiredEffects acquired = new AcquiredEffects();

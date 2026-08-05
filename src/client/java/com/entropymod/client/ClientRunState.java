@@ -125,10 +125,11 @@ public final class ClientRunState {
 	 * Slippery Grip, read by {@code ClientSprintMixin}.
 	 *
 	 * <p>The client needs its own answer here rather than deferring to the server:
-	 * refusing the sprint locally is what stops the client applying a speed
-	 * modifier the server does not have. See that mixin.
+	 * applying the same compensating speed modifier locally is what stops the
+	 * client predicting movement at vanilla's full sprint bonus while the server
+	 * runs at half. See that mixin.
 	 */
-	public static boolean preventsSprinting() {
+	public static boolean halvesSprintSpeed() {
 		return EFFECTS.contains(SlipperyGripBehavior.ID);
 	}
 

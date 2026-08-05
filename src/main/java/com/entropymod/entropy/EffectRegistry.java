@@ -122,8 +122,9 @@ public final class EffectRegistry {
 		register("behemoth_gauntlets", "Behemoth Gauntlets",
 				"+20 damage bare-handed, but anything you hold hits for a quarter",
 				EffectCategory.COMBAT, EffectPhase.GOOD, 25, 50, true);
-		register("second_chance", "Second Chance",
-				"Once per run, a killing blow leaves you on one heart instead of dead",
+		register("phoenix_chambered_heart", "Phoenix Chambered Heart",
+				"Once per run, a killing blow is refused: you rise on Regeneration, "
+						+ "Health Boost and Absorption X",
 				EffectCategory.SURVIVAL, EffectPhase.GOOD, 25, 50, true);
 		register("glass_cannon_pact", "Glass Cannon Pact",
 				"+50% attack damage, but one heart less to survive on",
@@ -147,7 +148,7 @@ public final class EffectRegistry {
 				EffectCategory.UTILITY, EffectPhase.BAD, 25, 50, true);
 
 		register("slippery_grip", "Slippery Grip",
-				"You can never sprint again",
+				"Sprinting drops you to half your walking speed",
 				EffectCategory.MOVEMENT, EffectPhase.BAD, 25, 50, true);
 		register("giant_size", "Giant Size",
 				"Five times your size: +10 hearts, double jump, 2-block steps, "

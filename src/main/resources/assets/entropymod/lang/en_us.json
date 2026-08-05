@@ -1,0 +1,7 @@
+{
+  "_comment": "Vanilla ships potion.potency.0 through .5 only, because no vanilla source produces an amplifier above 5. Phoenix Chambered Heart grants amplifier 9 (level X), which would otherwise render as the raw key. Lang files from every namespace are merged into one map, so defining a minecraft: key here is the supported fix.",
+  "potion.potency.6": "VII",
+  "potion.potency.7": "VIII",
+  "potion.potency.8": "IX",
+  "potion.potency.9": "X"
+}

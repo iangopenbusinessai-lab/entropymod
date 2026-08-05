@@ -58,7 +58,7 @@ public final class AcquiredEffects {
 	 * Drops an effect from the run.
 	 *
 	 * <p><b>Effects are permanent, so this is not a general un-pick.</b> It exists
-	 * for the one shape that genuinely consumes itself -- Second Chance, which
+	 * for the one shape that genuinely consumes itself -- Phoenix Chambered Heart, which
 	 * spends itself the moment it saves the player. Do not reach for it to build a
 	 * temporary effect: that was removed deliberately, and re-growing it here
 	 * would reintroduce the lifetime ambiguity {@link EffectDefinition} exists to

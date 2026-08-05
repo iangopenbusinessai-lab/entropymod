@@ -19,7 +19,7 @@ import com.entropymod.entropy.behavior.ExposedBehavior;
 import com.entropymod.entropy.behavior.IronSkinBehavior;
 import com.entropymod.entropy.behavior.IronStomachBehavior;
 import com.entropymod.entropy.behavior.IronWillBehavior;
-import com.entropymod.entropy.behavior.SecondChanceBehavior;
+import com.entropymod.entropy.behavior.PhoenixChamberedHeartBehavior;
 import com.entropymod.entropy.behavior.SlipperyGripBehavior;
 import com.entropymod.entropy.behavior.SlowLearnerBehavior;
 import net.minecraft.core.BlockPos;
@@ -311,25 +311,29 @@ public final class EffectHooks {
 		return acquired != null && acquired.contains(SlashedPocketsBehavior.ID);
 	}
 
-	/** True if this player must never sprint (Slippery Grip). */
-	public static boolean preventsSprinting(Player player) {
+	/**
+	 * True if sprinting should cost this player speed instead of gaining it
+	 * (Slippery Grip). Sprinting itself is not blocked -- see
+	 * {@code SlipperyGripSprint} for what happens instead.
+	 */
+	public static boolean halvesSprintSpeed(Player player) {
 		AcquiredEffects acquired = acquired(player);
 		return acquired != null && acquired.contains(SlipperyGripBehavior.ID);
 	}
 
 	/**
-	 * Second Chance's death save. Returns true if the player was rescued and
+	 * Phoenix Chambered Heart's death save. Returns true if the player was rescued and
 	 * vanilla should skip its death branch entirely.
 	 *
 	 * <p>Called from the {@code checkTotemDeathProtection} mixin, so by this point
 	 * vanilla has already zeroed the health -- everything that restores it lives in
-	 * {@code EntropyManager.consumeSecondChance}, which also spends the run flag.
+	 * {@code EntropyManager.consumePhoenixHeart}, which also spends the run flag.
 	 *
 	 * <p>The {@code BYPASSES_INVULNERABILITY} test mirrors vanilla's own first line
 	 * in that method, deliberately: {@code /kill} and the void must still kill. An
 	 * effect that survived {@code /kill} would be a debugging trap.
 	 */
-	public static boolean trySecondChance(Player player, DamageSource source) {
+	public static boolean tryPhoenixHeart(Player player, DamageSource source) {
 		if (!(player instanceof ServerPlayer serverPlayer)) {
 			return false;
 		}
@@ -340,7 +344,7 @@ public final class EffectHooks {
 		if (server == null) {
 			return false;
 		}
-		return EntropyManager.get(server).consumeSecondChance(serverPlayer);
+		return EntropyManager.get(server).consumePhoenixHeart(serverPlayer);
 	}
 
 	/** True if villagers should overcharge this player (Bad Reputation). */
