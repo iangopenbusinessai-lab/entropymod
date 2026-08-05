@@ -403,6 +403,29 @@ nothing to clean up**, and the grants compose with the permanent `MAX_HEALTH`
 effects because each modifier carries its own `Identifier`. A hand-rolled version
 would have had to get all of that right by hand.
 
+**1b. Changing an attribute is not the same as changing a mechanic — sweep for
+every branch that grants the same thing.** Slippery Grip halved sprint speed
+through `MOVEMENT_SPEED` and shipped; sprint-jumping ignored it almost entirely.
+No injection was broken. Vanilla rewards sprinting in **three** independent
+places, and the attribute is only one: `jumpFromGround` adds a **flat 0.2
+blocks/tick** forward impulse that reads no attribute, and
+`Player.getFlyingSpeed` returns `0.02 -> 0.025999999`. The second is the one that
+matters most, because `getFrictionInfluencedSpeed` is
+`onGround() ? getSpeed() * ... : getFlyingSpeed()` — **while airborne
+`MOVEMENT_SPEED` is not consulted at all**, so for the whole of every jump the
+compensator was inert rather than merely outvoted. Measured, the curse's sprint
+was 2.16 b/s on the ground and **6.33 b/s while jumping — faster than walking**,
+i.e. inverted into a reason to sprint.
+
+This is a **fourth** failure mode alongside the three above, and the diagnostic
+that finds it is not a log: it is `javap | grep isSprinting` (or whatever the
+condition is) across the *whole* movement path, before writing anything. The fix
+generalises too — scale **every** branch by one shared factor read from the live
+value, never a second constant. Vanilla's horizontal movement is linear and
+homogeneous in (ground accel, air accel, impulse), so one factor scales every
+sprinting motion by exactly that factor and preserves vanilla's own internal
+ratios (sprint-jumping stays worth the same 27% over flat sprinting).
+
 **2. A mixin's *shape* is part of its correctness when two sides share a target.**
 Slippery Grip's two mixins used to be `@ModifyVariable`s that both forced
 `setSprinting`'s argument false, which chained safely **only because both halves
@@ -522,7 +545,7 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 581 checks currently: the tuning constants as
+same numbers kept being re-derived. 630 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble

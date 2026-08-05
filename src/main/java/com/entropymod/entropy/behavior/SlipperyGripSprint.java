@@ -81,10 +81,35 @@ public final class SlipperyGripSprint {
 	 * turning it into a flat -50%.
 	 */
 	private static double compensatorFor(AttributeInstance instance) {
+		return SlipperyGripBehavior.compensatorAmount(vanillaSprintAmountFor(instance));
+	}
+
+	/**
+	 * The factor every sprint-conferred bonus is scaled by for this entity, read
+	 * from vanilla's live sprint modifier -- the same number, from the same source,
+	 * that {@link #update} folds into the speed compensator.
+	 *
+	 * <p>Used by the sprint-jump impulse and airborne-acceleration mixins. Those
+	 * two bonuses are not attribute modifiers and so cannot be compensated the way
+	 * ground speed is; scaling them by this shared value is what stops the three
+	 * halves of the effect from drifting apart. See {@link SlipperyGripBehavior}
+	 * for why one factor covers all three exactly.
+	 *
+	 * <p>Returns {@code 1.0} -- i.e. "change nothing" -- if the entity has no
+	 * movement-speed attribute at all, so a caller can multiply blind.
+	 */
+	public static double sprintScaleFor(LivingEntity entity) {
+		AttributeInstance instance = entity.getAttribute(Attributes.MOVEMENT_SPEED);
+		if (instance == null) {
+			return 1.0;
+		}
+		return SlipperyGripBehavior.sprintScale(vanillaSprintAmountFor(instance));
+	}
+
+	private static double vanillaSprintAmountFor(AttributeInstance instance) {
 		AttributeModifier vanilla = instance.getModifier(VANILLA_SPRINT_ID);
-		double sprintAmount = vanilla != null
+		return vanilla != null
 				? vanilla.amount()
 				: SlipperyGripBehavior.VANILLA_SPRINT_AMOUNT;
-		return SlipperyGripBehavior.compensatorAmount(sprintAmount);
 	}
 }

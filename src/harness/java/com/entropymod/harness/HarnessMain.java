@@ -109,7 +109,9 @@ public final class HarnessMain {
 		glassCannonHealthFloor();
 		phoenixHeartOnce();
 		phoenixHeartGrants();
+		phoenixHeartKit();
 		slipperyGripSpeed();
+		slipperyGripSprintJump();
 		survivalBatchInvariants();
 		behemothGauntletsBothCases();
 		flamboyantFireOnly();
@@ -2425,6 +2427,204 @@ public final class HarnessMain {
 		check(EffectBehaviors.get(PhoenixChamberedHeartBehavior.ID)
 						instanceof com.entropymod.entropy.HookEffectBehavior,
 				"and it is still a HookEffectBehavior: no per-player state to leak");
+	}
+
+	/**
+	 * The rest of Phoenix Chambered Heart's kit: Speed III, Blindness and the
+	 * Wither death sting.
+	 *
+	 * <p>Every number is read off the <em>live registry</em> rather than restated,
+	 * which is what makes this a check and not a copy of the constants. The
+	 * Blindness assertion in particular is the interesting one: it asserts an
+	 * <b>absence</b>, which is the only way to establish that an amplifier is
+	 * meaningless rather than merely untested.
+	 */
+	private static void phoenixHeartKit() {
+		section("Phoenix Chambered Heart: Speed III, Blindness and the Wither sting");
+
+		int speedAmp = (int) constant(PhoenixChamberedHeartBehavior.class, "SPEED_AMPLIFIER");
+		check(speedAmp == 2, "Speed's raw amplifier is 2 -- displayed level III, by the "
+				+ "amplifier+1 convention confirmed for the level X grants");
+		check((int) constant(PhoenixChamberedHeartBehavior.class, "SPEED_TICKS") == 600,
+				"Speed runs 600 ticks (30s), the same window as Health Boost and Absorption");
+		check(speedAmp <= 5, "and it is within potion.potency.0-5, which vanilla's own lang "
+				+ "file defines -- unlike the level X grants, this needs no key of ours");
+
+		// --- Speed's real template, out of the registry ---
+		var speedMods = new java.util.ArrayList<net.minecraft.world.entity.ai.attributes.AttributeModifier>();
+		var speedAttrs = new java.util.ArrayList<String>();
+		net.minecraft.world.effect.MobEffects.SPEED.value().createModifiers(speedAmp, (attr, mod) -> {
+			speedAttrs.add(attr.value().getDescriptionId());
+			speedMods.add(mod);
+		});
+		check(speedMods.size() == 1, "Speed carries exactly one attribute template");
+		check(speedAttrs.get(0).equals(
+						net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED
+								.value().getDescriptionId()),
+				"and it is on MOVEMENT_SPEED");
+		check(speedMods.get(0).operation()
+						== net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL,
+				"as ADD_MULTIPLIED_TOTAL -- so it composes as a PRODUCT with the sprint "
+						+ "bonus and with Slippery Grip's compensator, never summing into them");
+		checkNear(speedMods.get(0).amount(), PhoenixChamberedHeartBehavior.speedGrantedAmount(), 1e-12,
+				"and the live amount at amplifier " + speedAmp + " matches the shipped "
+						+ "derivation exactly");
+		checkNear(speedMods.get(0).amount(), 0.6000000089406967, 1e-15,
+				"Speed III is +0.6 ADD_MULTIPLIED_TOTAL, i.e. a x1.6 movement-speed multiplier");
+
+		// Ground speed is linear in the attribute, so x1.6 on the attribute IS x1.6
+		// in blocks per second. Driven through the same model the sprint-jump
+		// section validates against vanilla's published figures.
+		double walk = SprintModel.groundSpeedBps(0.1);
+		double boosted = SprintModel.groundSpeedBps(0.1 * (1.0 + speedMods.get(0).amount()));
+		checkNear(boosted / walk, 1.6, 1e-7,
+				"and because ground speed is linear in the attribute, that is exactly x1.6 "
+						+ "in blocks/second: " + fmt(walk) + " -> " + fmt(boosted) + " b/s");
+
+		// --- Blindness carries NO amplifier-sensitive state at all ---
+		int blindAmp = (int) constant(PhoenixChamberedHeartBehavior.class, "BLINDNESS_AMPLIFIER");
+		check(blindAmp == 0, "Blindness ships at amplifier 0");
+		check((int) constant(PhoenixChamberedHeartBehavior.class, "BLINDNESS_TICKS") == 100,
+				"for 100 ticks (5s)");
+		var blindness = net.minecraft.world.effect.MobEffects.BLINDNESS.value();
+		check(blindness.getClass() == net.minecraft.world.effect.MobEffect.class,
+				"and vanilla registers it as a BARE MobEffect, not a subclass -- so it "
+						+ "overrides no tick behaviour that could read an amplifier");
+		for (int amp = 0; amp <= 9; amp++) {
+			int[] count = {0};
+			blindness.createModifiers(amp, (attr, mod) -> count[0]++);
+			check(count[0] == 0,
+					"Blindness produces zero attribute modifiers at amplifier " + amp);
+		}
+		check(blindness.getCategory()
+						== net.minecraft.world.effect.MobEffectCategory.HARMFUL,
+				"it is HARMFUL, so a milk bucket clears it -- the counterplay is vanilla's");
+
+		// --- the sound resolves, and is the Wither's, not a guess ---
+		var wither = net.minecraft.sounds.SoundEvents.WITHER_DEATH;
+		check(wither.location().toString().equals("minecraft:entity.wither.death"),
+				"SoundEvents.WITHER_DEATH is entity.wither.death");
+		var holder = net.minecraft.core.registries.BuiltInRegistries.SOUND_EVENT
+				.wrapAsHolder(wither);
+		check(holder.kind() == net.minecraft.core.Holder.Kind.REFERENCE,
+				"and it wraps as a REGISTRY REFERENCE, so ClientboundSoundPacket sends a "
+						+ "registry id rather than inlining the whole sound definition");
+		checkNear(constant(PhoenixChamberedHeartBehavior.class, "SOUND_VOLUME"), 1.0, 1e-6,
+				"volume 1.0");
+		checkNear(constant(PhoenixChamberedHeartBehavior.class, "SOUND_PITCH"), 1.0, 1e-6,
+				"pitch 1.0");
+		// Player-only delivery is a packet, not a Level.playSound call. Asserting the
+		// absence matters: every playSound overload's Entity parameter is the player
+		// to EXCLUDE, so reaching for one would broadcast and read as correct.
+		check(Checks.classReferences(com.entropymod.entropy.EntropyManager.class,
+						"ClientboundSoundPacket"),
+				"EntropyManager sends the sting as a ClientboundSoundPacket -- addressed to "
+						+ "the rescued player's connection, so nobody else hears it");
+	}
+
+	/**
+	 * Slippery Grip's sprint-jump bypass: the physics model, the three sprint
+	 * bonuses, and the single factor that scales all of them.
+	 *
+	 * <p>The model is validated against vanilla's three published figures before
+	 * anything is concluded from it -- that is what makes the rest of this section
+	 * evidence rather than arithmetic about itself.
+	 */
+	private static void slipperyGripSprintJump() {
+		section("Slippery Grip: the sprint-jump bypass and its fix");
+
+		// --- validate the model first ---
+		checkNear(SprintModel.groundSpeedBps(0.1), 4.3172, 1e-3,
+				"the per-tick model reproduces vanilla's published walking speed 4.317 b/s");
+		checkNear(SprintModel.groundSpeedBps(0.13), 5.6123, 1e-3,
+				"and its published sprinting speed 5.612 b/s");
+		checkNear(SprintModel.jumpingSpeedBps(0.13, true, 1.0, 1.0), 7.1263, 1e-3,
+				"and its published sprint-jumping speed ~7.12 b/s -- three independent "
+						+ "validations before any conclusion is drawn from it");
+
+		// --- the two bonuses the attribute cannot reach ---
+		checkNear(constant(SlipperyGripBehavior.class, "VANILLA_SPRINT_JUMP_IMPULSE"), 0.2, 1e-12,
+				"vanilla's sprint-jump impulse is a FLAT 0.2 blocks/tick, read from no "
+						+ "attribute -- LivingEntity.jumpFromGround");
+		double airWalk = constant(SlipperyGripBehavior.class, "VANILLA_AIR_ACCEL_WALKING");
+		double airSprint = constant(SlipperyGripBehavior.class, "VANILLA_AIR_ACCEL_SPRINTING");
+		checkNear(airSprint / airWalk, 1.3, 1e-6,
+				"and airborne acceleration is 0.02 -> 0.025999999 when sprinting, which is "
+						+ "the SAME x1.3 as the speed modifier");
+		check(Checks.classReferences(net.minecraft.world.entity.LivingEntity.class,
+						"getFlyingSpeed"),
+				"getFrictionInfluencedSpeed falls through to getFlyingSpeed, so MOVEMENT_SPEED "
+						+ "is not consulted at all while airborne");
+
+		// --- the bug, quantified ---
+		double cursedAttr = 0.1 * constant(SlipperyGripBehavior.class, "SPRINT_FRACTION");
+		double cursedGround = SprintModel.groundSpeedBps(cursedAttr);
+		checkNear(cursedGround, SprintModel.groundSpeedBps(0.1) * 0.5, 1e-9,
+				"cursed ground sprinting is exactly half of walking, as the effect claims: "
+						+ fmt(cursedGround) + " b/s");
+		double broken = SprintModel.jumpingSpeedBps(cursedAttr, true, 1.0, 1.0);
+		check(broken > SprintModel.groundSpeedBps(0.1),
+				"BUT with only the speed modifier scaled, sprint-JUMPING reaches "
+						+ fmt(broken) + " b/s -- FASTER than simply walking, so the curse was "
+						+ "not merely evaded but inverted into a reason to sprint");
+		check(broken / SprintModel.jumpingSpeedBps(0.13, true, 1.0, 1.0) > 0.85,
+				"it retained over 85% of vanilla's sprint-jump speed");
+
+		// --- scaling only the impulse is NOT enough ---
+		double scale = SlipperyGripBehavior.sprintScale(SlipperyGripBehavior.VANILLA_SPRINT_AMOUNT);
+		checkNear(scale, 0.5 / 1.3, 1e-6, "the shared scale factor is SPRINT_FRACTION/(1+0.3)");
+		checkNear(scale, 1.0 + SlipperyGripBehavior.compensatorAmount(
+						SlipperyGripBehavior.VANILLA_SPRINT_AMOUNT), 1e-15,
+				"and it is the SAME number the speed compensator is built from -- one "
+						+ "derivation, so the three halves cannot drift apart");
+		double impulseOnly = SprintModel.jumpingSpeedBps(cursedAttr, true, scale, 1.0);
+		check(impulseOnly > SprintModel.groundSpeedBps(0.1),
+				"scaling ONLY the jump impulse still leaves sprint-jumping at "
+						+ fmt(impulseOnly) + " b/s, above walking -- both bonuses are needed");
+
+		// --- the fix, and the exactness that justifies it ---
+		double fixed = SprintModel.jumpingSpeedBps(cursedAttr, true, scale, scale);
+		double vanillaJump = SprintModel.jumpingSpeedBps(0.13, true, 1.0, 1.0);
+		checkNear(fixed, vanillaJump * scale, 1e-6,
+				"with all three scaled by one factor, sprint-jumping is EXACTLY that factor "
+						+ "of vanilla's -- the horizontal system is linear and homogeneous in "
+						+ "(ground accel, air accel, impulse): " + fmt(fixed) + " b/s");
+		check(fixed < SprintModel.groundSpeedBps(0.1),
+				"and it is now slower than walking, which is what the curse claims");
+		checkNear(fixed / cursedGround, vanillaJump / SprintModel.groundSpeedBps(0.13), 1e-6,
+				"sprint-jumping is still worth the same ~27% over flat sprinting that it is "
+						+ "in vanilla -- the system is scaled, not clipped");
+
+		// --- walking is still untouched ---
+		checkNear(SprintModel.jumpingSpeedBps(0.1, false, scale, scale),
+				SprintModel.jumpingSpeedBps(0.1, false, 1.0, 1.0), 1e-12,
+				"walking and walk-jumping are bit-identical either way: both bonuses are "
+						+ "inside vanilla's own isSprinting branches");
+
+		// --- the mixins are scoped so exactly one side ever acts ---
+		check(Checks.classReferences(com.entropymod.mixin.LivingEntitySprintJumpMixin.class,
+						"ServerLevel"),
+				"the common sprint-jump mixin is scoped to ServerLevel");
+		check(Checks.classReferences(com.entropymod.mixin.PlayerFlyingSpeedMixin.class,
+						"ServerLevel"),
+				"and so is the common air-control mixin -- EffectHooks answers 'no effect' on "
+						+ "the client by design, so an unscoped half would fight its twin");
+		check(Checks.classReferences(com.entropymod.mixin.PlayerFlyingSpeedMixin.class,
+						"isSprinting"),
+				"the air-control mixin gates on isSprinting, without which walking's 0.02 "
+						+ "would be scaled too");
+		check(Checks.classReferences(com.entropymod.mixin.PlayerFlyingSpeedMixin.class,
+						"getAbilities"),
+				"and on the flying flag, leaving creative flight out of scope");
+		check(Checks.classReferences(com.entropymod.entropy.behavior.SlipperyGripSprint.class,
+						"sprintScale"),
+				"and both read their factor from SlipperyGripSprint.sprintScaleFor, i.e. off "
+						+ "vanilla's LIVE sprint modifier rather than a second constant");
+	}
+
+	/** Four decimal places, for reporting derived blocks-per-second figures. */
+	private static String fmt(double v) {
+		return String.format(java.util.Locale.ROOT, "%.4f", v);
 	}
 
 	/** Idempotency, no-repeat and persistence across this batch. */

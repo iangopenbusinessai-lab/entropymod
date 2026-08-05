@@ -10,9 +10,13 @@ import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import net.fabricmc.fabric.api.networking.v1.PlayerLookup;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.util.datafix.DataFixTypes;
@@ -608,6 +612,23 @@ public class EntropyManager extends SavedData {
 		player.addEffect(new MobEffectInstance(MobEffects.REGENERATION,
 				PhoenixChamberedHeartBehavior.REGENERATION_TICKS,
 				PhoenixChamberedHeartBehavior.AMPLIFIER));
+		player.addEffect(new MobEffectInstance(MobEffects.SPEED,
+				PhoenixChamberedHeartBehavior.SPEED_TICKS,
+				PhoenixChamberedHeartBehavior.SPEED_AMPLIFIER));
+		player.addEffect(new MobEffectInstance(MobEffects.BLINDNESS,
+				PhoenixChamberedHeartBehavior.BLINDNESS_TICKS,
+				PhoenixChamberedHeartBehavior.BLINDNESS_AMPLIFIER));
+		// Addressed to this player's connection rather than played into the level:
+		// every Level.playSound overload broadcasts (its Entity parameter is the
+		// player to EXCLUDE), and this mod is singleplayer-scoped. See the behavior
+		// class for the one-line broadcast alternative.
+		player.connection.send(new ClientboundSoundPacket(
+				BuiltInRegistries.SOUND_EVENT.wrapAsHolder(SoundEvents.WITHER_DEATH),
+				SoundSource.PLAYERS,
+				player.getX(), player.getY(), player.getZ(),
+				PhoenixChamberedHeartBehavior.SOUND_VOLUME,
+				PhoenixChamberedHeartBehavior.SOUND_PITCH,
+				player.getRandom().nextLong()));
 		player.sendSystemMessage(Component.literal(
 				"[Entropy] Phoenix Chambered Heart burns away -- you rise from the ash."));
 

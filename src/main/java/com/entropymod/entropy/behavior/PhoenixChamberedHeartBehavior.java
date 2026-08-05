@@ -76,6 +76,52 @@ import com.entropymod.entropy.HookEffectBehavior;
  * seconds, on top of 40 absorption available immediately -- a 100 HP pool at the
  * instant the killing blow was refused.
  *
+ * <h2>Three more grants, on the same trigger</h2>
+ *
+ * <p>Added to the same moment, applied together with the three above rather than
+ * on any schedule of their own.
+ *
+ * <table border="1">
+ *   <caption>The rest of the kit</caption>
+ *   <tr><th>grant</th><th>amplifier</th><th>duration</th><th>real result</th></tr>
+ *   <tr><td>Speed III</td><td>2</td><td>600t (30s)</td>
+ *       <td>{@code +0.6} {@code ADD_MULTIPLIED_TOTAL} on {@code MOVEMENT_SPEED}
+ *           -- a <b>x1.6</b> multiplier, i.e. 4.3172 -&gt; <b>6.9075 b/s</b>
+ *           walking</td></tr>
+ *   <tr><td>Blindness</td><td>0</td><td>100t (5s)</td>
+ *       <td>no attribute template and no amplifier-sensitive behaviour at all --
+ *           see {@link #BLINDNESS_AMPLIFIER}</td></tr>
+ *   <tr><td>{@code entity.wither.death}</td><td>--</td><td>--</td>
+ *       <td>played to the rescued player only, at their own position</td></tr>
+ * </table>
+ *
+ * <p><b>Speed III's number is exact, not simulated.</b> Vanilla registers the
+ * Speed effect as {@code MOVEMENT_SPEED}, {@code 0.20000000298023224},
+ * {@code ADD_MULTIPLIED_TOTAL} (javap-verified from {@code MobEffects}'
+ * {@code <clinit>}), and {@code AttributeTemplate.create} scales that by
+ * {@code amplifier + 1}, giving {@code 0.6000000089406967} at amplifier 2. Ground
+ * speed is linear in the attribute, so the attribute multiplier <em>is</em> the
+ * speed multiplier; {@link #speedGrantedAmount} records the derivation.
+ *
+ * <p>Because the operation is {@code ADD_MULTIPLIED_TOTAL} it composes as a
+ * product with every other modifier in that pass rather than summing into one.
+ * Two consequences worth stating: sprinting during the window is
+ * {@code x1.3 x 1.6 = x2.08} of walking base, and a run also holding <b>Slippery
+ * Grip</b> keeps that curse intact -- its compensator is a separate factor in the
+ * same product, so sprinting stays at half the (now boosted) walking speed
+ * instead of one effect cancelling the other.
+ *
+ * <p><b>The sound is player-only, deliberately.</b>
+ * {@code SoundEvents.WITHER_DEATH} ({@code entity.wither.death}) is delivered as
+ * a {@code ClientboundSoundPacket} straight to the rescued player's connection,
+ * so nobody else hears it. Every {@code Level.playSound} overload is a broadcast
+ * -- its {@code Entity} parameter is the player to <em>exclude</em>, not the one
+ * to target -- and vanilla's own {@code Player.playServerSideSound} passes
+ * {@code null} there, i.e. tells everyone. This project is singleplayer-scoped,
+ * so the personal version is the honest default; broadcasting instead is a
+ * one-line change to
+ * {@code level.playSound(null, x, y, z, SoundEvents.WITHER_DEATH, SoundSource.PLAYERS, 1f, 1f)}.
+ *
  * <h2>Setting the health is still mandatory</h2>
  *
  * <p>None of the three grants can replace it. The hook runs <em>after</em> health
@@ -168,6 +214,76 @@ public final class PhoenixChamberedHeartBehavior extends HookEffectBehavior {
 	 * {@code amplifier + 1} by {@code AttributeTemplate.create}.
 	 */
 	public static final double PER_LEVEL_AMOUNT = 4.0;
+
+	/**
+	 * Speed III -- displayed level three, so the raw amplifier is two, by the same
+	 * {@code "potion.potency." + amplifier} convention confirmed for
+	 * {@link #AMPLIFIER}. Unlike the three grants above this one is well inside the
+	 * range vanilla's own lang file covers ({@code potion.potency.0} through
+	 * {@code .5}), so it needs no translation key of the mod's own.
+	 */
+	public static final int SPEED_AMPLIFIER = 2;
+
+	/** Speed III: 30 seconds, matching the Health Boost and Absorption window. */
+	public static final int SPEED_TICKS = 600;
+
+	/**
+	 * Per-level amount vanilla's Speed effect registers, javap-verified from
+	 * {@code MobEffects}' {@code <clinit>}: {@code MOVEMENT_SPEED},
+	 * {@code 0.20000000298023224}, {@code ADD_MULTIPLIED_TOTAL}.
+	 *
+	 * <p><b>The operation is what makes the resulting number exact.</b>
+	 * {@code AttributeInstance.calculateValue}'s third pass is a product
+	 * ({@code e *= 1 + amount} per modifier), so this composes multiplicatively
+	 * with vanilla's sprint bonus and with Slippery Grip's compensator rather than
+	 * summing into either.
+	 */
+	public static final double SPEED_PER_LEVEL_AMOUNT = 0.20000000298023224;
+
+	/**
+	 * What Speed III is actually worth: {@code 0.2 x (2 + 1) = 0.6}, i.e. a
+	 * {@code x1.6} multiplier on the movement-speed total.
+	 *
+	 * <p>Ground speed is <em>linear</em> in the attribute -- vanilla's friction
+	 * recurrence settles at {@code v = a / (1 - 0.546)} with
+	 * {@code a = speed x 0.21600002/0.6^3 x 0.98} -- so {@code x1.6} on the
+	 * attribute is exactly {@code x1.6} on blocks per second, with no simulation
+	 * needed to convert. Against the player's 0.1 base that is
+	 * {@code 4.3172 -> 6.9075 b/s} walking and {@code 5.6123 -> 8.9797 b/s}
+	 * sprinting.
+	 */
+	public static double speedGrantedAmount() {
+		return SPEED_PER_LEVEL_AMOUNT * (SPEED_AMPLIFIER + 1);
+	}
+
+	/**
+	 * Blindness: <b>amplifier 0, and no other value would mean anything.</b>
+	 *
+	 * <p>Verified rather than assumed, because "level I" is a guess elsewhere.
+	 * {@code MobEffects}' {@code <clinit>} registers blindness as a bare
+	 * {@code new MobEffect(MobEffectCategory.HARMFUL, 2039587)} -- the plain class,
+	 * not a subclass, with <b>no {@code addAttributeModifier} call attached</b>.
+	 * So it carries no {@code AttributeTemplate} to scale by
+	 * {@code amplifier + 1} and overrides no tick behaviour that could read the
+	 * amplifier; every consumer treats it as the boolean
+	 * {@code hasEffect(BLINDNESS)}. A higher amplifier would change the tooltip
+	 * text and nothing else.
+	 */
+	public static final int BLINDNESS_AMPLIFIER = 0;
+
+	/** Blindness: 5 seconds -- long enough to sell the moment, short enough to fight out of. */
+	public static final int BLINDNESS_TICKS = 100;
+
+	/**
+	 * Volume and pitch for the Wither death sting. Volume 1.0 is vanilla's own
+	 * default for an entity sound; since the packet is addressed to the rescued
+	 * player and positioned on them, they hear it at full strength regardless of
+	 * {@code SoundEvent.getRange}.
+	 */
+	public static final float SOUND_VOLUME = 1.0f;
+
+	/** @see #SOUND_VOLUME */
+	public static final float SOUND_PITCH = 1.0f;
 
 	/** What one of those effects is actually worth at {@link #AMPLIFIER}. */
 	public static double grantedAmount() {

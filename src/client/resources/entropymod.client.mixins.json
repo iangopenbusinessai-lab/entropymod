@@ -5,6 +5,8 @@
 	"client": [
 		"EntropyModClientMixin",
 		"CameraMixin",
+		"ClientFlyingSpeedMixin",
+		"ClientSprintJumpMixin",
 		"ClientSprintMixin",
 		"KeyboardInputMixin"
 	],
