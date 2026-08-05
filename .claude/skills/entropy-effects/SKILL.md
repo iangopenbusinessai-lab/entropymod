@@ -1742,6 +1742,229 @@ a reload — the flag is not quietly defaulting to spent.
 permanent; it exists for the one shape that consumes itself. Do not reach for it
 to build a temporary effect.
 
+#### Slippery Grip: the sprint-jump bypass, and the sweep that should have happened first
+**Reported as "sprint-jumping ignores the curse". It did, and the cause was not a
+broken mixin.** The hypothesis going in was a separate forward-velocity boost on
+sprint-jumps; that was **confirmed**, and a second bypass was found alongside it
+that turned out to matter more.
+
+**Vanilla rewards sprinting in three independent places** — found by sweeping
+`isSprinting()` across the movement path, which is the diagnostic that should
+precede any attribute-based movement effect:
+
+| # | site | what it grants | reads the attribute? |
+|---|---|---|---|
+| 1 | `LivingEntity.setSprinting` | `MOVEMENT_SPEED` x1.3 | yes — this is the modifier |
+| 2 | `LivingEntity.jumpFromGround` | **flat +0.2 blocks/tick** forward | **no** |
+| 3 | `Player.getFlyingSpeed` | air accel `0.02 -> 0.025999999` | **no** |
+
+Bonus 2, javap-verified — the `isSprinting` branch of `jumpFromGround`:
+
+```java
+addDeltaMovement(new Vec3(-sin(g) * 0.2, 0.0, cos(g) * 0.2));   // g = yRot * 0.017453292f
+```
+
+**Bonus 3 is the one that made this severe**, and it is the durable finding:
+
+```java
+getFrictionInfluencedSpeed(f) =
+    onGround() ? getSpeed() * (0.21600002f / (f*f*f))
+               : getFlyingSpeed();
+```
+
+**While airborne `MOVEMENT_SPEED` is not consulted at all.** For the twelve-odd
+ticks of every jump the compensator was not outvoted, it was *switched off* — and
+a player who jumps continuously spends most of their time in that state. Note
+`0.025999999 / 0.02` is `1.3`, the same 1.3 as the modifier, so vanilla applies
+its sprint bonus twice by two unrelated routes.
+
+**The magnitudes, from a per-tick model validated against three published vanilla
+figures before anything was concluded from it** (walking 4.3172, sprinting
+5.6123, sprint-jumping 7.1263 b/s — all reproduced from javap-verified constants;
+the model is `src/harness/java/com/entropymod/harness/SprintModel.java`, and it is
+Minecraft-import-free like `CropSchedule` and `TramplePath`):
+
+| | vanilla | curse, speed modifier only | as shipped |
+|---|---|---|---|
+| walking | 4.3172 | 4.3172 | 4.3172 |
+| sprinting, ground | 5.6123 | 2.1586 | 2.1586 |
+| **sprint-jumping** | 7.1263 | **6.3298** | **2.7409** |
+
+The middle column is the bug: **89% of vanilla's sprint-jump speed retained, 2.93x
+the cursed ground sprint, and half again faster than simply walking** — the curse
+was not evaded, it was inverted into a reason to sprint. **Scaling only the jump
+impulse gives 5.0794 b/s, still faster than walking**; both bonuses are needed, and
+fixing the reported one alone would have looked like a fix and not been one.
+
+#### The fix: one factor, applied to all three, is exact rather than approximate
+Vanilla's horizontal movement is **linear and homogeneous** in the triple (ground
+acceleration, air acceleration, jump impulse) — the ground recurrence
+`v <- 0.546 v + a` is linear, the airborne one `v <- 0.91 v + a` is linear, the
+impulse is added, and the vertical motion that sets the airtime is untouched. So
+scaling all three by one factor scales **every** sprinting motion by exactly that
+factor, whatever the player is doing.
+
+`SlipperyGripBehavior.sprintScale(v) = SPRINT_FRACTION / (1 + v)` = **0.5/1.3 =
+0.3846**, and `compensatorAmount` is now *derived from it* (`sprintScale - 1`)
+rather than restated, so the three halves cannot drift apart. Both new mixins read
+it via `SlipperyGripSprint.sprintScaleFor`, off vanilla's **live**
+`minecraft:sprinting` modifier — same discipline as the existing compensator.
+
+**The check that proves it is the right rule, not merely a working one:**
+`7.1263 / 5.6123 = 1.2698` and `2.7409 / 2.1586 = 1.2698`. Sprint-jumping is still
+worth the same 27% over flat-out sprinting that it is in vanilla. **The system is
+scaled, not clipped**, which is what keeps the movement legible instead of merely
+slow — and it is asserted, so a later retune of one branch alone will fail.
+
+#### Two more javap findings from that fix
+- **`ServerPlayer` DOES override `jumpFromGround`** — exactly the subclass trap —
+  but its bytecode opens with `invokespecial Player.jumpFromGround` before the
+  jump stat and food exhaustion, so the super call is unconditional and a
+  `LivingEntity` injection is always reached. Checked, not assumed.
+- **`Player` overrides `getFlyingSpeed` and never calls `super`.** Targeting
+  `LivingEntity.getFlyingSpeed` would build green and never run for a player.
+  `Player` is the outermost override (`Avatar`, `ServerPlayer` and `LocalPlayer`
+  do not override it), and its only consumer is the `getFrictionInfluencedSpeed`
+  branch above — so nothing else can be disturbed.
+
+**`@ModifyArg`, not `@Redirect`, when two sides share a call site.** The common and
+client halves both target `jumpFromGround`'s single `addDeltaMovement(Vec3)` call;
+**two `@Redirect`s on one instruction is an apply-time conflict**, whereas
+`@ModifyArg` handlers chain and each side returns the vector untouched when it is
+not the authority. Side scoping is still required (`ServerLevel` / `LocalPlayer`)
+— see the shape rule in CLAUDE.md — because scaling twice would square the factor.
+
+**Both client halves are load-bearing, unlike Slashed Pockets' cosmetic gap.**
+Neither bonus is an attribute, so there is nothing for the server to sync; each
+side computes its own, and a server-only fix would leave the player visibly
+lurching at vanilla speed and be corrected only by rubber-banding.
+
+**Known limit, stated rather than left to be found: creative flight is untouched.**
+`getFlyingSpeed`'s `abilities.flying` branch rewards sprinting on a different basis
+(x2, not x1.3) and flight ignores `MOVEMENT_SPEED` entirely, so a run holding
+Creative Flight has always been able to fly out from under this curse and still
+can. Extending the effect there is a decision about how two effects compose, not
+part of repairing this one.
+
+#### "Releasing Ctrl doesn't stop sprinting" — INVESTIGATED, verdict: vanilla. No fix.
+Reported as a possible regression from the sprint mixins: releasing the sprint key
+while still holding forward does not end the sprint; it persists until forward is
+released too. **That is vanilla's own behaviour, unchanged by this project.**
+Recorded because it looks exactly like a stuck-state bug the mixins could have
+caused, and re-deriving the answer would cost a session.
+
+**`Input.sprint()` is read EXACTLY ONCE in `LocalPlayer.aiStep`** — a grep of the
+method's bytecode returns a count of 1 — and that one read is the *start* branch,
+at offset 432:
+
+```java
+// offsets 425-441: the only consumer of the sprint key in the whole method
+if (this.input.keyPresses.sprint()) this.setSprinting(true);
+
+// offsets 443-481: the stop path, which never consults sprint()
+if (this.isSprinting()) {
+    if (this.isSwimming()) { if (shouldStopSwimSprinting()) setSprinting(false); }
+    else                   { if (shouldStopRunSprinting())  setSprinting(false); }
+}
+```
+
+and `shouldStopRunSprinting()`, read off its own bytecode:
+
+```java
+return !isSprintingPossible(getAbilities().flying)          // food <= 6, shallow water, restricted
+    || !input.hasForwardImpulse()                           // <-- the actual stop condition
+    || (horizontalCollision && !minorHorizontalCollision);
+```
+
+**So the sprint key is a latch, not a hold.** It *begins* a sprint; the only things
+that *end* one are losing forward impulse, failing `isSprintingPossible`, or a
+major horizontal collision. `ClientInput.hasForwardImpulse()` is exactly
+`moveVector.y > 1.0E-5f` — pure input, no speed term — so "sprint persists until W
+is released" is a literal restatement of the shipped stop condition. (The
+double-tap-forward route via `sprintTriggerTime`, offsets 376-422, is a second
+*start* path and equally irrelevant to stopping.)
+
+**Ruling out this project, checked rather than argued:**
+
+- **No project source calls `setSprinting(boolean)` at all.** Every occurrence in
+  `src/` is a javadoc mention, a *read* of `isSprinting()` used as a guard, or the
+  `@Inject(method = "setSprinting", at = @At("TAIL"))` declaration itself.
+- **Neither sprint mixin can alter the flag or the argument.** Both are plain
+  TAIL `@Inject`s with a bare `CallbackInfo` — no `cancellable = true`, no
+  `ci.cancel()`, no `@ModifyVariable`, no `@Overwrite`. The only `@ModifyVariable`
+  in the file is a javadoc line describing the **removed** first version, which
+  *did* force the argument false. That version is gone, and this report is what
+  its ghost would look like if it were not.
+- **Nothing on the stop path reads speed.** `shouldStopRunSprinting`,
+  `isSprintingPossible`, `isMovingSlowly`, `isMobilityRestricted` and
+  `hasEnoughFoodToDoExhaustiveManoeuvres` between them contain **zero** references
+  to `getSpeed`, `MOVEMENT_SPEED`, `getAttributeValue` or `getDeltaMovement`. So
+  the compensator cannot reach the state machine even indirectly — which is the
+  non-obvious half, since a speed-derived stop condition would have made Slippery
+  Grip change sprint *timing* as a side effect of changing sprint *speed*.
+- The one nearby piece of project code is `KeyboardInputMixin`, which rebuilds the
+  `Input` record for Randomized Controls / Random Jump — and it passes
+  `in.sprint()` through **unchanged**. (It does permute `moveVector`, so under
+  Randomized Controls the key that supplies forward impulse is not W; that is that
+  effect's documented behaviour, not this one's.)
+
+**The general lesson, and the reason this is filed next to the sprint-jump
+finding:** the previous session's bug was real and the mixins *were* at fault, so
+the prior for "the mixins did it again" was reasonable — and wrong. The cheap
+discriminator is to locate the vanilla state machine and count the reads of the
+input in question **before** looking at the mod at all. One `grep -c` on
+`aiStep`'s bytecode settled this; reasoning from the mixins would not have, because
+their shape is consistent with either answer.
+
+#### Phoenix Chambered Heart's remaining kit: Speed III, Blindness, the Wither sting
+Added to the **same** trigger moment as the three grants above, not on any schedule
+of their own.
+
+| grant | amplifier | duration | what vanilla actually produces |
+|---|---|---|---|
+| Speed III | 2 | 600t (30s) | **+0.6 `ADD_MULTIPLIED_TOTAL`** on `MOVEMENT_SPEED` = **x1.6** |
+| Blindness | **0** | 100t (5s) | nothing amplifier-sensitive at all — see below |
+| `entity.wither.death` | — | — | played to the rescued player only |
+
+**Speed III is exact, and needs no simulation.** `MobEffects`' `<clinit>` registers
+Speed as `MOVEMENT_SPEED`, `0.20000000298023224`, `ADD_MULTIPLIED_TOTAL`, and
+`AttributeTemplate.create` scales by `amplifier + 1` → **0.6000000089406967** at
+amplifier 2. Ground speed is *linear* in the attribute, so the attribute multiplier
+**is** the speed multiplier: **4.3172 -> 6.9075 b/s** walking, **5.6123 -> 8.9797**
+sprinting. Amplifier 2 = displayed III by the same `"potion.potency." + amplifier`
+convention confirmed for the level X grants, and it sits inside vanilla's own
+`potion.potency.0`–`.5` lang range, so **no mod-side key is needed** (unlike the
+level X grants).
+
+Because the operation is `ADD_MULTIPLIED_TOTAL` it composes as a **product**:
+sprinting during the window is `x1.3 x 1.6 = x2.08` of walking base, and **a run
+also holding Slippery Grip keeps that curse intact** — the compensator is a
+separate factor in the same product, so sprinting stays at half the (now boosted)
+walking speed rather than one effect cancelling the other.
+
+**Blindness's amplifier is 0 because no other value would mean anything**, and this
+was verified as an *absence* rather than assumed from "it has no levels". Vanilla
+registers it as a **bare `new MobEffect(HARMFUL, 2039587)`** — the plain class, not
+a subclass — with **no `addAttributeModifier` call attached**. The harness drives
+`createModifiers` at amplifiers 0–9 and asserts **zero** modifiers at every one, and
+asserts the concrete class is `MobEffect` itself, so nothing can read an amplifier.
+A higher value would change the tooltip and nothing else.
+
+**The sound is player-only, and that took a packet.** `SoundEvents.WITHER_DEATH`
+(`entity.wither.death`) is a plain `SoundEvent`, **not** a `Holder.Reference`, so it
+is wrapped with `BuiltInRegistries.SOUND_EVENT.wrapAsHolder(...)` — asserted to come
+back as `Kind.REFERENCE`, so the packet carries a registry id rather than inlining
+the whole definition — and sent as a `ClientboundSoundPacket` to
+`player.connection`.
+
+**Every `Level.playSound` overload is a broadcast**, and this is the trap worth
+recording: its `Entity` parameter is the player to **exclude**, not the one to
+target, and vanilla's own `Player.playServerSideSound` passes `null` there, i.e.
+tells everyone. Reaching for it would read as correct and be wrong. There is no
+`playNotifySound` on `ServerPlayer` in this version. **Broadcasting instead is a
+one-line change** to
+`level.playSound(null, x, y, z, SoundEvents.WITHER_DEATH, SoundSource.PLAYERS, 1f, 1f)`.
+
 #### Glass Cannon Pact: the health floor is safe, and stays safe stacked
 `MAX_HEALTH` floors at **1.0**, not 0 — `sanitizeValue(0)` and
 `sanitizeValue(-100)` both return 1.0. So unlike `GRAVITY`, whose -1.0 floor makes
