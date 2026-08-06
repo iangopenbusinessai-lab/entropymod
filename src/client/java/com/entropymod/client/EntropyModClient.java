@@ -148,7 +148,16 @@ public class EntropyModClient implements ClientModInitializer {
 		//
 		// Only acts when nothing else is on screen, so it cannot stomp another GUI.
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
-			if (client.level == null || client.player == null || client.screen != null) {
+			if (client.level == null || client.player == null) {
+				return;
+			}
+			// Double Jump is ticked before the screen guard: it must keep running
+			// while a GUI is open, or opening the inventory mid-fall would strand
+			// the charge machine mid-state. It reads the jump key, which vanilla
+			// clears via KeyMapping.releaseAll when a screen opens, so a press
+			// cannot be registered through a GUI anyway.
+			ClientDoubleJump.tick(client.player);
+			if (client.screen != null) {
 				return;
 			}
 			if (ClientRunState.runState() == RunState.NOT_STARTED) {
@@ -167,6 +176,8 @@ public class EntropyModClient implements ClientModInitializer {
 			// Same reason: a cached acquired set must not leak into the next world,
 			// or its client-side effects would still be scrambling a fresh run.
 			ClientRunState.reset();
+			// A banked air-jump charge must not survive into the next world either.
+			ClientDoubleJump.reset();
 		});
 
 		// PREVIEW-ONLY command -- FAKE DATA, client-side, never touches the server.

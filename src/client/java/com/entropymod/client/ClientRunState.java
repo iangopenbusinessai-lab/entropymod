@@ -3,6 +3,7 @@ package com.entropymod.client;
 import com.entropymod.entropy.KeybindSnapshot;
 import com.entropymod.entropy.MovementScramble;
 import com.entropymod.entropy.RunState;
+import com.entropymod.entropy.behavior.DoubleJumpBehavior;
 import com.entropymod.entropy.behavior.RandomJumpBehavior;
 import com.entropymod.entropy.behavior.RandomizedControlsBehavior;
 import com.entropymod.entropy.behavior.SlipperyGripBehavior;
@@ -131,6 +132,17 @@ public final class ClientRunState {
 	 */
 	public static boolean halvesSprintSpeed() {
 		return EFFECTS.contains(SlipperyGripBehavior.ID);
+	}
+
+	/**
+	 * Double Jump, read by {@code ClientDoubleJump}.
+	 *
+	 * <p>The client needs its own answer because player jumping is entirely
+	 * client-driven -- {@code ServerPlayer} never writes {@code jumping}, so
+	 * there is no server half that could authorise this.
+	 */
+	public static boolean hasDoubleJump() {
+		return EFFECTS.contains(DoubleJumpBehavior.ID);
 	}
 
 	public static boolean hasUpsideDownCamera() {

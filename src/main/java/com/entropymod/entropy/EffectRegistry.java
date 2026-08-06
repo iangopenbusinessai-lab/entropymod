@@ -129,6 +129,12 @@ public final class EffectRegistry {
 		register("glass_cannon_pact", "Glass Cannon Pact",
 				"+50% attack damage, but one heart less to survive on",
 				EffectCategory.COMBAT, EffectPhase.GOOD, 40, 60, true);
+		register("danger_sense", "Danger Sense",
+				"Hostile mobs within 32 blocks glow -- visible through walls",
+				EffectCategory.UTILITY, EffectPhase.GOOD, 25, 50, true);
+		register("double_jump", "Double Jump",
+				"One extra jump in mid-air, recharged when you land",
+				EffectCategory.MOVEMENT, EffectPhase.GOOD, 25, 50, true);
 		register("crouch_invincibility", "Crouch Invincibility",
 				"Nothing can hurt you while you are sneaking",
 				EffectCategory.SURVIVAL, EffectPhase.GOOD, 25, 50, true);

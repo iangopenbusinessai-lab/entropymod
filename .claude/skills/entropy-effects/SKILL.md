@@ -1965,6 +1965,216 @@ tells everyone. Reaching for it would read as correct and be wrong. There is no
 one-line change** to
 `level.playSound(null, x, y, z, SoundEvents.WITHER_DEATH, SoundSource.PLAYERS, 1f, 1f)`.
 
+#### Danger Sense: Glowing is on the MOB, and cannot be scoped to one observer
+**Verdict: buildable as specified, with one real limitation that is not fixable
+from an effect.** The mechanism was confirmed end to end rather than assumed:
+
+```java
+LivingEntity.isCurrentlyGlowing()                       // override
+    = (!level().isClientSide && hasEffect(MobEffects.GLOWING))
+      || super.isCurrentlyGlowing();
+
+Entity.isCurrentlyGlowing()
+    = level().isClientSide ? getSharedFlag(6) : hasGlowingTag;
+
+LivingEntity.updateDirtyEffects() -> updateGlowingStatus()
+    = setSharedFlag(6, isCurrentlyGlowing());
+```
+
+So the Glowing `MobEffectInstance` is applied **to the target mob, server-side**,
+and drives shared entity flag 6. Two consequences:
+
+- **No per-tick push of our own is needed.** `updateGlowingStatus` is reached from
+  `updateDirtyEffects`, i.e. exactly when the effect set changes. Adding the
+  effect is sufficient.
+- **The glow is visible to EVERY player tracking the mob, not only the holder.**
+  Flag 6 lives in `SHARED_FLAGS_ID` synced data. **There is no per-viewer glow
+  anywhere in vanilla** — no API, no packet, nothing to piggyback on. Making it
+  private would mean rewriting the tracked-data packet per connection: real work,
+  not a flag. Reported rather than silently decided; this project is
+  singleplayer-scoped so in practice there is no observable difference.
+
+**Glowing is a bare `MobEffect(NEUTRAL, 9740385)`** — no subclass, no attribute
+template — so like Blindness the amplifier is meaningless. Asserted as zero
+modifiers at amplifiers 0–4.
+
+#### Refresh-and-expire beats add/remove when you don't own the state
+Danger Sense grants a **20-tick** glow and re-grants it every **10 ticks** while
+the mob is in range. It never calls `removeEffect`.
+
+**That is not laziness, it is the only correct option.** A blanket
+`removeEffect(GLOWING)` would also strip a glow that came from a spectral arrow
+or a command, and the effect has no way to tell whose glow it is. Re-granting
+cannot damage another source either: `MobEffectInstance.update` keeps the
+stronger/longer of the two, so a spectral arrow's 10 seconds survives our
+1-second refreshes intact.
+
+**The stated cost is a trailing glow of ≤1s after a mob leaves the radius**, which
+also removes boundary flicker. The harness pins `scan < duration <= 2 * scan` so a
+later retune cannot silently reintroduce either flicker or a long lingering glow.
+
+**Generalises: when granting vanilla state you do not exclusively own, prefer a
+short refreshed grant over explicit removal.** Expiry is free, composes with other
+sources, and needs no bookkeeping — the same reason Phoenix Chambered Heart grants
+real `MobEffectInstance`s instead of imitating them.
+
+#### An entity query is O(entities), NOT O(volume) — the radius comparison that misleads
+The instinct is to compare Danger Sense's 32-block radius against Green Thumb's 8
+and worry. **The comparison is invalid**, and the reason is the durable finding:
+
+| | Green Thumb | Danger Sense |
+|---|---|---|
+| what is scanned | block positions | entities |
+| box | 17³ = **4,913** | 65³ = **274,625** |
+| real cost | O(volume) | **O(entities in the box)** |
+
+`ServerLevel.getEntitiesOfClass(AABB, ...)` is served by the level's entity
+section storage, so cost is proportional to entities *present*, bounded by the mob
+cap — typically a handful. A 274,625-position block sweep would be infeasible;
+the entity query at the same radius is nearly free, and **widening the radius is
+cheap in a way widening a block scan never is.**
+
+Cost, in the project's usual form: **O(players holding it × entities in a 65-block
+box) every 10 ticks**, each hit costing one `instanceof`, one squared-distance
+compare and at most one `addEffect`. Nothing runs when nobody holds it.
+
+**The AABB is a box and the effect is a sphere**, so a `distanceToSqr` filter
+follows the query. Without it the corners reach `32 × √3 = 55.4` blocks — a **73%
+over-range** that would be nearly impossible to spot in play. Asserted in both
+directions, including at the corner distance specifically.
+
+**"Hostile" is `net.minecraft.world.entity.monster.Enemy`**, vanilla's own marker
+interface — not `MobCategory.MONSTER`, which is a *spawning* category answering a
+different question. Boundary cases that follow, recorded so they are not filed as
+bugs: endermen and zombified piglins **do** glow; wolves, bees and iron golems do
+**not**, even when actively hostile, because their hostility is a state rather
+than a type.
+
+#### Double Jump: `makeJump()` cannot work mid-air, and jumping is client-only
+**Two findings, both of which redirected the implementation.**
+
+**1. Random Jump's mechanism does not transfer.** The obvious move is
+`ClientInput.makeJump()`. `LivingEntity.aiStep`'s jump block is, javap-verified:
+
+```java
+if (this.jumping && this.isAffectedByFluids()) {
+    ...
+    else if ((this.onGround() || (inWater && fluidHeight <= threshold))
+             && this.noJumpDelay == 0) { this.jumpFromGround(); this.noJumpDelay = 10; }
+} else { this.noJumpDelay = 0; }
+```
+
+The jump is **gated on `onGround()`**. A forced press while airborne reaches that
+branch and is discarded — the effect would appear broken rather than absent.
+
+**`jumpFromGround()` itself has no such gate.** Its only guard is
+`getJumpPower() <= 1e-5`; it then sets `deltaMovement.y = max(jumpPower, y)` and
+adds the sprint impulse. Calling it directly mid-air is a real jump with correct
+height, sprint behaviour and (on `ServerPlayer`) the jump statistic and food
+exhaustion. Same discipline as Green Thumb: **drive the schedule yourself, perform
+the change through vanilla's own transition.**
+
+**2. Player jumping is entirely client-driven.** `LivingEntity.jumping` is written
+in exactly one place for a player — `LocalPlayer.applyInput()` — and
+**`ServerPlayer` never writes it at all** (zero `putfield`s). The server never runs
+the jump block for a player and has no jump state machine to keep in step with. So
+there is **no server half to write** and none of the two-sided scoping problem
+Slippery Grip's mixins needed; the motion reaches the server as ordinary movement
+packets, exactly as a normal jump does.
+
+Driven from `END_CLIENT_TICK` rather than a fifth mixin on the movement path. The
+jump is a velocity change consumed by the next tick's movement, so the one-tick
+offset is imperceptible.
+
+#### The charge is read from `onGround()`, and every refused state was decided
+**Reading the charge from `onGround()` rather than counting jumps is what makes a
+third jump impossible by construction** — there is no counter to get out of step,
+and walking off a ledge without jumping still grants exactly one air jump.
+
+The rising edge is also consumed on the ground, which is what forces a
+release-and-press for the second jump instead of a held key spending the charge on
+the tick after takeoff.
+
+**Every state was decided explicitly**, because "does nothing" and "is broken" are
+indistinguishable to a player:
+
+| state | decision | why |
+|---|---|---|
+| ordinary fall / after a normal jump | **jumps** | the effect |
+| creative flight (`abilities.flying`) | **refused** | vertical movement already unlimited; a spent charge would be an invisible no-op |
+| elytra (`isFallFlying()`) | **refused** | an upward poke mid-glide fights the flight model and reads as a stutter |
+| water / lava | **refused** | vanilla already routes a held jump to `jumpInLiquid` (continuous upward motion); spending the charge there would silently disarm the effect for the moment the player surfaces |
+| ladder / vine (`onClimbable()`) | **refused** | already free vertical movement, and a charge spent there is one not available on the fall after |
+| riding | **refused** | the jump would apply to the passenger, not the mount |
+
+**In every refused state the charge is NOT consumed** — that is the half that
+matters, and it is asserted. So is the follow-on: holding the key *through* a
+refused state and then leaving it must not auto-fire a jump the player never
+asked for, which is why the held flag is updated on every tick regardless of
+outcome.
+
+`DoubleJumpState` is **free of Minecraft imports** — same discipline as
+`MovementScramble` and `TramplePath` — specifically so all of the above is driven
+headlessly against shipped code. Note the client driver itself is **not**
+harness-reachable: the harness classpath is the main source set only, the same
+property that pushed the keybind snapshot to server-side persistence.
+
+#### Ore Sense: INVESTIGATED, NOT BUILT — findings, and why it stopped here
+**No code was written for this effect and it is not registered.** The
+investigation is complete and is recorded because it is the expensive part; the
+renderer is not, and shipping unverified render code would break this project's
+own rule that an effect is done when a change has been *observed*, not when it
+compiles.
+
+**Finding 1 — there is no `#minecraft:ores` tag.** `BlockTags` ships only
+per-material tags: `COAL_ORES`, `IRON_ORES`, `COPPER_ORES`, `GOLD_ORES`,
+`REDSTONE_ORES`, `LAPIS_ORES`, `DIAMOND_ORES`, `EMERALD_ORES`. There is no union
+tag, so "ores" must be assembled from those eight — and note that **ancient debris
+and nether quartz ore are in none of them**, while `GOLD_ORES` *does* include
+nether gold ore. Resolve the contents by reading the shipped tag JSON out of the
+jar, exactly as Clumsy Digger's harness check does for
+`#minecraft:enchantable/mining`; do not hardcode a list.
+
+**Finding 2 — `WorldRenderEvents` does not exist.** Every world-render tutorial
+online uses `net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents`. In
+this Fabric API version (`fabric-rendering-v1` 23.3.1) that class is **gone**,
+replaced by `...rendering.v1.level.LevelRenderEvents`, whose events take a
+`LevelRenderContext` (`poseStack()`, `bufferSource()`, `submitNodeCollector()`) or
+a `LevelExtractionContext` (`level()`, `camera()`, `deltaTracker()`). Same shape
+of trap as `HudRenderCallback` → `HudElementRegistry`. The usable hooks are
+`AFTER_TRANSLUCENT_TERRAIN` and `BEFORE_GIZMOS`.
+
+**Finding 3 — the render stack itself is different, and this is what stopped it.**
+`RenderType` has moved to `net.minecraft.client.renderer.rendertype.RenderType`
+and no longer exposes static factories like `lines()`; render state is now built
+from `RenderPipeline` **snippets** (`RenderPipelines.LINES_SNIPPET`,
+`DEBUG_FILLED_SNIPPET`) with an explicit `withDepthStencilState(DepthStencilState)`,
+and drawing goes through `RenderType.create(String, RenderSetup)` and a
+`SubmitNodeCollector`. `ShapeRenderer.renderShape(PoseStack, VertexConsumer,
+VoxelShape, ...)` is the box-drawing helper and still exists.
+
+So the see-through requirement means **defining a custom `RenderPipeline` with
+depth testing disabled** — `RenderPipelines.DEBUG_FILLED_BOX` is the nearest
+vanilla precedent — rather than picking an existing constant. That is a real piece
+of work against a stack that changed this version, and none of it is verifiable
+without launching the game.
+
+**Finding 4 — cost, and it is the good news.** Unlike Danger Sense, this genuinely
+is a volume scan: an 8-block radius is a 17³ box = **4,913 positions**, exactly
+Green Thumb's number. But it can be **entirely client-side** — the client already
+has the blocks in its own `ClientLevel`, so no server involvement and no payload
+are needed beyond the `ClientEffectsPayload` bit saying the run holds the effect.
+A cached scan on the Green Thumb cadence (rescan every 20 ticks, redraw from the
+cached list every frame) keeps per-frame cost at O(ores found), which for a real
+vein is tens of boxes. **Do not scan per frame.**
+
+**Recommended shape if it is picked up:** `OreSenseScan` in the main source set,
+Minecraft-free where possible so the radius boundary is harness-testable (the same
+sphere-vs-box leak Danger Sense guards against applies here: an unfiltered 17³ box
+reaches `8 × √3 = 13.9` blocks); the tag union resolved from the eight shipped
+tags; a client-side cache refreshed every 20 ticks; and a custom no-depth pipeline
+registered once at client init.
+
 #### Glass Cannon Pact: the health floor is safe, and stays safe stacked
 `MAX_HEALTH` floors at **1.0**, not 0 — `sanitizeValue(0)` and
 `sanitizeValue(-100)` both return 1.0. So unlike `GRAVITY`, whose -1.0 floor makes

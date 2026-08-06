@@ -5,6 +5,7 @@ import com.entropymod.entropy.EffectBehaviors;
 import com.entropymod.entropy.EntropyAttributes;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.entropy.growth.BlightTouchedTrample;
+import com.entropymod.entropy.growth.DangerSenseGlow;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.entropy.growth.SlashedPocketsSweep;
 import com.entropymod.network.ChoiceMadePayload;
@@ -175,6 +176,7 @@ public class EntropyMod implements ModInitializer {
 			// neither sees a slot written directly (commands, other mods). Returns
 			// on the first check for anyone without the effect.
 			SlashedPocketsSweep.tick(server);
+			DangerSenseGlow.tick(server);
 		});
 
 		// Both services' state is transient, not part of the run, so neither is

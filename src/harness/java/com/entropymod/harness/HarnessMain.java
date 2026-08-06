@@ -5,6 +5,9 @@ import com.entropymod.entropy.EffectDefinition;
 import com.entropymod.entropy.EffectHooks;
 import com.entropymod.entropy.EffectRegistry;
 import com.entropymod.entropy.EntropyManager;
+import com.entropymod.entropy.behavior.DoubleJumpBehavior;
+import com.entropymod.entropy.behavior.DangerSenseBehavior;
+import com.entropymod.entropy.DoubleJumpState;
 import com.entropymod.entropy.EffectPhase;
 import com.entropymod.entropy.KeybindSnapshot;
 import com.entropymod.entropy.MovementScramble;
@@ -112,6 +115,7 @@ public final class HarnessMain {
 		phoenixHeartKit();
 		slipperyGripSpeed();
 		slipperyGripSprintJump();
+		senseBatch();
 		survivalBatchInvariants();
 		behemothGauntletsBothCases();
 		flamboyantFireOnly();
@@ -2620,6 +2624,247 @@ public final class HarnessMain {
 						"sprintScale"),
 				"and both read their factor from SlipperyGripSprint.sprintScaleFor, i.e. off "
 						+ "vanilla's LIVE sprint modifier rather than a second constant");
+	}
+
+	private static final List<String> SENSE_BATCH = List.of(
+			DangerSenseBehavior.ID, DoubleJumpBehavior.ID);
+
+	/**
+	 * The sense batch: registration, wiring, no-repeat, persistence, and the two
+	 * behavioural rules that are invisible in play until they are wrong.
+	 */
+	private static void senseBatch() {
+		section("Sense batch: Danger Sense and Double Jump");
+		HarnessBootstrap.init();
+
+		// --- registration and wiring -------------------------------------------
+		for (String id : SENSE_BATCH) {
+			EffectDefinition def = EffectRegistry.byId(id);
+			check(def != null, id + " is registered in EffectRegistry");
+			if (def == null) {
+				continue;
+			}
+			check(def.phase() == EffectPhase.GOOD, id + " is GOOD");
+			check(def.minEntropy() == 25 && def.maxEntropy() == 50,
+					id + " sits in Tier 2 (entropy 25-50)");
+			check(EffectBehaviors.get(id).getClass().getSimpleName().endsWith("Behavior"),
+					id + " resolves to a real behavior, not the MISSING no-op");
+		}
+		check(EffectRegistry.byId(DangerSenseBehavior.ID).category() == EffectCategory.UTILITY,
+				"Danger Sense is UTILITY");
+		check(EffectRegistry.byId(DoubleJumpBehavior.ID).category() == EffectCategory.MOVEMENT,
+				"Double Jump is MOVEMENT");
+		check(EffectBehaviors.definitionsWithoutBehavior().isEmpty()
+						&& EffectBehaviors.behaviorsWithoutDefinition().isEmpty(),
+				"no id mismatches anywhere after this batch");
+
+		// --- idempotency -------------------------------------------------------
+		// Both hold no per-player state of their own, which is what makes apply()
+		// idempotent and respawn/rejoin-safe for free rather than by care.
+		for (String id : SENSE_BATCH) {
+			check(EffectBehaviors.get(id) instanceof com.entropymod.entropy.HookEffectBehavior,
+					id + " is a HookEffectBehavior -- apply() is final and empty, so there is "
+							+ "no per-player state to re-apply or leak across respawns");
+		}
+
+		// --- no-repeat ---------------------------------------------------------
+		AcquiredEffects acquired = new AcquiredEffects();
+		SENSE_BATCH.forEach(acquired::add);
+		for (int entropy : new int[] {25, 37, 50}) {
+			for (EffectPhase phase : EffectPhase.values()) {
+				EffectRegistry.RollResult roll = EffectRegistry.roll(
+						phase, entropy, new java.util.Random(31),
+						acquired.ids(), acquired.occupiedCategories());
+				if (roll.repeatFallback()) {
+					continue;
+				}
+				for (EffectDefinition offered : roll.choices()) {
+					check(!SENSE_BATCH.contains(offered.id()),
+							"no-repeat holds at entropy " + entropy + "/" + phase
+									+ ": already-acquired '" + offered.id() + "' was not re-offered");
+				}
+			}
+		}
+
+		// --- persistence -------------------------------------------------------
+		EntropyManager saved = new EntropyManager();
+		SENSE_BATCH.forEach(id -> saved.acquired().add(id));
+		EntropyManager reloaded = reencode(saved);
+		for (String id : SENSE_BATCH) {
+			check(reloaded.acquired().contains(id),
+					id + " survives a save/reload in the acquired set");
+			check(EffectRegistry.byId(id) != null,
+					id + " is still defined after a reload -- no stale id");
+		}
+
+		dangerSenseRadius();
+		doubleJumpCharge();
+	}
+
+	/**
+	 * Danger Sense's radius is a real 32-block sphere, and its glow starts and
+	 * stops at that boundary.
+	 *
+	 * <p>The boundary is asserted in <b>both</b> directions on purpose. The query
+	 * is an AABB and the effect is a sphere, so a missing distance filter would
+	 * leak the radius out to {@code 32 * sqrt(3) = 55.4} blocks at the box corners
+	 * -- a 73% over-range that would be almost impossible to notice in play.
+	 */
+	private static void dangerSenseRadius() {
+		section("Danger Sense: the 32-block sphere, and where the glow stops");
+
+		double radius = constant(DangerSenseBehavior.class, "RADIUS");
+		checkNear(radius, 32.0, 1e-9, "the radius is 32 blocks (64-block diameter)");
+		checkNear(constant(DangerSenseBehavior.class, "RADIUS_SQR"), radius * radius, 1e-9,
+				"and RADIUS_SQR is genuinely its square, so the filter compares like with like");
+
+		// Just inside / just outside, in squared space, the way the code tests it.
+		check(DangerSenseBehavior.inRange(31.99 * 31.99),
+				"a hostile at 31.99 blocks glows");
+		check(DangerSenseBehavior.inRange(radius * radius),
+				"one exactly at 32.00 blocks glows -- the boundary is inclusive");
+		check(!DangerSenseBehavior.inRange(32.01 * 32.01),
+				"one at 32.01 blocks does NOT glow");
+		check(!DangerSenseBehavior.inRange(64.0 * 64.0),
+				"and one at the far edge of the 64-block DIAMETER does not");
+
+		// The leak this guards against, stated as a number rather than a worry.
+		double boxCorner = radius * Math.sqrt(3.0);
+		check(boxCorner > 55.0 && !DangerSenseBehavior.inRange(boxCorner * boxCorner),
+				"the AABB's corner reaches " + fmt(boxCorner) + " blocks, and a mob there is "
+						+ "rejected -- the spherical filter is what stops the box leaking a "
+						+ "73% larger effective range");
+
+		// --- start/stop timing --------------------------------------------------
+		int scan = (int) constant(DangerSenseBehavior.class, "SCAN_INTERVAL_TICKS");
+		int duration = (int) constant(DangerSenseBehavior.class, "GLOW_DURATION_TICKS");
+		check(duration > scan,
+				"the granted glow (" + duration + "t) outlasts the scan interval (" + scan
+						+ "t), so a mob that stays in range never flickers between scans");
+		check(duration <= 2 * scan,
+				"and by no more than 2x, so a mob leaving the radius stops glowing within "
+						+ fmt(duration / 20.0) + "s rather than lingering");
+		check(scan <= 20,
+				"the scan runs at least as often as Green Thumb's rescan -- mobs move, crops "
+						+ "do not");
+
+		// --- the mechanism is vanilla's, on the MOB, and amplifier-free ---------
+		var glowing = net.minecraft.world.effect.MobEffects.GLOWING.value();
+		check(glowing.getClass() == net.minecraft.world.effect.MobEffect.class,
+				"vanilla registers Glowing as a BARE MobEffect -- no subclass, so nothing "
+						+ "reads an amplifier");
+		for (int amp = 0; amp <= 4; amp++) {
+			int[] count = {0};
+			glowing.createModifiers(amp, (attr, mod) -> count[0]++);
+			check(count[0] == 0, "Glowing produces zero attribute modifiers at amplifier " + amp);
+		}
+		check((int) constant(DangerSenseBehavior.class, "AMPLIFIER") == 0,
+				"so the shipped amplifier is 0, the only value that means anything");
+
+		// The glow is driven by the effect through synced entity flag 6 -- which is
+		// also why it cannot be scoped to one observer. Asserted so the limitation
+		// is recorded in the checks, not only in the javadoc.
+		check(Checks.classReferences(net.minecraft.world.entity.LivingEntity.class,
+						"updateGlowingStatus"),
+				"LivingEntity.updateGlowingStatus pushes the effect into shared entity flag 6, "
+						+ "which is synced data -- so EVERY tracking client sees the outline, "
+						+ "not just the holder");
+
+		// Cost: an entity query, not a volume scan. This is the claim that justifies
+		// a radius 56x Green Thumb's in volume.
+		check(Checks.classReferences(com.entropymod.entropy.growth.DangerSenseGlow.class,
+						"getEntitiesOfClass"),
+				"the scan is getEntitiesOfClass -- O(entities in the box), NOT O(volume); a "
+						+ "block sweep at this radius would be 274,625 positions");
+		check(!Checks.classReferences(com.entropymod.entropy.growth.DangerSenseGlow.class,
+						"betweenClosed"),
+				"and it does no BlockPos iteration at all");
+		check(Checks.classReferences(com.entropymod.entropy.growth.DangerSenseGlow.class,
+						"isSpectator"),
+				"a spectator does not light up the world");
+	}
+
+	/**
+	 * Double Jump recharges on landing and never yields a third jump.
+	 *
+	 * <p>Driven against the real {@code DoubleJumpState}, which is deliberately
+	 * free of Minecraft types precisely so this can be checked headlessly.
+	 */
+	private static void doubleJumpCharge() {
+		section("Double Jump: one air jump, recharged on landing, never a third");
+
+		check((int) constant(DoubleJumpBehavior.class, "AIR_JUMPS") == 1,
+				"one air jump, i.e. two jumps in total");
+
+		// --- the ordinary sequence ---------------------------------------------
+		DoubleJumpState s = new DoubleJumpState();
+		check(!s.tick(false, true, true), "standing still, key up: no jump");
+		check(!s.tick(true, true, true),
+				"pressing jump ON THE GROUND does not fire an air jump -- that jump is "
+						+ "vanilla's, and the edge is consumed here");
+		check(s.chargesLeft() == 1, "and the charge is full on the ground");
+		check(!s.tick(true, false, true),
+				"HOLDING the key into the air does not spend the charge -- no rising edge, "
+						+ "so a held key cannot double-jump instantly off the ground");
+		check(!s.tick(false, false, true), "releasing mid-air does nothing by itself");
+		check(s.tick(true, false, true), "pressing again mid-air FIRES the air jump");
+		check(s.chargesLeft() == 0, "and spends the charge");
+
+		// --- no third jump ------------------------------------------------------
+		for (int i = 0; i < 5; i++) {
+			check(!s.tick(false, false, true) && !s.tick(true, false, true),
+					"no third jump on repeat attempt " + (i + 1) + " -- still airborne, no charge");
+		}
+
+		// --- recharge on landing ------------------------------------------------
+		check(!s.tick(false, true, true), "landing recharges");
+		check(s.chargesLeft() == 1, "the charge is back to one");
+		check(!s.tick(true, true, true), "the next ground press is vanilla's jump again");
+		check(!s.tick(false, false, true), "airborne, key released");
+		check(s.tick(true, false, true), "and the air jump is available again");
+
+		// --- walking off a ledge without jumping --------------------------------
+		DoubleJumpState ledge = new DoubleJumpState();
+		ledge.tick(false, true, true);
+		check(ledge.chargesLeft() == 1, "walking on the ground banks a charge");
+		check(ledge.tick(true, false, true),
+				"walking off a ledge and pressing jump gives exactly one air jump -- the "
+						+ "charge is read from onGround(), not counted from a jump");
+		check(!ledge.tick(false, false, true) && !ledge.tick(true, false, true),
+				"and only one");
+
+		// --- refused states do NOT consume the charge ---------------------------
+		DoubleJumpState refused = new DoubleJumpState();
+		refused.tick(false, true, true);
+		check(!refused.tick(true, false, false),
+				"a press in a refused state (flight/elytra/fluid/climbing/riding) does not jump");
+		check(refused.chargesLeft() == 1,
+				"and does NOT consume the charge -- the effect is intact the moment the state ends");
+		check(!refused.tick(true, false, true),
+				"the key is still held, so leaving the state mid-hold does not auto-fire a jump "
+						+ "the player never asked for");
+		check(refused.tick(false, false, true) == false && refused.tick(true, false, true),
+				"a fresh press after leaving the state does fire it");
+
+		// --- reset --------------------------------------------------------------
+		DoubleJumpState fresh = new DoubleJumpState();
+		fresh.tick(false, true, true);
+		fresh.reset();
+		check(fresh.chargesLeft() == 0,
+				"reset drops the charge, so it cannot survive a disconnect into the next world");
+
+		// --- the mechanism ------------------------------------------------------
+		// NOTE: ClientDoubleJump itself is NOT reachable from here -- the harness
+		// classpath is the main source set only, which is the same property that
+		// pushed the keybind snapshot to server-side persistence. That is exactly
+		// why the whole charge machine lives in DoubleJumpState, in main, free of
+		// Minecraft types: everything above is driven against the real shipped
+		// logic rather than a copy of it. What the client class does with the
+		// result (jumpFromGround, and the six state guards) is in-game territory.
+		check(Checks.hasMethod(DoubleJumpState.class, "tick")
+						&& Checks.hasMethod(DoubleJumpState.class, "reset"),
+				"the charge machine is in the main source set, so these rules are checked "
+						+ "against shipped code and not restated");
 	}
 
 	/** Four decimal places, for reporting derived blocks-per-second figures. */

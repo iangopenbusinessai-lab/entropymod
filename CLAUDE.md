@@ -426,6 +426,13 @@ homogeneous in (ground accel, air accel, impulse), so one factor scales every
 sprinting motion by exactly that factor and preserves vanilla's own internal
 ratios (sprint-jumping stays worth the same 27% over flat sprinting).
 
+**1c. An entity query is O(entities); a block sweep is O(volume).** Danger Sense's
+32-block radius is a 274,625-position box — 56x Green Thumb's — and is nearly free,
+because `getEntitiesOfClass` is served by entity section storage. Never reason
+about a proximity effect's cost from its radius without first asking which of the
+two it is. Corollary: the query is a *box* and effects are *spheres*, so a missing
+`distanceToSqr` filter silently leaks the range by 73% (`r × √3`).
+
 **2. A mixin's *shape* is part of its correctness when two sides share a target.**
 Slippery Grip's two mixins used to be `@ModifyVariable`s that both forced
 `setSprinting`'s argument false, which chained safely **only because both halves
@@ -545,7 +552,7 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 630 checks currently: the tuning constants as
+same numbers kept being re-derived. 710 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble

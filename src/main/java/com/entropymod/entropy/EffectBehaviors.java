@@ -70,6 +70,8 @@ public final class EffectBehaviors {
 		register(CreativeFlightBehavior.ID, new CreativeFlightBehavior());
 		register(BehemothGauntletsBehavior.ID, new BehemothGauntletsBehavior());
 		register(CrouchInvincibilityBehavior.ID, new CrouchInvincibilityBehavior());
+		register(DangerSenseBehavior.ID, new DangerSenseBehavior());
+		register(DoubleJumpBehavior.ID, new DoubleJumpBehavior());
 		register(PhoenixChamberedHeartBehavior.ID, new PhoenixChamberedHeartBehavior());
 		register(GlassCannonPactBehavior.ID, new GlassCannonPactBehavior());
 
