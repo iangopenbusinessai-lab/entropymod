@@ -2119,6 +2119,151 @@ headlessly against shipped code. Note the client driver itself is **not**
 harness-reachable: the harness classpath is the main source set only, the same
 property that pushed the keybind snapshot to server-side persistence.
 
+#### Double Jump's real bug: the state machine was right, the SAMPLING POINT was wrong
+Reported as "it just instantly jumps, and doesn't let me double jump". **This is
+the most valuable bug in the project so far, because it shipped with a green
+harness and the harness was testing a state that cannot occur.**
+
+**Root cause — hypothesis (a), with a precise mechanism.** Inside
+`LivingEntity.aiStep`, javap-verified by offset:
+
+| offset | what |
+|---|---|
+| 293 | profiler `push("jump")` |
+| **460** | **`jumpFromGround()`** |
+| 486 | profiler `push("travel")` |
+| **615** | **`travel()`** → `travelInAir` → `move()` — *and `move()` is what writes `onGround`* |
+
+The driver runs on `END_CLIENT_TICK`, i.e. after all of that. **So on the very
+tick the player jumps from the ground, `onGround()` already reads false.** What
+the driver actually observed:
+
+| tick | in game | observed | old machine |
+|---|---|---|---|
+| N-1 | standing, key up | held=false, ground=true | recharge → 1 charge |
+| N | key pressed; vanilla jumps; travel lifts the player | held=**true**, ground=**false** | rising edge + airborne + charge → **air jump fires here** |
+| N+1 | rising, key held | held=true, ground=false | not rising; charge already spent |
+
+Both jumps landed on the same tick. The visible result is **not** a doubled leap —
+`jumpFromGround` sets `deltaMovement.y = max(jumpPower, y)`, so it re-raises y to
+full jump power one tick in rather than adding, giving a slightly longer,
+stronger-feeling single jump. (The sprint impulse **is** additive, so a sprinting
+player got that twice.) And the charge was gone before the player was meaningfully
+airborne. That is exactly both halves of the report.
+
+**Note (b) was a real symptom but not the cause** — the charge *was* consumed
+before the player could use it, but as a consequence of (a), not independently.
+
+**The fix** is one guard, `leftGroundThisTick = wasOnGround && !onGround`, encoding
+the rule: *a press first observed on the tick the player left the ground belongs to
+the ground jump.* It is consumed, not spent. The cost is bounded and correct rather
+than a fudge — pressing jump on the exact tick you walk off a ledge is a press
+vanilla itself turned into a ground jump, because `onGround()` was still true when
+`aiStep`'s jump block ran.
+
+**The durable lesson, and it generalises well beyond this effect:**
+
+> **A headless test of a tick-sampled state machine must model the SAMPLING POINT,
+> not the idealised event sequence.**
+
+The old test fed `tick(held=true, onGround=true)` for the press tick — a
+combination `END_CLIENT_TICK` can never observe. The logic was correct in
+isolation and wrong in place. This is a *fifth* failure mode alongside the four in
+CLAUDE.md, and unlike those it is not about mixins at all: it is about where in the
+tick your code reads state. **When adding a tick-driven effect, first establish
+what your hook observes relative to the vanilla code you care about — by offset,
+not by intuition.** The harness now drives the real order, and the regression check
+fails against the old implementation.
+
+Corollary already applied: the effect now emits one DEBUG line per air jump. It has
+no sound, no message and no HUD, so "fired on the wrong tick" and "did not fire"
+were indistinguishable from the player's seat — the same reason Clumsy Digger
+logs its procs.
+
+#### Ore Sense: render mechanism mapped in full — and why it STOPPED at the renderer
+> **Supersedes the previous Ore Sense entry below on two points, both of which
+> were wrong.** Read this one.
+
+**The detection layer is built and tested; the renderer is NOT, and the effect is
+deliberately not registered** in either `EffectRegistry` or `EffectBehaviors` — a
+registered effect that draws nothing would be a dead entry in the roll pool, which
+is worse than an absent one. The harness asserts that absence so it cannot be
+half-shipped by accident.
+
+**Correction 1 — `debugFilledBox()` is NOT see-through.** The previous entry
+called `RenderPipelines.DEBUG_FILLED_BOX` "the nearest vanilla precedent" for
+render-through-terrain. It is not a precedent at all: `DEBUG_FILLED_SNIPPET` is
+built with `new DepthStencilState(CompareOp.LESS_THAN_OR_EQUAL, false)` — an
+ordinary depth **test**, merely without depth **write**. Debug boxes are occluded
+by terrain like anything else. The see-through value is `CompareOp.ALWAYS_PASS`,
+which exists but is used by no render type that is publicly reachable.
+
+**Correction 2 — the whole construction path is closed to mods.** This is the part
+that stopped the work, and none of it was visible last session:
+
+| what you need | visibility |
+|---|---|
+| `RenderPipeline.builder(Snippet...)` | **public** ✅ |
+| `RenderPipeline.Builder.with*` (shaders, format, depth, cull, colour target) | **public** ✅ |
+| `RenderSetup.builder(RenderPipeline)` / `RenderSetupBuilder` | **public** ✅ |
+| **`RenderType.create(String, RenderSetup)`** | **package-private** ❌ |
+| `RenderType`'s constructor | private ❌ |
+| `RenderPipelines.MATRICES_PROJECTION_SNIPPET`, `DEBUG_FILLED_SNIPPET` | **private** ❌ |
+| `RenderPipelines.register`, `PIPELINES_BY_LOCATION` | **private** ❌ |
+| a Fabric API for registering a render pipeline | **does not exist** ❌ |
+
+`FabricRenderPipeline` exists in `fabric-rendering-v1` and is **not** it — its only
+member is `usePipelineDrawModeForGui()`. A scan of the Fabric API jars found no
+pipeline-registration hook of any kind.
+
+So a working see-through render type needs **two accessor mixins into vanilla
+rendering internals**: an `@Invoker` for `RenderType.create`, and an `@Accessor`
+for one of the private snippets (the snippets carry the projection-matrix uniforms
+the `core/position_color` shaders require — building a pipeline from a bare
+`builder()` means declaring those uniforms by hand). That is a materially
+different risk class from anything this project has done: the Camera mixin, its
+only render-adjacent precedent, is a single `@Redirect` on a public method.
+
+**Shader compilation is the remaining unknown.** `ShaderManager.apply` calls
+`RenderPipelines.getStaticPipelines()` and `GpuDevice.precompilePipeline(pipeline,
+shaderSource)` on resource reload — registered pipelines only. `GpuDevice
+.precompilePipeline(RenderPipeline)` *is* public and `clearPipelineCache()` exists,
+which strongly implies the device caches compiled pipelines keyed on the object and
+would compile on first use. **Strongly implies is not verified**, and this project
+does not ship rendering on an inference.
+
+**What IS built and verified (headlessly):**
+
+- **The block set is a mod-supplied tag**, `entropymod:ore_sense_targets`, because
+  **there is no `#minecraft:ores` tag** — `BlockTags` has eight per-material tags
+  and no union. The JSON is those eight plus **`minecraft:ancient_debris` and
+  `minecraft:nether_quartz_ore`, which are in none of them and are included
+  deliberately** — an ore sense silent on ancient debris would read as a bug, not a
+  scope decision. `nether_gold_ore` needs no special case; it is already inside
+  `#minecraft:gold_ores`, and the harness pins that by reading vanilla's shipped
+  JSON rather than asserting it.
+- **Client-side only.** The client already holds the blocks in its `ClientLevel`,
+  so there is no server involvement and no payload beyond the existing
+  `ClientEffectsPayload` bit.
+- **Cost: O(4,913) block reads every 20 ticks** — deliberately the identical volume
+  and cadence to Green Thumb's rescan, this project's known-safe size, amortising
+  to ~246 reads per tick. The renderer would read the **cache**, never rescan:
+  scanning per frame would be 4,913 × 60 ≈ **295,000 block reads a second**.
+- **The sphere-vs-box correction is applied and asserted.** A bare 17-cube reaches
+  `8 × √3 = 13.86` blocks at its corners — a 73% over-range that would read as "the
+  radius is just bigger than 8". All eight corners are asserted rejected.
+- `BlockPos.betweenClosed` yields a **mutable cursor**, so entries are stored
+  `.immutable()` — the same trap Green Thumb's sweep documents.
+
+**To finish it in one pass:** add the two accessor mixins; build a pipeline from
+the accessed snippet with `DepthStencilState(ALWAYS_PASS, false)`, QUADS,
+`POSITION_COLOR`, `core/position_color`, `BlendFunction.TRANSLUCENT`; wrap it via
+`RenderSetup.builder(pipeline).createRenderSetup()` and the invoked
+`RenderType.create`; draw from `LevelRenderEvents.AFTER_TRANSLUCENT_TERRAIN` using
+`LevelRenderContext.poseStack()` + `bufferSource()`; call
+`GpuDevice.precompilePipeline` once at client init if first-use compilation turns
+out not to happen. **Then look at it before calling it done.**
+
 #### Ore Sense: INVESTIGATED, NOT BUILT — findings, and why it stopped here
 **No code was written for this effect and it is not registered.** The
 investigation is complete and is recorded because it is the expensive part; the

@@ -4,6 +4,7 @@ import com.entropymod.entropy.KeybindSnapshot;
 import com.entropymod.entropy.MovementScramble;
 import com.entropymod.entropy.RunState;
 import com.entropymod.entropy.behavior.DoubleJumpBehavior;
+import com.entropymod.entropy.behavior.OreSenseBehavior;
 import com.entropymod.entropy.behavior.RandomJumpBehavior;
 import com.entropymod.entropy.behavior.RandomizedControlsBehavior;
 import com.entropymod.entropy.behavior.SlipperyGripBehavior;
@@ -143,6 +144,18 @@ public final class ClientRunState {
 	 */
 	public static boolean hasDoubleJump() {
 		return EFFECTS.contains(DoubleJumpBehavior.ID);
+	}
+
+	/**
+	 * Ore Sense, read by {@code OreSenseScan}.
+	 *
+	 * <p>NOTE: the effect is not registered in {@code EffectRegistry} yet -- its
+	 * renderer is unbuilt, so this currently always returns false in practice.
+	 * The scan and this accessor are complete and tested; see
+	 * {@code OreSenseBehavior}.
+	 */
+	public static boolean hasOreSense() {
+		return EFFECTS.contains(OreSenseBehavior.ID);
 	}
 
 	public static boolean hasUpsideDownCamera() {

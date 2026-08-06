@@ -6,6 +6,7 @@ import com.entropymod.entropy.EffectHooks;
 import com.entropymod.entropy.EffectRegistry;
 import com.entropymod.entropy.EntropyManager;
 import com.entropymod.entropy.behavior.DoubleJumpBehavior;
+import com.entropymod.entropy.behavior.OreSenseBehavior;
 import com.entropymod.entropy.behavior.DangerSenseBehavior;
 import com.entropymod.entropy.DoubleJumpState;
 import com.entropymod.entropy.EffectPhase;
@@ -116,6 +117,7 @@ public final class HarnessMain {
 		slipperyGripSpeed();
 		slipperyGripSprintJump();
 		senseBatch();
+		oreSenseDetection();
 		survivalBatchInvariants();
 		behemothGauntletsBothCases();
 		flamboyantFireOnly();
@@ -2796,19 +2798,44 @@ public final class HarnessMain {
 		check((int) constant(DoubleJumpBehavior.class, "AIR_JUMPS") == 1,
 				"one air jump, i.e. two jumps in total");
 
-		// --- the ordinary sequence ---------------------------------------------
+		// --- the REAL sampling order --------------------------------------------
+		// This block previously fed tick(held=true, onGround=true) for the press
+		// tick -- a state END_CLIENT_TICK can NEVER observe, because aiStep calls
+		// jumpFromGround (offset 460) before travel/move (offset 615) writes
+		// onGround. The state machine was right and the sampling model was wrong,
+		// which is why the bug shipped green. Everything below uses the order the
+		// driver actually sees.
 		DoubleJumpState s = new DoubleJumpState();
 		check(!s.tick(false, true, true), "standing still, key up: no jump");
-		check(!s.tick(true, true, true),
-				"pressing jump ON THE GROUND does not fire an air jump -- that jump is "
-						+ "vanilla's, and the edge is consumed here");
-		check(s.chargesLeft() == 1, "and the charge is full on the ground");
+		check(s.chargesLeft() == 1, "the charge is full while on the ground");
+
+		// THE REGRESSION: the ground jump's own press, observed already airborne.
 		check(!s.tick(true, false, true),
-				"HOLDING the key into the air does not spend the charge -- no rising edge, "
-						+ "so a held key cannot double-jump instantly off the ground");
+				"the press that caused the GROUND jump is observed as held+airborne on the "
+						+ "same tick -- and must NOT fire an air jump there");
+		check(s.chargesLeft() == 1,
+				"and must NOT spend the charge: this is the exact 'instantly jumps, no "
+						+ "double jump' report");
+
+		check(!s.tick(true, false, true),
+				"holding the key on the next tick still does nothing -- the edge was consumed");
+		check(!s.tick(true, false, true), "and on the one after that");
+		check(s.chargesLeft() == 1, "the charge is still banked, waiting for a real press");
 		check(!s.tick(false, false, true), "releasing mid-air does nothing by itself");
 		check(s.tick(true, false, true), "pressing again mid-air FIRES the air jump");
 		check(s.chargesLeft() == 0, "and spends the charge");
+
+		// The air jump must be usable at ANY point in the fall, not only immediately.
+		DoubleJumpState late = new DoubleJumpState();
+		late.tick(false, true, true);
+		late.tick(true, false, true);              // ground jump's press
+		for (int i = 0; i < 30; i++) {
+			check(!late.tick(false, false, true), "still no jump while falling, tick " + i);
+		}
+		check(late.chargesLeft() == 1, "the charge survives a long fall unspent");
+		check(late.tick(true, false, true),
+				"and a press 30 ticks into the fall still fires it -- the air jump is "
+						+ "available at any point while airborne, not just at the apex");
 
 		// --- no third jump ------------------------------------------------------
 		for (int i = 0; i < 5; i++) {
@@ -2819,23 +2846,42 @@ public final class HarnessMain {
 		// --- recharge on landing ------------------------------------------------
 		check(!s.tick(false, true, true), "landing recharges");
 		check(s.chargesLeft() == 1, "the charge is back to one");
-		check(!s.tick(true, true, true), "the next ground press is vanilla's jump again");
+		check(!s.tick(true, false, true), "the next ground jump's press again does nothing");
+		check(s.chargesLeft() == 1, "and again does not spend the charge");
 		check(!s.tick(false, false, true), "airborne, key released");
 		check(s.tick(true, false, true), "and the air jump is available again");
+		check(!s.tick(false, false, true) && !s.tick(true, false, true),
+				"still no third jump on the second cycle");
+
+		// --- the full sequence the player will test, end to end -----------------
+		DoubleJumpState seq = new DoubleJumpState();
+		seq.tick(false, true, true);                       // standing
+		check(!seq.tick(true, false, true), "1) ground jump: no extra jump on that tick");
+		check(!seq.tick(false, false, true), "   rising, key released");
+		check(seq.tick(true, false, true), "2) air jump fires on a fresh mid-air press");
+		check(!seq.tick(false, false, true) && !seq.tick(true, false, true)
+						&& !seq.tick(false, false, true) && !seq.tick(true, false, true),
+				"3) no third jump, however many times it is pressed");
+		check(!seq.tick(false, true, true), "4) landing");
+		check(seq.chargesLeft() == 1, "   recharges, and the cycle can start again");
 
 		// --- walking off a ledge without jumping --------------------------------
 		DoubleJumpState ledge = new DoubleJumpState();
 		ledge.tick(false, true, true);
 		check(ledge.chargesLeft() == 1, "walking on the ground banks a charge");
+		check(!ledge.tick(false, false, true),
+				"the tick you leave the ledge is consumed (vanilla would have ground-jumped "
+						+ "a press made then, since onGround was still true in aiStep)");
 		check(ledge.tick(true, false, true),
-				"walking off a ledge and pressing jump gives exactly one air jump -- the "
-						+ "charge is read from onGround(), not counted from a jump");
+				"and the next press gives exactly one air jump -- the charge is read from "
+						+ "onGround(), not counted from a jump");
 		check(!ledge.tick(false, false, true) && !ledge.tick(true, false, true),
 				"and only one");
 
 		// --- refused states do NOT consume the charge ---------------------------
 		DoubleJumpState refused = new DoubleJumpState();
 		refused.tick(false, true, true);
+		refused.tick(false, false, true);          // leave the ground cleanly
 		check(!refused.tick(true, false, false),
 				"a press in a refused state (flight/elytra/fluid/climbing/riding) does not jump");
 		check(refused.chargesLeft() == 1,
@@ -2865,6 +2911,113 @@ public final class HarnessMain {
 						&& Checks.hasMethod(DoubleJumpState.class, "reset"),
 				"the charge machine is in the main source set, so these rules are checked "
 						+ "against shipped code and not restated");
+	}
+
+	/**
+	 * Ore Sense's detection layer: the radius boundary, the scan volume, and the
+	 * shipped tag's real contents.
+	 *
+	 * <p><b>The effect is deliberately NOT registered</b> -- its renderer is
+	 * unbuilt, and a registered effect that draws nothing would be a dead entry in
+	 * the roll pool. This section covers everything that exists, and the absence of
+	 * a registration is asserted so it cannot be half-shipped by accident.
+	 */
+	private static void oreSenseDetection() {
+		section("Ore Sense: detection layer (renderer NOT built -- see the skill)");
+		HarnessBootstrap.init();
+
+		double radius = constant(OreSenseBehavior.class, "RADIUS");
+		checkNear(radius, 8.0, 1e-9, "the radius is 8 blocks");
+		checkNear(constant(OreSenseBehavior.class, "RADIUS_SQR"), radius * radius, 1e-9,
+				"RADIUS_SQR is genuinely its square");
+		int reach = (int) constant(OreSenseBehavior.class, "REACH");
+		check(reach == 8, "REACH is ceil(radius) = 8, so the box is 17x17x17");
+
+		// --- the volume, stated as the number that justifies the cadence --------
+		int volume = (2 * reach + 1) * (2 * reach + 1) * (2 * reach + 1);
+		check(volume == 4913,
+				"the scan is " + volume + " positions -- deliberately the same number as "
+						+ "Green Thumb's rescan, this project's known-safe scan size");
+		check((int) constant(OreSenseBehavior.class, "RESCAN_INTERVAL_TICKS") == 20,
+				"and it runs every 20 ticks, the same cadence, for ~246 reads per tick");
+
+		// --- the boundary, both directions --------------------------------------
+		check(OreSenseBehavior.inRange(7.99 * 7.99), "an ore at 7.99 blocks is detected");
+		check(OreSenseBehavior.inRange(radius * radius),
+				"one exactly at 8.00 is detected -- the boundary is inclusive");
+		check(!OreSenseBehavior.inRange(8.01 * 8.01), "one at 8.01 is NOT detected");
+		check(!OreSenseBehavior.inRange(16.0 * 16.0), "and one at 16 blocks certainly is not");
+
+		// --- the leak this guards against, as a number --------------------------
+		double corner = radius * Math.sqrt(3.0);
+		check(corner > 13.8 && corner < 13.9,
+				"a bare 17-cube reaches " + fmt(corner) + " blocks at its corners");
+		check(!OreSenseBehavior.inRange(corner * corner),
+				"and an ore there is rejected -- the spherical filter is what stops a 73% "
+						+ "over-range that would read as 'the radius is just bigger than 8'");
+		// Every corner of the box must be outside; spot-check the eight extremes.
+		int rejected = 0;
+		for (int dx : new int[] {-reach, reach}) {
+			for (int dy : new int[] {-reach, reach}) {
+				for (int dz : new int[] {-reach, reach}) {
+					double d2 = (double) dx * dx + (double) dy * dy + (double) dz * dz;
+					if (!OreSenseBehavior.inRange(d2)) {
+						rejected++;
+					}
+				}
+			}
+		}
+		check(rejected == 8, "all eight box corners are rejected by the sphere filter");
+
+		// --- the tag: read the SHIPPED JSON, do not restate the constant --------
+		// Same approach Clumsy Digger's check uses for #minecraft:enchantable/mining:
+		// checking what the tag actually CONTAINS, against real data.
+		String tagJson = readResource(
+				"/data/entropymod/tags/block/ore_sense_targets.json");
+		check(tagJson != null, "the mod ships data/entropymod/tags/block/ore_sense_targets.json");
+		if (tagJson != null) {
+			for (String material : new String[] {"coal", "iron", "copper", "gold",
+					"redstone", "lapis", "diamond", "emerald"}) {
+				check(tagJson.contains("#minecraft:" + material + "_ores"),
+						"the tag includes #minecraft:" + material + "_ores");
+			}
+			// The two that fall outside all eight vanilla ore tags, included on
+			// purpose rather than silently dropped.
+			check(tagJson.contains("minecraft:ancient_debris"),
+					"ancient debris is INCLUDED -- it is in none of the eight vanilla ore "
+							+ "tags, and an ore sense silent on it would read as a bug");
+			check(tagJson.contains("minecraft:nether_quartz_ore"),
+					"nether quartz ore is INCLUDED, for the same reason");
+		}
+		// Nether gold ore needs no special case, and that is worth pinning: it is
+		// already inside #minecraft:gold_ores.
+		check(tagContains("/data/minecraft/tags/block/gold_ores.json", "nether_gold_ore"),
+				"nether gold ore needs no special case -- vanilla's #gold_ores already "
+						+ "contains it");
+
+		// --- not registered, deliberately ---------------------------------------
+		check(EffectRegistry.byId(OreSenseBehavior.ID) == null,
+				"ore_sense is NOT in EffectRegistry: the renderer is unbuilt, and a "
+						+ "registered effect that draws nothing would be a dead roll-pool entry");
+		check(EffectBehaviors.definitionsWithoutBehavior().isEmpty()
+						&& EffectBehaviors.behaviorsWithoutDefinition().isEmpty(),
+				"and leaving it out of BOTH registries keeps the id tables consistent");
+	}
+
+	/** Reads a classpath resource as a string, or null. */
+	private static String readResource(String path) {
+		try (var in = HarnessMain.class.getResourceAsStream(path)) {
+			return in == null ? null : new String(in.readAllBytes(),
+					java.nio.charset.StandardCharsets.UTF_8);
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
+	/** Whether a shipped tag JSON on the classpath mentions a value. */
+	private static boolean tagContains(String path, String value) {
+		String json = readResource(path);
+		return json != null && json.contains(value);
 	}
 
 	/** Four decimal places, for reporting derived blocks-per-second figures. */

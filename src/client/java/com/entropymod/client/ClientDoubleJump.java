@@ -1,5 +1,6 @@
 package com.entropymod.client;
 
+import com.entropymod.EntropyMod;
 import com.entropymod.entropy.DoubleJumpState;
 import net.minecraft.client.player.LocalPlayer;
 
@@ -39,6 +40,12 @@ public final class ClientDoubleJump {
 			// Vanilla's own transition, not a hand-rolled velocity poke: correct
 			// height, the sprint impulse, and the jump statistic all come free.
 			player.jumpFromGround();
+			// This effect has no sound, no message and no HUD, so "fired late" and
+			// "did not fire" are indistinguishable from the player's seat -- which
+			// is exactly how the same-tick bug survived a green harness. One DEBUG
+			// line makes the tick it fires on inspectable, same as Clumsy Digger's.
+			EntropyMod.LOGGER.debug("Double Jump: air jump fired, {} charge(s) left",
+					STATE.chargesLeft());
 		}
 	}
 

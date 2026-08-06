@@ -433,6 +433,14 @@ about a proximity effect's cost from its radius without first asking which of th
 two it is. Corollary: the query is a *box* and effects are *spheres*, so a missing
 `distanceToSqr` filter silently leaks the range by 73% (`r × √3`).
 
+**1d. A tick-driven effect must model its SAMPLING POINT, not the idealised event
+order.** Double Jump shipped with a green harness that fed a state
+`END_CLIENT_TICK` can never observe: `aiStep` calls `jumpFromGround` at offset 460
+but `travel`/`move` — which writes `onGround` — at 615, so on the jump tick
+`onGround()` already reads false. The logic was right and wrong in place. Establish
+what your hook observes relative to the vanilla code you care about **by offset**,
+then test that order. (Fifth failure mode; unlike the others it is not about mixins.)
+
 **2. A mixin's *shape* is part of its correctness when two sides share a target.**
 Slippery Grip's two mixins used to be `@ModifyVariable`s that both forced
 `setSprinting`'s argument false, which chained safely **only because both halves
@@ -552,7 +560,7 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 710 checks currently: the tuning constants as
+same numbers kept being re-derived. 780 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble

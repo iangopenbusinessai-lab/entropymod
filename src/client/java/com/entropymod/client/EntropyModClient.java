@@ -157,6 +157,7 @@ public class EntropyModClient implements ClientModInitializer {
 			// clears via KeyMapping.releaseAll when a screen opens, so a press
 			// cannot be registered through a GUI anyway.
 			ClientDoubleJump.tick(client.player);
+			OreSenseScan.tick(client.player);
 			if (client.screen != null) {
 				return;
 			}
@@ -178,6 +179,7 @@ public class EntropyModClient implements ClientModInitializer {
 			ClientRunState.reset();
 			// A banked air-jump charge must not survive into the next world either.
 			ClientDoubleJump.reset();
+			OreSenseScan.reset();
 		});
 
 		// PREVIEW-ONLY command -- FAKE DATA, client-side, never touches the server.
