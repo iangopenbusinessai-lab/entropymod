@@ -83,6 +83,8 @@ public final class EffectBehaviors {
 		register(RandomizedControlsBehavior.ID, new RandomizedControlsBehavior());
 		register(UpsideDownCameraBehavior.ID, new UpsideDownCameraBehavior());
 		register(RandomJumpBehavior.ID, new RandomJumpBehavior());
+		register(UnstableBehavior.ID, new UnstableBehavior());
+		register(CreeperMagnetBehavior.ID, new CreeperMagnetBehavior());
 
 		// TODO: Tiers 2-4 + odd/signature effects, same one-line-per-effect pattern.
 	}

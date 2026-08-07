@@ -12,8 +12,8 @@ import java.util.stream.Collectors;
  * need to be added -- the timer, GUI, and networking code never change when you
  * add effect #47.
  *
- * <p><b>Current content: 47 effects — 23 GOOD and 24 BAD, all permanent.</b>
- * Tier 1 is 34 (17 GOOD / 17 BAD) at entropy 0-25; Tier 2 is 13 at entropy
+ * <p><b>Current content: 49 effects — 23 GOOD and 26 BAD, all permanent.</b>
+ * Tier 1 is 34 (17 GOOD / 17 BAD) at entropy 0-25; Tier 2 is 15 at entropy
  * 25-50, plus Glass Cannon Pact at 40-60. It is a baseline, not the finished
  * game: Tiers 3-4 and the odd/signature effects still slot in the same way.
  *
@@ -165,6 +165,22 @@ public final class EffectRegistry {
 				EffectCategory.GEAR, EffectPhase.BAD, 25, 50, true);
 		register("flamboyant", "Flamboyant",
 				"Catching fire kills you outright",
+				EffectCategory.SURVIVAL, EffectPhase.BAD, 25, 50, true);
+
+		// The first two effects that spawn a threatening entity. Both share
+		// SafeSpawn, and both are SURVIVAL on purpose -- "a lethal hazard appears
+		// beside you on a timer" is one kind of thing, so anti-stacking should keep
+		// them apart rather than hand a run both at once.
+		//
+		// counterplay = true for both, and neither is pushed to the top of the band:
+		// Unstable's blast at its minimum distance is non-lethal from full health and
+		// costs a fifth of its fuse to escape, and Creeper Magnet is an ordinary
+		// creeper you can see coming. See the behavior classes for the derivations.
+		register("unstable", "Unstable",
+				"Primed TNT appears beside you every 30 seconds",
+				EffectCategory.SURVIVAL, EffectPhase.BAD, 25, 50, true);
+		register("creeper_magnet", "Creeper Magnet",
+				"A creeper blinks into existence nearby every 30 seconds to 2 minutes",
 				EffectCategory.SURVIVAL, EffectPhase.BAD, 25, 50, true);
 
 		// TODO: Tiers 3-4 + odd/signature effects go here, same pattern.

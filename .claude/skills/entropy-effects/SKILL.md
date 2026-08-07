@@ -2665,3 +2665,205 @@ so mods can register during `onInitialize`. Two consequences, both real:
    value out of `MappedRegistry.byValue`, since every public accessor routes
    through the unbound `Holder.Reference.value()` you are trying to bind).
 
+
+#### `SafeSpawn` — the shared spawn-position groundwork. Reuse it, don't rewrite it
+The first two effects that put a threatening entity into the world (Unstable and
+Creeper Magnet) both needed "where near this player can something actually be
+spawned". **Solving it twice would have produced two subtly different answers**,
+and a wrong answer is severe and hard to see: an entity in stone suffocates or is
+shoved through the wall, and one behind a wall gives no warning at all. It lives
+in `com.entropymod.entropy.spawn.SafeSpawn` and **is the thing to reach for for
+any future spawn-based effect** (Loyal Pack, The Entourage, and the rest of the
+companion cluster).
+
+**The position test is vanilla's own, and naming it explicitly is load-bearing.**
+`SpawnPlacementTypes.ON_GROUND.isSpawnPositionOk(level, pos, type)` is what the
+natural spawner uses; read out of `SpawnPlacementTypes$1`'s bytecode it is four
+things: inside the world border, `below.isValidSpawn(...)` (solid ground this type
+can stand on), and `NaturalSpawner.isValidEmptySpawnBlock` at both the feet and
+the head — which in turn requires a non-full collision shape, no fluid, not a
+signal source, not in `#prevent_mob_spawning_inside`, and not
+`type.isBlockDangerous`. So "not embedded" and "on solid ground" come from the
+definition the rest of the game already uses, including for modded blocks and
+datapack tag edits.
+
+**Do NOT use `SpawnPlacements.isSpawnPositionOk(type, level, pos)` instead.** That
+looks the placement type up per entity, and anything with no natural spawn — TNT
+included — gets `NO_RESTRICTIONS`, i.e. *anywhere*, which is the one answer this
+must never give. `ON_GROUND` is used for both effects deliberately, TNT included:
+TNT dropped into mid-air falls somewhere unpredictable, while TNT on the floor the
+player is standing on is a threat they can judge.
+
+Four more rules, each of which would be invisible in play if wrong:
+
+- **Line of sight is required**, via the same clip `LivingEntity.hasLineOfSight`
+  uses (`ClipContext.Block.COLLIDER`, `Fluid.NONE`, from the player's eye,
+  requiring `HitResult.Type.MISS`). It is a *visibility* test, not a facing test —
+  a creeper appearing behind an unturned back still passes. What it rules out is
+  the wall, and that is the counterplay guarantee for both effects.
+- **The distance band is re-checked after the vertical search.** The horizontal
+  offset is drawn in the band, then the search moves the candidate up to 4 blocks
+  up or down — so a candidate 5 out and 4 down is really 6.4 away. Same
+  box-vs-sphere leak Danger Sense and Ore Sense guard against.
+- **`Level.isLoaded(BlockPos)`, not `hasChunkAt`.** It is `isInValidBounds()` AND
+  a loaded chunk, so it rejects a candidate the vertical search pushed past the
+  world floor or ceiling as well as one in an unloaded chunk. (`hasChunkAt`
+  answers only the second, and its underlying `hasChunk` is deprecated in this
+  version — the only deprecation warning this project has hit.)
+- **`Mth.floor`, not a cast**, for the block coordinate. A cast truncates toward
+  zero and is off by one everywhere west or north of the origin.
+
+**Returning `null` is a real outcome, not an error.** A player sealed into a 1x2
+shaft has nowhere valid; the trigger is spent, a DEBUG line is logged and the next
+interval asks again. Callers must not retry in a loop. Cost is bounded: at most 24
+horizontal candidates × 9 vertical steps of a few block reads, and a clip only for
+a candidate that already passed everything else — once per 30 s per player.
+
+#### `SpawnSchedule` — Random Jump's timer, generalised rather than re-typed
+`com.entropymod.entropy.spawn.SpawnSchedule<K>` is `ClientRunState.tickForcedJump`
+lifted out and parameterised: a per-key countdown that re-rolls in `[min, max]` on
+every fire. **A fixed cadence is `min == max`**, which makes the re-roll
+`nextInt(1)` and therefore always 0 — Unstable's fixed 30 s and Creeper Magnet's
+30 s–2 min run through identical arithmetic with no second branch to keep in step.
+
+Minecraft-import-free, same discipline as `CropSchedule`, `TramplePath`,
+`MovementScramble` and `DoubleJumpState`, and the `Random` is injectable — because
+**a broken cadence is close to undetectable in play.** "A hazard appeared" looks
+the same whatever the gap was, so a schedule that draws once and repeats that
+number forever is indistinguishable from a working one without a stopwatch. The
+harness therefore collects 200 real gaps and asserts *spread*, not just range.
+
+Two rules it exists to hold, both asserted:
+
+- **The first trigger is a full interval away.** A brand-new key schedules on its
+  first tick rather than firing on it — a curse that fires the instant it is
+  picked reads as part of the pick, not as a recurring hazard.
+- **`retainAll` is unconditional.** The obvious guard ("only prune when
+  `remaining.size() > live.size()`") is wrong and the harness caught it: one player
+  leaving while another joins leaves the sizes equal and the departed timer behind
+  forever. Callers pass a `Set` so the retain stays a hash lookup per entry. The
+  same latent guard exists in `BlightTouchedTrample.forgetDepartedPlayers`, where
+  a stale trail is harmless — but do not copy it into anything new.
+
+#### Unstable: the fuse is vanilla's, and both ends of the distance band are cliffs
+30-second fixed cadence, **80-tick fuse**, **5.0–7.0 blocks**. It is a real
+`PrimedTnt` built with the same public constructor `TntBlock.prime` uses, added
+with `addFreshEntity`, followed by the same `SoundEvents.TNT_PRIMED` and
+`GameEvent.PRIME_FUSE`. Nothing is imitated: `explosionPower` stays vanilla's
+`4.0F`, the explosion is `PrimedTnt.tick`'s own, so the `tntExplodes` gamerule,
+terrain damage, knockback and damage source are all vanilla's.
+
+**Owner is `null`, deliberately** — what `TntBlock.prime(Level, BlockPos)` passes
+for TNT nobody lit. `EntityReference.of(null)` returns null cleanly (bytecode-
+verified), and the consequence is the death message: *"Player blew up"* rather than
+*"Player was blown up by Player"*.
+
+**The fuse is 80 ticks because that is `PrimedTnt`'s own default**, not because 4
+seconds tested well. Reusing vanilla's number means the player's already-trained
+TNT timing transfers unchanged; any other value makes correctly-remembered timing
+wrong and reads as broken rather than as difficult. It is set explicitly from
+`UnstableBehavior.FUSE_TICKS` anyway, so the constant is the authority.
+
+**The distance band comes out of vanilla's own damage formula**, read off
+`ExplosionDamageCalculator.getEntityDamageAmount`:
+
+```
+maxDist = 2 * radius                 // radius 4.0 -> 8.0
+d       = distance / maxDist
+impact  = (1 - d) * seenFraction
+damage  = (impact^2 + impact) / 2 * 7 * maxDist + 1
+```
+
+At full exposure, for a player who does nothing at all:
+
+| distance | damage | |
+|---|---|---|
+| 4.0 | 22.00 | **lethal from full** |
+| **5.0 (min)** | **15.44** | 7.7 hearts |
+| 6.0 | 9.75 | 4.9 hearts |
+| **7.0 (max)** | **4.94** | 2.5 hearts |
+| 8.0 | 1.00 | the trailing `+1`, and nothing else |
+
+**Both ends are cliffs and neither is visible from the constants.** The minimum is
+5.0 because the design criterion is *ignoring it completely, from full health,
+unarmoured, must cost most of the bar and must not kill* — and 4.0 kills. The
+maximum is 7.0 because at 8.0 the blast does nothing, so a wider band would spend
+half its triggers on pure terrain vandalism. Both are asserted, including the
+one-block-either-side comparison, so a retune cannot lose the reasoning.
+
+**Counterplay = true, across the whole 25–50 band rather than only its top.**
+Escaping means reaching 8.0 blocks — 3 blocks from the worst case — which at the
+project's own measured **4.3172 b/s** walking figure (`SprintModel`) takes
+**0.69 s** against a 4.0 s fuse. Even after half a second of reaction there are
+**over 2.5 seconds of slack**. The warning is loud and omnidirectional:
+`TNT_PRIMED` at volume 1.0 has `SoundEvent.getRange` 16 blocks, more than twice
+the maximum spawn distance, plus vanilla's per-tick smoke plume, plus `SafeSpawn`'s
+line-of-sight requirement. **The two properties that carry the verdict are
+independent of entropy** — the minimum-distance blast is non-lethal from full, and
+the escape costs a fifth of the time available — so nothing about it gets less fair
+later in a run. Stated rather than hidden: a player already below four hearts who
+ignores a minimum-distance trigger dies, which is the same bar Flamboyant clears.
+
+#### Creeper Magnet: a mob's ground speed is its MOVEMENT_SPEED **squared**
+30 s–2 min re-rolled cadence, **20 ticks (exactly 1.0 s) of Invisibility**,
+**8.0–12.0 blocks**. Built with `EntityType.CREEPER.create(level,
+EntitySpawnReason.EVENT)` plus vanilla's own `finalizeSpawn` against the position's
+real `DifficultyInstance`, so it keeps the entire goal set from
+`Creeper.registerGoals`. Two omissions are the point:
+
+- **`setPersistenceRequired()` is NOT called.** One creeper every 30–120 seconds
+  forever would fill the world if none could ever despawn.
+- **`checkSpawnRules` is NOT consulted.** That is the light-level gate for
+  *natural* spawning; honouring it would turn this into "a creeper appears, but
+  only at night". `EntitySpawnReason.EVENT` says this is a summon.
+
+The invisibility is granted with **`showParticles = false`** — invisibility *with*
+particles surrounds the creeper in telltale motes and defeats the whole point.
+
+**The claim that decides whether 1 second is an appearance or a stalk is
+arithmetic, and it turns on a non-obvious vanilla detail.** `Mob.setSpeed(f)` calls
+`super.setSpeed(f)` **and `setZza(f)`, so a mob's forward input is its speed value
+rather than the normalised 1.0 a player's `ClientInput` supplies** — and
+`moveRelative` multiplies the two. **A mob's effective ground acceleration is
+therefore `speed` squared, not `speed`.** A creeper at 0.25 is `0.0625`, against a
+player's `0.1`:
+
+| | accel | steady-state |
+|---|---|---|
+| creeper chasing | 0.0625 | **2.70 b/s** |
+| player walking | 0.1 | 4.32 b/s |
+| creeper, read the player way | 0.25 | 10.79 b/s — **4x overstated** |
+
+That is also the sanity check on the finding: creepers really are slower than a
+walking player, which the raw attributes alone would deny. From rest a creeper
+covers **2.54 blocks** in the whole invisible second, so from the 8-block minimum
+it is still **5.46 blocks** away when it becomes visible, against `SwellGoal`'s
+3-block ignition radius (`distanceToSqr < 9.0`). **A 2.46-block margin — the window
+is far too short to be a threat in its own right, which is what makes it read as an
+appearance.**
+
+**`Attributes.FOLLOW_RANGE`'s registered default is 32.0, but
+`Mob.createMobAttributes()` overrides it to 16.0.** This effect's first draft set
+the maximum spawn distance to 16 on the strength of the 32.0 default and **the
+harness caught it**. The distinction is not cosmetic, because of the same
+acquisition/retention asymmetry recorded under Exposed: `TargetingConditions.test`
+scales follow distance by visibility when *acquiring*, but
+`TargetGoal.canContinueToUse` compares against the **raw** range when *retaining* —
+so a creeper spawned at 16 blocks is handed a target and drops it on the next tick.
+12.0 leaves a four-block margin. **General rule: read a mob's attribute from
+`DefaultAttributes.getSupplier(EntityType.X)`, never from the attribute's own
+`getDefaultValue()`.**
+
+The player is set as the initial target. Not a new capability —
+`NearestAttackableTargetGoal` would acquire them within a tick or two at these
+distances — it is what makes the trigger reliable instead of occasionally producing
+a creeper that strolls off. Vanilla still owns releasing it.
+
+**Both effects are SURVIVAL, and sharing the category is the decision.**
+Anti-stacking is keyed on category, and "a lethal hazard materialises next to you
+on a timer" is one kind of thing rather than two; a run holding both would be
+qualitatively different from a run holding either. Unstable's cadence is fixed and
+Creeper Magnet's is random for a matching reason: TNT is a threat you have to
+*escape*, where planning around the clock is part of the counterplay, while a
+creeper is a threat you have to *notice*, where unpredictability is the whole
+texture.

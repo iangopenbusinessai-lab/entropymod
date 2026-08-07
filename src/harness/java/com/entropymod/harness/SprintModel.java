@@ -61,6 +61,33 @@ final class SprintModel {
 		return a / (1.0 - GROUND_FRICTION * DRAG) * TICKS_PER_SECOND;
 	}
 
+	/**
+	 * Ground distance covered from a standing start over a fixed number of ticks.
+	 *
+	 * <p>Same recurrence as {@link #groundSpeedBps}, run transiently rather than
+	 * solved for its steady state, because the question Creeper Magnet asks is
+	 * "how far can it get in one second from rest" -- and a mob that has just
+	 * spawned is genuinely at rest, so the acceleration phase is most of the
+	 * answer rather than a rounding detail.
+	 *
+	 * <p><b>For a MOB the argument is the speed SQUARED.</b>
+	 * {@code Mob.setSpeed(f)} calls {@code setZza(f)} as well as
+	 * {@code super.setSpeed(f)}, so a mob's forward input is its speed value
+	 * rather than the normalised 1.0 a player's {@code ClientInput} supplies, and
+	 * {@code moveRelative} multiplies the two. Passing the bare attribute would
+	 * overstate a creeper by a factor of four.
+	 */
+	static double groundDistanceFromRest(double movementSpeedAttribute, int ticks) {
+		double a = groundAccel(movementSpeedAttribute);
+		double v = 0.0;
+		double distance = 0.0;
+		for (int t = 0; t < ticks; t++) {
+			v = v * (GROUND_FRICTION * DRAG) + a;
+			distance += v;
+		}
+		return distance;
+	}
+
 	private static double groundAccel(double movementSpeedAttribute) {
 		return movementSpeedAttribute
 				* (SPEED_CONST / (GROUND_FRICTION * GROUND_FRICTION * GROUND_FRICTION))

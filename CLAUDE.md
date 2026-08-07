@@ -441,6 +441,15 @@ but `travel`/`move` — which writes `onGround` — at 615, so on the jump tick
 what your hook observes relative to the vanilla code you care about **by offset**,
 then test that order. (Fifth failure mode; unlike the others it is not about mixins.)
 
+**1e. A mob's ground acceleration is its `MOVEMENT_SPEED` SQUARED, and its real
+`FOLLOW_RANGE` is not the attribute's default.** `Mob.setSpeed(f)` also calls
+`setZza(f)`, so a mob's forward input is its speed rather than a player's
+normalised 1.0 — read a creeper's 0.25 the player way and you overstate it 4x.
+Separately, `Attributes.FOLLOW_RANGE` defaults to 32.0 but
+`Mob.createMobAttributes()` overrides it to 16.0. **Always read a mob's attributes
+from `DefaultAttributes.getSupplier(EntityType.X)`, never from the attribute.**
+Spawning anything also means reusing `SafeSpawn` — see `entropy-effects`.
+
 **2. A mixin's *shape* is part of its correctness when two sides share a target.**
 Slippery Grip's two mixins used to be `@ModifyVariable`s that both forced
 `setSprinting`'s argument false, which chained safely **only because both halves
@@ -560,7 +569,7 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 780 checks currently: the tuning constants as
+same numbers kept being re-derived. 887 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble
@@ -576,7 +585,10 @@ Gauntlets' two branches driven individually, Flamboyant's fire-only gate against
 the shipped tag, Crouch Invincibility's sneak test, Slashed Pockets' slot range,
 Phoenix Chambered Heart's granted amounts and its composition with the permanent
 max-health effects, Slippery Grip's walk/sprint speeds at two different
-baselines, and attribute idempotency against a real `AttributeInstance`.
+baselines, attribute idempotency against a real `AttributeInstance`, and the spawn
+batch -- both cadences (Unstable's fixed 30s, Creeper Magnet's genuinely re-rolled
+30s-2min), Unstable's blast table against vanilla's own damage formula, and the
+creeper's real speed and follow range read from `DefaultAttributes`.
 
 **The start gate is tested by ticking with a `null` server, and that is the
 assertion rather than a shortcut.** `triggerPick` dereferences the server almost
@@ -719,7 +731,7 @@ deleted** — it now loads on demand instead of in every session.
 
 | Skill | Load it when | What's in it |
 |---|---|---|
-| `entropy-effects` | Implementing, tuning, renaming or debugging a specific effect; **writing any new mixin** | Attribute clamps and floors, the javap-verified mixin target table, the `@Shadow` crash trap, Frost Walker's data-driven finding, and the full derivation behind every shipped effect's constants |
+| `entropy-effects` | Implementing, tuning, renaming or debugging a specific effect; **writing any new mixin**; **spawning any entity** | Attribute clamps and floors, the javap-verified mixin target table, the `@Shadow` crash trap, Frost Walker's data-driven finding, `SafeSpawn`/`SpawnSchedule` (the shared groundwork every spawn-based effect must reuse), and the full derivation behind every shipped effect's constants |
 | `entropy-design` | Planning what to build next, deciding scope, resolving an open question | Per-component status and gaps, the run lifecycle, the three paths to `ENDED`, and all open design questions |
 
 **Two things to read before you start, because they will not be loaded for you:**

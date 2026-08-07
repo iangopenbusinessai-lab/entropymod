@@ -34,7 +34,9 @@ import com.entropymod.entropy.behavior.MoonWalkerBehavior;
 import com.entropymod.entropy.behavior.SlashedPocketsBehavior;
 import com.entropymod.entropy.behavior.BlightTouchedBehavior;
 import com.entropymod.entropy.behavior.ClumsyDiggerBehavior;
+import com.entropymod.entropy.behavior.CreeperMagnetBehavior;
 import com.entropymod.entropy.behavior.RandomJumpBehavior;
+import com.entropymod.entropy.behavior.UnstableBehavior;
 import com.entropymod.entropy.behavior.RandomizedControlsBehavior;
 import com.entropymod.entropy.behavior.SecondGuessBehavior;
 import com.entropymod.entropy.behavior.UpsideDownCameraBehavior;
@@ -45,6 +47,9 @@ import com.entropymod.entropy.growth.BlightTouchedTrample;
 import com.entropymod.entropy.growth.CropSchedule;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.entropy.growth.TramplePath;
+import com.entropymod.entropy.spawn.CreeperMagnetSpawner;
+import com.entropymod.entropy.spawn.SpawnSchedule;
+import com.entropymod.entropy.spawn.UnstableSpawner;
 import com.entropymod.network.EntropyCodecs;
 import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.KeybindSnapshotPayload;
@@ -124,6 +129,7 @@ public final class HarnessMain {
 		crouchInvincibilityGate();
 		slashedPocketsSlots();
 		tier2BatchIdempotencyAndPersistence();
+		spawnBatch();
 		System.exit(Checks.summary());
 	}
 
@@ -3094,6 +3100,417 @@ public final class HarnessMain {
 		}
 		check(reloaded.acquired().unknownIds().isEmpty(),
 				"every id in this batch is defined after a reload");
+	}
+
+	// ==================================================================
+	// The spawn batch: Unstable and Creeper Magnet
+	// ==================================================================
+
+	private static final List<String> SPAWN_BATCH = List.of(
+			UnstableBehavior.ID, CreeperMagnetBehavior.ID);
+
+	/**
+	 * Registration, wiring, idempotency, no-repeat and persistence for the two
+	 * spawn effects, then each one's own numbers.
+	 */
+	private static void spawnBatch() {
+		section("Spawn batch: Unstable and Creeper Magnet -- wiring");
+		HarnessBootstrap.init();
+
+		for (String id : SPAWN_BATCH) {
+			EffectDefinition def = EffectRegistry.byId(id);
+			check(def != null, id + " is registered in EffectRegistry");
+			if (def == null) {
+				continue;
+			}
+			check(def.phase() == EffectPhase.BAD, id + " is BAD");
+			check(def.minEntropy() == 25 && def.maxEntropy() == 50,
+					id + " sits in Tier 2 (entropy 25-50) -- NOT pushed to the top of the "
+							+ "band, because neither is unfair at the bottom of it");
+			check(def.counterplay(), id + " is counterplay = true");
+			check(def.category() == EffectCategory.SURVIVAL,
+					id + " is SURVIVAL -- shared on purpose, so anti-stacking keeps the two "
+							+ "hazard-on-a-timer curses apart");
+			check(EffectBehaviors.get(id).getClass().getSimpleName().endsWith("Behavior"),
+					id + " resolves to a real behavior, not the MISSING no-op");
+			check(EffectBehaviors.get(id) instanceof com.entropymod.entropy.HookEffectBehavior,
+					id + " is a HookEffectBehavior -- apply() is final and empty, so there is "
+							+ "no per-player state to re-apply or leak across respawns");
+		}
+		check(EffectBehaviors.definitionsWithoutBehavior().isEmpty()
+						&& EffectBehaviors.behaviorsWithoutDefinition().isEmpty(),
+				"no id mismatches anywhere after this batch");
+
+		// Both tick services must be inert for a run that holds neither, before any
+		// position is searched or any timer runs.
+		AcquiredEffects empty = new AcquiredEffects();
+		check(!UnstableSpawner.isActive(empty), "Unstable is inert without the effect");
+		check(!CreeperMagnetSpawner.isActive(empty),
+				"Creeper Magnet is inert without the effect");
+		AcquiredEffects held = new AcquiredEffects();
+		SPAWN_BATCH.forEach(held::add);
+		check(UnstableSpawner.isActive(held), "Unstable activates when the effect is held");
+		check(CreeperMagnetSpawner.isActive(held),
+				"Creeper Magnet activates when the effect is held");
+
+		// No-repeat.
+		for (int entropy : new int[] {25, 37, 50}) {
+			for (EffectPhase phase : EffectPhase.values()) {
+				EffectRegistry.RollResult roll = EffectRegistry.roll(
+						phase, entropy, new java.util.Random(17),
+						held.ids(), held.occupiedCategories());
+				if (roll.repeatFallback()) {
+					continue;
+				}
+				for (EffectDefinition offered : roll.choices()) {
+					check(!SPAWN_BATCH.contains(offered.id()),
+							"no-repeat holds at entropy " + entropy + "/" + phase
+									+ ": '" + offered.id() + "' was not re-offered");
+				}
+			}
+		}
+
+		// Persistence.
+		EntropyManager saved = new EntropyManager();
+		SPAWN_BATCH.forEach(id -> saved.acquired().add(id));
+		EntropyManager reloaded = reencode(saved);
+		for (String id : SPAWN_BATCH) {
+			check(reloaded.acquired().contains(id), id + " survives a save/reload");
+		}
+		check(reloaded.acquired().unknownIds().isEmpty(),
+				"both ids are still defined after a reload -- no stale id");
+
+		spawnCadence();
+		unstableCounterplay();
+		creeperMagnetAppearance();
+	}
+
+	/**
+	 * The two cadences: Unstable's fixed 30 seconds, and Creeper Magnet's
+	 * genuinely re-rolled 30 s - 2 min.
+	 *
+	 * <p>"Genuinely re-rolled" is the assertion that matters and it is easy to get
+	 * wrong in a way play cannot detect: a schedule that draws once and then
+	 * repeats that number forever looks identical to a working one unless you time
+	 * it with a stopwatch across many triggers. So the gaps are collected from the
+	 * real shipped {@code SpawnSchedule} and checked for spread, not just range.
+	 */
+	private static void spawnCadence() {
+		section("Spawn cadence: fixed 30 s vs. a re-rolled 30 s - 2 min");
+
+		// --- Unstable: fixed ---------------------------------------------------
+		check((int) constant(UnstableBehavior.class, "INTERVAL_TICKS") == 600,
+				"Unstable's interval is 600 ticks = exactly 30 seconds");
+
+		SpawnSchedule<String> fixed = new SpawnSchedule<>(
+				UnstableBehavior.INTERVAL_TICKS, UnstableBehavior.INTERVAL_TICKS,
+				new java.util.Random(1));
+		check(!fixed.isRandomised(), "Unstable's schedule reports itself as fixed");
+
+		List<Integer> fixedGaps = gapsFrom(fixed, "p", 10);
+		boolean allExactly600 = fixedGaps.stream().allMatch(gap -> gap == 600);
+		check(allExactly600,
+				"ten consecutive Unstable triggers are 600 ticks apart, every time "
+						+ "(gaps: " + fixedGaps + ")");
+		check(fixedGaps.size() == 10, "ten triggers actually fired");
+
+		// --- Creeper Magnet: re-rolled -----------------------------------------
+		check((int) constant(CreeperMagnetBehavior.class, "MIN_INTERVAL_TICKS") == 600
+						&& (int) constant(CreeperMagnetBehavior.class, "MAX_INTERVAL_TICKS") == 2400,
+				"Creeper Magnet's interval range is 600-2400 ticks = 30 s to 2 min");
+
+		SpawnSchedule<String> rolled = new SpawnSchedule<>(
+				CreeperMagnetBehavior.MIN_INTERVAL_TICKS,
+				CreeperMagnetBehavior.MAX_INTERVAL_TICKS,
+				new java.util.Random(7));
+		check(rolled.isRandomised(), "Creeper Magnet's schedule reports itself as randomised");
+
+		List<Integer> gaps = gapsFrom(rolled, "p", 200);
+		check(gaps.size() == 200, "two hundred triggers actually fired");
+		int min = gaps.stream().mapToInt(Integer::intValue).min().orElse(-1);
+		int max = gaps.stream().mapToInt(Integer::intValue).max().orElse(-1);
+		check(min >= 600 && max <= 2400,
+				"every gap is inside [600, 2400] (observed " + min + ".." + max + ")");
+		check(gaps.stream().distinct().count() > 150,
+				"the interval is genuinely re-rolled after each trigger, not drawn once "
+						+ "and repeated (" + gaps.stream().distinct().count()
+						+ " distinct gaps in 200)");
+		// Both ends reachable: nextInt(span) rather than nextInt(span + 1) would make
+		// the maximum unreachable, which no amount of play would reveal.
+		check(min < 700 && max > 2300,
+				"the draw spans nearly the whole range rather than clustering "
+						+ "(min " + min + ", max " + max + ")");
+
+		// --- both: the first trigger is a full interval away --------------------
+		SpawnSchedule<String> fresh = new SpawnSchedule<>(600, 600, new java.util.Random(3));
+		int firstGap = 0;
+		while (!fresh.tick("p")) {
+			firstGap++;
+		}
+		check(firstGap + 1 == 600,
+				"a brand-new timer fires a full interval after it starts, not immediately "
+						+ "-- a curse that fires on the pick reads as part of the pick");
+
+		// --- per-player, not global --------------------------------------------
+		SpawnSchedule<String> shared = new SpawnSchedule<>(600, 600, new java.util.Random(5));
+		for (int t = 0; t < 300; t++) {
+			shared.tick("a");
+		}
+		check(shared.remainingFor("a") == 300 && shared.remainingFor("b") == 0,
+				"timers are per player: 300 ticks of player a leaves player b untouched");
+		shared.retainAll(List.of("b"));
+		check(shared.remainingFor("a") == 0,
+				"a departed player's timer is dropped, so the map cannot grow without bound");
+	}
+
+	/** Runs a schedule until it has fired {@code count} times, returning the gaps. */
+	private static List<Integer> gapsFrom(SpawnSchedule<String> schedule, String key, int count) {
+		List<Integer> gaps = new ArrayList<>(count);
+		int sinceLast = 0;
+		while (gaps.size() < count) {
+			sinceLast++;
+			if (schedule.tick(key)) {
+				gaps.add(sinceLast);
+				sinceLast = 0;
+			}
+		}
+		return gaps;
+	}
+
+	/**
+	 * Unstable's fuse and distance band, against vanilla's own explosion formula.
+	 *
+	 * <p>The two boundaries are the whole design and both are cliffs: one block
+	 * closer than the minimum and ignoring the TNT kills a full-health unarmoured
+	 * player, one block further than the maximum and the blast does essentially
+	 * nothing. Neither is visible from the constants alone.
+	 */
+	private static void unstableCounterplay() {
+		section("Unstable: fuse, distance band, and the counterplay derivation");
+
+		// --- the fuse is vanilla's own -----------------------------------------
+		check((int) constant(UnstableBehavior.class, "FUSE_TICKS") == 80,
+				"the fuse is 80 ticks = 4.0 seconds, which is PrimedTnt's own default -- "
+						+ "so the player's trained TNT timing transfers unchanged");
+		checkNear(constant(UnstableBehavior.class, "BLAST_RADIUS"), 4.0, 1e-9,
+				"the blast radius is vanilla's 4.0 -- the effect does not touch "
+						+ "PrimedTnt.explosionPower");
+
+		// --- the damage model, restated and spot-checked -------------------------
+		// This mirrors ExplosionDamageCalculator.getEntityDamageAmount at full
+		// exposure. The five values are the table in UnstableBehavior's javadoc.
+		checkNear(UnstableBehavior.blastDamageAt(4.0), 22.0, 1e-6, "4.0 blocks: 22.00 damage");
+		checkNear(UnstableBehavior.blastDamageAt(5.0), 15.4375, 1e-6, "5.0 blocks: 15.44 damage");
+		checkNear(UnstableBehavior.blastDamageAt(6.0), 9.75, 1e-6, "6.0 blocks: 9.75 damage");
+		checkNear(UnstableBehavior.blastDamageAt(7.0), 4.9375, 1e-6, "7.0 blocks: 4.94 damage");
+		checkNear(UnstableBehavior.blastDamageAt(8.0), 1.0, 1e-6,
+				"8.0 blocks: 1.00 damage -- the formula's trailing +1 is all that is left");
+
+		double min = constant(UnstableBehavior.class, "MIN_DISTANCE");
+		double max = constant(UnstableBehavior.class, "MAX_DISTANCE");
+		checkNear(min, 5.0, 1e-9, "minimum spawn distance is 5 blocks");
+		checkNear(max, 7.0, 1e-9, "maximum spawn distance is 7 blocks");
+		check(min < max, "the band is non-empty and the right way round");
+
+		// --- boundary 1: the minimum is where "ignore it" stops being lethal -----
+		final double fullHealth = 20.0;
+		check(UnstableBehavior.blastDamageAt(min) < fullHealth,
+				"THE DESIGN CRITERION: at the minimum distance, a stationary unarmoured "
+						+ "player at full health SURVIVES ("
+						+ String.format("%.2f", UnstableBehavior.blastDamageAt(min))
+						+ " of 20.0)");
+		check(UnstableBehavior.blastDamageAt(min - 1.0) > fullHealth,
+				"and one block closer they would NOT -- the boundary is a cliff at 4-5 "
+						+ "blocks, not a gradient, which is why 5.0 is the minimum");
+		check(UnstableBehavior.blastDamageAt(min) > fullHealth * 0.5,
+				"ignoring it still costs more than half the bar -- it is a threat, not a "
+						+ "nuisance");
+
+		// --- boundary 2: the maximum is where the blast stops mattering ----------
+		check(UnstableBehavior.blastDamageAt(max) > 4.0,
+				"at the maximum distance ignoring it still costs ~2.5 hearts");
+		check(UnstableBehavior.blastDamageAt(max + 1.0) <= 1.0,
+				"one block further and the blast does nothing at all -- which is why the "
+						+ "band stops at 7.0 rather than 8.0");
+
+		// --- the escape budget ---------------------------------------------------
+		// Escaping means reaching 8.0 blocks, where damage is 1. Speeds come from the
+		// project's own SprintModel, validated against published vanilla figures.
+		double walk = SprintModel.groundSpeedBps(0.1);
+		double sprint = SprintModel.groundSpeedBps(0.1 * 1.3);
+		checkNear(walk, 4.3172, 1e-3, "SprintModel still reproduces vanilla walking (sanity)");
+
+		double blocksToSafety = 8.0 - min;
+		double walkSeconds = blocksToSafety / walk;
+		double fuseSeconds = UnstableBehavior.FUSE_TICKS / 20.0;
+		checkNear(blocksToSafety, 3.0, 1e-9,
+				"worst case, the player must cover 3 blocks to reach the 8-block edge");
+		check(walkSeconds < fuseSeconds * 0.25,
+				"walking to safety takes under a QUARTER of the fuse ("
+						+ String.format("%.2f", walkSeconds) + " s of "
+						+ String.format("%.1f", fuseSeconds) + " s)");
+		check(blocksToSafety / sprint < walkSeconds,
+				"sprinting is faster still, so the walking figure is the pessimistic one");
+		check(fuseSeconds - 0.5 - walkSeconds > 2.5,
+				"even after half a second of reaction time there are over 2.5 seconds of "
+						+ "slack -- this is the claim that makes counterplay = true");
+
+		// --- the warning actually reaches the player -----------------------------
+		// SoundEvent.getRange(volume) is `volume > 1 ? 16 * volume : 16`, so the
+		// primed sound carries 16 blocks at volume 1.0.
+		check(16.0 > max * 2,
+				"TNT_PRIMED's 16-block range is more than twice the maximum spawn "
+						+ "distance, and it is omnidirectional -- the warning does not "
+						+ "depend on which way the player is facing");
+		check(Checks.classReferences(
+						com.entropymod.entropy.spawn.UnstableSpawner.class, "TNT_PRIMED"),
+				"the spawner really does play the primed sound");
+		check(Checks.classReferences(
+						com.entropymod.entropy.spawn.UnstableSpawner.class, "PRIME_FUSE"),
+				"and fires vanilla's PRIME_FUSE game event, exactly as TntBlock does");
+
+		// --- it is a REAL PrimedTnt, not a facsimile ------------------------------
+		check(Checks.classReferences(
+						com.entropymod.entropy.spawn.UnstableSpawner.class, "PrimedTnt"),
+				"the entity is net.minecraft.world.entity.item.PrimedTnt itself");
+		check(Checks.classReferences(
+						com.entropymod.entropy.spawn.UnstableSpawner.class, "addFreshEntity"),
+				"it is added to the level as an ordinary entity");
+		check(!Checks.classReferences(
+						com.entropymod.entropy.spawn.UnstableSpawner.class, "explode"),
+				"nothing here explodes anything itself -- the explosion is PrimedTnt.tick's, "
+						+ "so the gamerule, the damage source, the terrain damage and the "
+						+ "knockback are all vanilla's");
+	}
+
+	/**
+	 * Creeper Magnet's invisibility window and distance band.
+	 *
+	 * <p>The load-bearing claim is that one second cannot become a stealth kill,
+	 * and it is arithmetic rather than an opinion: a creeper's ground speed is its
+	 * movement-speed attribute SQUARED, because {@code Mob.setSpeed} sets
+	 * {@code zza} to the same value it sets speed to.
+	 */
+	private static void creeperMagnetAppearance() {
+		section("Creeper Magnet: the 1-second window, and why it cannot stalk you");
+		HarnessBootstrap.init();
+
+		// --- exactly one second --------------------------------------------------
+		check((int) constant(CreeperMagnetBehavior.class, "INVISIBILITY_TICKS") == 20,
+				"invisibility lasts exactly 20 ticks = 1.000 second");
+
+		// --- the creeper's real attributes, from the registry not from memory ------
+		var creeperAttributes = net.minecraft.world.entity.ai.attributes.DefaultAttributes
+				.getSupplier(net.minecraft.world.entity.EntityType.CREEPER);
+		double speed = creeperAttributes.getValue(
+				net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED);
+		double followRange = creeperAttributes.getValue(
+				net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE);
+		checkNear(speed, 0.25, 1e-9,
+				"a creeper's MOVEMENT_SPEED really is 0.25 -- read from DefaultAttributes");
+		checkNear(speed, constant(CreeperMagnetBehavior.class, "CREEPER_MOVEMENT_SPEED"), 1e-9,
+				"the constant recorded in the behavior matches the shipped attribute");
+		// The trap: Attributes.FOLLOW_RANGE's own registered default is 32.0, and
+		// Mob.createMobAttributes() overrides it to 16.0. Reading the attribute
+		// rather than the entity type's supplier overstates a creeper's reach by 2x
+		// -- which is exactly the mistake this effect's first draft made.
+		checkNear(followRange, 16.0, 1e-9,
+				"a creeper's REAL FOLLOW_RANGE is 16.0, not the attribute's 32.0 default");
+		checkNear(followRange, constant(CreeperMagnetBehavior.class, "CREEPER_FOLLOW_RANGE"), 1e-9,
+				"the constant recorded in the behavior matches the shipped value");
+		checkNear(((net.minecraft.world.entity.ai.attributes.RangedAttribute)
+						net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE.value())
+						.getDefaultValue(), 32.0, 1e-9,
+				"...and the attribute's own default really is 32.0, which is what makes "
+						+ "this worth asserting rather than assuming");
+
+		// --- the squared-speed finding -------------------------------------------
+		double asMob = SprintModel.groundSpeedBps(speed * speed);
+		double asPlayerWould = SprintModel.groundSpeedBps(speed);
+		checkNear(asMob, 2.698, 1e-2,
+				"chasing ground speed is ~2.70 b/s -- SLOWER than a walking player, "
+						+ "because Mob.setSpeed also sets zza so the acceleration is speed^2");
+		check(asMob < SprintModel.groundSpeedBps(0.1),
+				"which is the sanity check on that finding: creepers are slower than a "
+						+ "walking player, as anyone who has played the game knows");
+		check(asPlayerWould > 4 * asMob * 0.9,
+				"reading the attribute the player way would have overstated it ~4x ("
+						+ String.format("%.2f", asPlayerWould) + " b/s) -- the trap this "
+						+ "check exists to pin");
+
+		// --- the actual claim ----------------------------------------------------
+		double closed = SprintModel.groundDistanceFromRest(
+				speed * speed, CreeperMagnetBehavior.INVISIBILITY_TICKS);
+		double minDistance = constant(CreeperMagnetBehavior.class, "MIN_DISTANCE");
+		double swell = constant(CreeperMagnetBehavior.class, "SWELL_RADIUS");
+		checkNear(swell, 3.0, 1e-9,
+				"SwellGoal ignites at distanceToSqr < 9.0, i.e. 3 blocks");
+		check(closed < 2.6,
+				"from rest, a creeper covers under 2.6 blocks in the whole invisible "
+						+ "second (" + String.format("%.2f", closed) + ")");
+		check(minDistance - closed > swell,
+				"THE CLAIM: at the minimum spawn distance it is still "
+						+ String.format("%.2f", minDistance - closed)
+						+ " blocks away when it becomes visible, against a "
+						+ swell + "-block swell radius -- the window is an appearance, "
+						+ "not a stalk");
+		check(minDistance - closed - swell > 2.0,
+				"and the margin is over 2 blocks, so this is not a near miss");
+
+		// --- the distance band ---------------------------------------------------
+		double maxDistance = constant(CreeperMagnetBehavior.class, "MAX_DISTANCE");
+		checkNear(minDistance, 8.0, 1e-9, "minimum spawn distance is 8 blocks");
+		checkNear(maxDistance, 12.0, 1e-9, "maximum spawn distance is 12 blocks");
+		check(maxDistance < followRange,
+				"the maximum is strictly inside the creeper's own follow range, so the "
+						+ "target survives TargetGoal.canContinueToUse -- which compares "
+						+ "against the RAW range, unlike acquisition");
+		check(followRange - maxDistance >= 4.0,
+				"and with a 4-block margin, so the target is not dropped the moment the "
+						+ "player takes a step away (" + maxDistance + " of " + followRange + ")");
+
+		// --- it is an ordinary creeper -------------------------------------------
+		Class<?> spawner = com.entropymod.entropy.spawn.CreeperMagnetSpawner.class;
+		check(Checks.classReferences(spawner, "finalizeSpawn"),
+				"vanilla's own finalizeSpawn is run, against the position's real difficulty");
+		check(Checks.classReferences(spawner, "INVISIBILITY"),
+				"the invisibility is a real MobEffectInstance, not a render hack");
+		check(!Checks.classReferences(spawner, "setPersistenceRequired"),
+				"persistence is deliberately NOT forced -- one creeper every 30-120 s "
+						+ "forever would fill the world if none could despawn");
+		check(!Checks.classReferences(spawner, "checkSpawnRules"),
+				"checkSpawnRules is deliberately NOT consulted -- honouring the natural "
+						+ "light gate would make this 'a creeper appears, but only at night'");
+		check(!Checks.classReferences(spawner, "setHealth")
+						&& !Checks.classReferences(spawner, "setNoAi")
+						&& !Checks.classReferences(spawner, "registerGoals"),
+				"nothing about the creeper is stripped down or overridden -- no health "
+						+ "change, no disabled AI, no goal surgery");
+
+		// --- the shared spawn-position groundwork --------------------------------
+		section("SafeSpawn: the shared position rules");
+		Class<?> safeSpawn = com.entropymod.entropy.spawn.SafeSpawn.class;
+		check(Checks.classReferences(safeSpawn, "SpawnPlacementTypes"),
+				"the position test is vanilla's own SpawnPlacementTypes.ON_GROUND, not a "
+						+ "hand-rolled isAir check");
+		check(!Checks.classReferences(safeSpawn, "SpawnPlacements"),
+				"and the placement type is named EXPLICITLY rather than looked up per "
+						+ "entity type -- TNT's registered placement is NO_RESTRICTIONS, "
+						+ "i.e. 'anywhere', which is the one answer this must never give");
+		check(Checks.classReferences(safeSpawn, "ClipContext")
+						&& Checks.classReferences(safeSpawn, "MISS"),
+				"line of sight is required, so nothing is ever spawned behind a wall");
+		check(Checks.classReferences(safeSpawn, "isLoaded"),
+				"candidates in unloaded chunks or outside the world's Y bounds are "
+						+ "rejected rather than forcing a chunk load");
+		check((int) constant(safeSpawn, "ATTEMPTS") > 0
+						&& (int) constant(safeSpawn, "VERTICAL_SEARCH") > 0,
+				"the search is bounded in both dimensions rather than looping until it "
+						+ "succeeds");
+		check(Checks.classReferences(safeSpawn, "distanceToSqr"),
+				"the true distance is re-checked after the vertical search -- otherwise a "
+						+ "candidate 5 out and 4 down would be returned as '5 blocks away' "
+						+ "when it is really 6.4");
 	}
 
 	private HarnessMain() {}

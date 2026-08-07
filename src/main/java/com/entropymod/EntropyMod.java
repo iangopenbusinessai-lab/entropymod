@@ -8,6 +8,8 @@ import com.entropymod.entropy.growth.BlightTouchedTrample;
 import com.entropymod.entropy.growth.DangerSenseGlow;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.entropy.growth.SlashedPocketsSweep;
+import com.entropymod.entropy.spawn.CreeperMagnetSpawner;
+import com.entropymod.entropy.spawn.UnstableSpawner;
 import com.entropymod.network.ChoiceMadePayload;
 import com.entropymod.network.ClientEffectsPayload;
 import com.entropymod.network.HistoryRequestPayload;
@@ -177,6 +179,11 @@ public class EntropyMod implements ModInitializer {
 			// on the first check for anyone without the effect.
 			SlashedPocketsSweep.tick(server);
 			DangerSenseGlow.tick(server);
+			// The two spawn effects. Both are schedules of ours rather than values
+			// vanilla computes, so both are tick services rather than mixins, and
+			// both return on a single hash lookup for a run that holds neither.
+			UnstableSpawner.tick(server);
+			CreeperMagnetSpawner.tick(server);
 		});
 
 		// Both services' state is transient, not part of the run, so neither is
@@ -187,6 +194,11 @@ public class EntropyMod implements ModInitializer {
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
 			GreenThumbGrowth.reset();
 			BlightTouchedTrample.reset();
+			// Same reasoning for the spawn timers: a part-finished interval describes
+			// this session, not the run. Losing it costs at most one interval, and
+			// carrying it into the next world would be worse.
+			UnstableSpawner.reset();
+			CreeperMagnetSpawner.reset();
 		});
 
 		LOGGER.info("Entropy Mod ready. Default interval: {} ticks ({} min), cap: {}",
