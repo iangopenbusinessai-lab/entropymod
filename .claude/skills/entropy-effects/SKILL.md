@@ -3110,3 +3110,191 @@ slack** after half a second of reaction — *better* than the old band's 2.81 s,
 despite the TNT being closer, because the extra second of fuse more than pays for
 the extra half block of running. That is the trade the two changes make together,
 and it is why they were made together.
+
+### The companion cluster — the reference for any future escort/pet effect
+Four effects (Loyal Pack, The Entourage, The Audience, Emotional Support Llama)
+sharing one investigation. **The headline: how much you get free depends entirely
+on whether the species extends `TamableAnimal`, and the split is total.**
+
+#### What vanilla provides, by species
+
+| | Wolf | Llama | Villager | Iron Golem |
+|---|---|---|---|---|
+| ownership type | **`TamableAnimal`** | `AbstractHorse` (separate!) | **none** | none |
+| owner setter | `tame(Player)` | `setTamed` + `setOwner` | — | — |
+| follows owner | **free** (`FollowOwnerGoal`) | no | no | no |
+| defends owner | **free** (`OwnerHurtByTargetGoal` + `OwnerHurtTargetGoal`) | no | no | no |
+| despawn-immune | **free** | **free** | **free** | free |
+| persists across reload | **free** (ordinary entity NBT) | free | free | free |
+
+**`Wolf.registerGoals()` registers `FollowOwnerGoal`, `OwnerHurtByTargetGoal` and
+`OwnerHurtTargetGoal` unconditionally**, and all three gate themselves on the
+owner. So a single `tame(player)` call turns the whole of "follow and defend" on,
+with no custom goal, no mixin and no tick service. Loyal Pack is deliberately
+absent from `CompanionService` for exactly this reason — a mod-side follow loop
+running alongside vanilla's would mean two systems writing one navigation.
+
+**Despawn immunity is NOT a taming property, and assuming it is would be wrong in
+a useful direction.** `Animal.removeWhenFarAway(double)` is literally
+`iconst_0; ireturn` — **every animal in the game is despawn-immune, tamed or
+not** — and `Villager.removeWhenFarAway` is the same. So `setPersistenceRequired()`
+is never needed for any of these and adding it would be cargo cult. Persistence
+across save/reload is likewise ordinary entity NBT: nothing mod-side persists
+companions and nothing mod-side can lose them, the same property Blight Touched's
+dead bushes have.
+
+#### The three owner goals CANNOT be reused, and the reason is one word
+All three take **`TamableAnimal`**, not the broader `OwnableEntity` interface:
+
+```
+FollowOwnerGoal(TamableAnimal, double, float, float)
+OwnerHurtByTargetGoal(TamableAnimal)
+OwnerHurtTargetGoal(TamableAnimal)
+```
+
+A llama, a villager and an iron golem are none of them `TamableAnimal`, so these
+cannot even be *constructed* for them. **That single typing decision is what
+splits this cluster into "free" and "build it".**
+
+#### Villagers have no ownership mechanism at all — and no goals either
+`Villager` implements `VillagerDataHolder` and `ReputationEventHandler` and
+neither `TamableAnimal` nor `OwnableEntity`. There is no owner field, no tame
+flag, and nothing ownership-adjacent to build on — villager "reputation" is
+per-player gossip about trading, not attachment.
+
+**And the obvious fallback — add a custom follow goal — does not work either.
+`Villager`'s bytecode contains ZERO references to `goalSelector`: villagers are
+entirely brain-driven.** A goal added to its selector (which would itself need an
+accessor mixin, since `Mob.goalSelector` is `protected final`) is overridden by
+`MoveToTargetSink` on the same tick. That is CLAUDE.md failure mode 1 — "a
+subclass/other system overrides the thing you targeted" — reached by a new route,
+and it would have presented as a mixin that applied cleanly and did nothing.
+
+#### So: a tick service, and no new Goal class anywhere in the cluster
+`CompanionService` re-issues `getNavigation().moveTo(player, speed)` on a
+5-tick cadence. It works regardless of which system owns the mob's movement, which
+is why one service drives villagers, golems and the llama alike. This is the
+project's established third shape (Green Thumb, Blight Touched, Danger Sense, the
+spawn effects).
+
+**Defending needed no new goal either.** `OwnerHurtByTargetGoal`'s entire content
+is "read the owner's `getLastHurtByMob()` and target it" — and that accessor is
+public and vanilla-maintained. Reproducing the *behaviour* without the *class* is
+one line, and because the escort is an iron golem, which already has a
+`MeleeAttackGoal`, `setTarget` is immediately actionable. **Nothing about the
+fighting is reimplemented; only the choice of target.**
+
+#### ENTITY-SPAWNING IDEMPOTENCY — a new category of correctness for this project
+Every effect until now was an attribute or a hook, and for both, `apply()` rebuilds
+**derived** state from `AcquiredEffects` — which is why "apply ten times, assert
+the value did not move" is the right test and why `addOrUpdateTransientModifier`
+makes it free. **A companion effect is the opposite: the wolves are world state
+that already exists.** Re-running the spawn is not a no-op, it is fifteen more
+wolves, and `apply` runs again on every respawn, rejoin and dimension change.
+
+**The design that looks careful and is a bug:** record each spawned entity's UUID,
+resolve them on re-application, top up the shortfall. `ServerLevel.getEntity(UUID)`
+only finds entities in **loaded chunks**, so a player who logs in far from their
+pack, or steps through a Nether portal, resolves zero live companions and is handed
+a fresh set — then another on the next relog. **The failure mode of a top-up design
+is unbounded duplication, triggered by exactly the events `apply` is called on.**
+
+**The shipped guarantee is structural instead:** companions are spawned only on
+`EffectContext.isFreshPick()`, the same one-shot gate Slashed Pockets' one-time
+drop uses. Re-application spawns nothing at all, so "no duplicates on respawn" is
+true by construction rather than true if a lookup happens to succeed. The harness
+asserts, per effect, both that `isFreshPick` is referenced **and that `getEntity`
+is not**.
+
+`CompanionRoster` (Minecraft-free, persisted in `EntropyManager`'s codec, keyed
+`playerUuid/effectId`) exists so the service can find the escort and so the run
+knows what it created — **not** to decide whether to spawn. Keying on the effect
+alone would merge two players' packs on a shared world; that is asserted.
+
+**The honest cost:** a companion that dies stays dead, and nothing re-summons. For
+Loyal Pack that is correct — they are real, mortal wolves. For the three
+invulnerable effects it cannot arise.
+
+#### Loyal Pack: 15 entities, cost stated
+Pathfinding is the real cost, not existence: fifteen `PathfinderMob`s each run
+`FollowOwnerGoal`, and a path search is orders of magnitude dearer than an idle
+entity's tick. **Vanilla's own `CREATURE` mob cap is 10 per player-area, so a
+fifteen-wolf pack is genuinely above what the game budgets for one player's
+animals.** It is bounded and one-shot — nothing re-summons, so the count can only
+fall — and the pathological case is a confined space, where fifteen wolves shove
+each other and re-path constantly. **Recommendation, not a silent change: 15 ships
+as specified; `PACK_SIZE` is one constant, and 8 would sit inside vanilla's own
+budget while still reading as a pack.**
+
+Wolf armour is real: `Items.WOLF_ARMOR` in `EquipmentSlot.BODY`, applied with the
+ordinary `setItemSlot`, so it renders, dyes, absorbs and drops like armour fitted
+by hand.
+
+#### The Entourage: "passive mobs" taken literally cannot work
+A passive animal has **no attack goal at all**, so `setTarget` on a cow does
+nothing and "attacks anything that attacks the player" would mean inventing a
+melee goal, a damage attribute and an attack animation for a species with none.
+**Iron golems are the honest reading**: `NeutralMob`, so never hostile to the
+player unprovoked; already carrying a `MeleeAttackGoal`, which is what makes
+`setTarget` actionable; and visually distinct from the wolves. `setPlayerCreated(true)`
+stops them defending a village instead of their owner. Four, because a golem deals
+7.5–21.5 damage with 100 HP and is 1.4 x 2.7 — more would be a mobility problem.
+
+#### Emotional Support Llama: a double chest is NOT reachable, and the ceiling is arithmetic
+Llamas do carry chests natively — `Llama extends AbstractChestedHorse`, with
+`hasChest()`/`setChest(boolean)`, a `SimpleContainer`, `HasCustomInventoryScreen`
+and NBT persistence all vanilla. But:
+
+```
+Llama.getInventoryColumns()                          = hasChest() ? getStrength() : 0
+AbstractMountInventoryMenu.getInventorySize(columns) = columns * 3
+Llama MAX_STRENGTH                                   = 5
+```
+
+**The largest llama inventory that exists is 5 x 3 = 15 slots, against a double
+chest's 54 — 27.8% of the request.** Reaching 54 would mean abandoning the llama
+container for a custom menu with its own screen, persistence and sync, which is no
+longer "a llama carrying a chest". Shipped: a real llama at maximum strength.
+
+Maximum strength needs `LlamaStrengthAccessor`, an `@Invoker` onto the **private**
+`setStrength` — `setRandomStrength` rolls `1 + nextInt(nextFloat() < 0.04 ? 5 : 3)`,
+so a natural llama is strength 1–3 and hits 5 about 1.6% of the time. **An
+`@Invoker` is a materially lower risk class than an injection**: it adds no
+behaviour and changes no control flow, and its only shared failure mode is a wrong
+target name.
+
+**Invincibility and chest-carrying are entirely independent** — checked because it
+was asked. `setInvulnerable` sets an `Entity` flag consulted by `hurt`; `setChest`
+sets a synced boolean on `AbstractChestedHorse` gating inventory size. No common
+state, and vanilla never clears one when the other changes.
+
+Note `AbstractHorse` taming is a **separate system** from `TamableAnimal` —
+`setTamed`/`setOwner` rather than `tame()` — which is precisely why the llama gets
+none of the wolves' free goals and rides `CompanionService` instead.
+
+#### Unstable, final: 0–2 blocks, and a flag conflict flagged not resolved
+| distance | exp 1.00 | exp 0.75 | exp 0.50 | exp 0.25 |
+|---|---|---|---|---|
+| **0.0 (min)** | **57.00** | 37.75 | 22.00 | 9.75 |
+| 1.0 | **46.94** | 31.43 | 18.61 | 8.46 |
+| **2.0 (max)** | **37.75** | 25.61 | 15.44 | 7.23 |
+
+Every point in the band kills a stationary full-health player — 1.9x a health bar
+at the far end, 2.9x at the near end. Still avoidable: reaching the 8.0-block cull
+from the worst case (TNT at the feet) is 8 blocks, **1.85 s** walking, leaving
+**2.65 s of slack** after half a second of reaction; from 2.0 it is 1.39 s and
+3.11 s.
+
+**Two corrections to the premise this was requested under, both checked:**
+
+1. **Flamboyant is registered `counterplay = true`**, despite "catching fire kills
+   you outright". It is *not* a precedent for `false`. The flag has always meant
+   "an in-game answer exists", not "cannot kill you" — under which reading Unstable
+   would qualify as `true` too. It ships `false` because that is the more honest
+   label, not because Flamboyant did it first.
+2. **Unstable is now the only `counterplay = false` effect among 55.** There is no
+   precedent to transfer, so **the 25-50 range cannot be justified by analogy — and
+   CLAUDE.md Part 2 ("bad effects below entropy 40 must be counterplay-survivable")
+   forbids it as written.** Left at 25-50 as requested, with the conflict asserted
+   in the harness so it cannot be forgotten. The clean fix is **40-60**, exactly as
+   Glass Cannon Pact already sits above the rest of Tier 2 for its own reason.

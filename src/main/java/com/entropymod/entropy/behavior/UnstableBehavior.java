@@ -89,71 +89,69 @@ import com.entropymod.entropy.HookEffectBehavior;
  * <table border="1">
  *   <caption>Damage to a stationary, unarmoured player (20 HP), by exposure</caption>
  *   <tr><th>distance</th><th>exp 1.00</th><th>exp 0.75</th><th>exp 0.50</th><th>exp 0.25</th></tr>
- *   <tr><td>2.0</td><td><b>37.75 -- kills</b></td><td>25.61</td><td>15.44</td><td>7.23</td></tr>
- *   <tr><td>3.0</td><td><b>29.44 -- kills</b></td><td>20.28</td><td>12.48</td><td>6.06</td></tr>
- *   <tr><td>4.0</td><td><b>22.00 -- kills</b></td><td>15.44</td><td>9.75</td><td>4.94</td></tr>
- *   <tr><td>4.29</td><td>20.01 -- the threshold</td><td>14.13</td><td>9.00</td><td>4.62</td></tr>
- *   <tr><td><b>4.5 (min)</b></td><td><b>18.61</b></td><td>13.20</td><td>8.46</td><td>4.40</td></tr>
- *   <tr><td>5.5</td><td>12.48</td><td>9.10</td><td>6.06</td><td>3.36</td></tr>
- *   <tr><td><b>6.5 (max)</b></td><td><b>7.23</b></td><td>5.49</td><td>3.87</td><td>2.37</td></tr>
+ *   <tr><td><b>0.0 (min)</b></td><td><b>57.00</b></td><td>37.75</td><td>22.00</td><td>9.75</td></tr>
+ *   <tr><td>1.0</td><td><b>46.94</b></td><td>31.43</td><td>18.61</td><td>8.46</td></tr>
+ *   <tr><td><b>2.0 (max)</b></td><td><b>37.75</b></td><td>25.61</td><td>15.44</td><td>7.23</td></tr>
+ *   <tr><td>4.29</td><td>20.01 -- the old threshold</td><td>14.13</td><td>9.00</td><td>4.62</td></tr>
  *   <tr><td>8.0</td><td>1.00</td><td>1.00</td><td>1.00</td><td>1.00</td></tr>
- *   <tr><td>8.5</td><td colspan="4">0 -- culled by hurtEntities, no damage at all</td></tr>
+ *   <tr><td>8.5</td><td colspan="4">0 -- culled by hurtEntities</td></tr>
  * </table>
  *
- * <p><b>Only the exposure-1.00 column may be used for tuning</b>, because it is
- * the worst case for the player and the counterplay rule is a worst-case rule. The
- * other columns exist to explain what play actually feels like: the same TNT does
- * very different damage depending on what is between it and you.
+ * <p><b>Every point in the band is lethal at full exposure</b> -- 1.9x a health
+ * bar at the far end and 2.9x at the near end. That is now the intended design,
+ * not a tuning miss: an unavoidable-if-ignored blast every 30 seconds.
  *
- * <p><b>{@value #MIN_DISTANCE} is the minimum because 4.29 is where the blast
- * exactly kills</b> -- solved from the quadratic in
- * {@link #lethalThresholdDistance}, not read off the table. A player who ignores a
- * minimum-distance TNT entirely survives on 1.39 HP. <b>A closer band was
- * requested and could not be shipped:</b> 4.0, 3.0 and 2.0 blocks deal 22.0, 29.4
- * and 37.75 against a 20 HP bar, so the whole of a 2-4 range is a guaranteed kill
- * for anyone who does not react, which is not what {@code counterplay = true}
- * means.
+ * <h2>counterplay = FALSE -- and the precedent it was justified by DOES NOT EXIST</h2>
  *
- * <p><b>{@value #MAX_DISTANCE} is the maximum because the blast is culled at
- * 8.0.</b> Past {@code 2 * radius} vanilla skips the entity outright, so a band
- * reaching that far would spend its tail doing literally nothing -- which is
- * precisely the failure this session diagnosed.
+ * <p>This flag was requested on the stated grounds that it matches Flamboyant.
+ * <b>Checked, and it does not: Flamboyant is registered
+ * {@code counterplay = true}</b>, despite its description being "catching fire
+ * kills you outright". Grepping the registry, <b>this effect is now the only
+ * {@code counterplay = false} entry among all 51</b>.
  *
- * <h2>Why this is genuinely counterplay-survivable, at the whole of Tier 2</h2>
+ * <p>So the flag has never meant "cannot kill you" in this project -- it has meant
+ * "an in-game answer exists", which is why an effect that kills outright still
+ * carries {@code true}. Under that reading Unstable would qualify as {@code true}
+ * as well: the answer is "move", and there are 2.65 s of slack even from zero.
  *
- * <p><b>Recomputed for the new fuse and the new band, not carried over.</b>
- * Escaping means reaching 8.0 blocks, where the blast is culled. From the worst
- * case -- the {@value #MIN_DISTANCE}-block minimum -- that is <b>3.5</b> blocks of
- * travel, which at the project's own measured walking speed of <b>4.3172
- * blocks/second</b> (see {@code SprintModel}, validated against three published
- * vanilla figures) takes <b>0.81 s</b>; sprinting at 5.6123 b/s takes 0.62 s.
- * Against the 5.0-second fuse that leaves <b>3.69 s of slack</b> after half a
- * second of reaction time.
+ * <p><b>It ships as {@code false} anyway, because that is the more honest flag</b>
+ * -- an effect that kills a stationary player at every point in its band should
+ * not advertise itself as survivable -- and because it was explicitly asked for.
+ * But the justification is "this is a stricter label than the codebase has used
+ * so far", not "Flamboyant already did this".
  *
- * <p>So the escape budget <em>improved</em> even though the TNT moved closer --
- * 3.69 s of slack against the old band's 2.81 s -- because the extra second of
- * fuse more than pays for the extra half block of running. That is the trade the
- * two changes make together, and it is why they were made together.
+ * <h2>The 25-50 range CONFLICTS with a written invariant. Flagged, not resolved.</h2>
  *
- * <p>And the notice is loud: {@code TNT_PRIMED} plays at volume 1.0, whose
- * {@code SoundEvent.getRange} is 16 blocks -- more than twice the maximum spawn
- * distance -- it is omnidirectional so it does not depend on facing, and vanilla's
- * own {@code PrimedTnt.tick} adds a smoke plume every tick. On top of that
- * {@code SafeSpawn} requires line of sight, so the TNT is never placed behind a
- * wall.
+ * <p>CLAUDE.md Part 2 states: <i>"Bad effects below entropy 40 must be
+ * counterplay-survivable (no unavoidable-death effects until later tiers)."</i>
+ * This effect is registered at 25-50, which spans below 40, and is now
+ * {@code counterplay = false}. <b>There is no precedent to transfer, because no
+ * other effect has ever been false -- so the range cannot be justified by analogy
+ * and the invariant as written forbids it.</b>
  *
- * <p><b>Verdict: {@code counterplay = true}, across the whole 25-50 band, not
- * only its upper end.</b> The two properties that carry it are independent of
- * entropy: the blast at the minimum distance is non-lethal from full health, and
- * the escape costs a fifth of the time available. Neither gets worse as the run
- * goes on. What does get worse is the accumulation -- two triggers per minute,
- * forever, cratering terrain -- and that is the effect, not a fairness problem.
+ * <p>Two clean resolutions, both one line, neither taken unilaterally:
  *
- * <p>Stated rather than hidden: a player already below four hearts who ignores a
- * minimum-distance trigger dies. That is the same bar every BAD effect in this
- * project is held to -- Flamboyant is {@code counterplay = true} and kills
- * outright on contact with fire -- and it is a bar about whether an answer exists,
- * not about whether the effect can ever be fatal.
+ * <ul>
+ *   <li><b>Move it to 40-60</b>, exactly as Glass Cannon Pact already sits above
+ *       the rest of Tier 2 for its own reason. This honours the invariant with no
+ *       change to the effect at all, and is the recommended option.</li>
+ *   <li><b>Amend the invariant</b> to record a deliberate exception, on the
+ *       grounds that "avoidable" and "survivable if ignored" are different
+ *       properties and the rule only ever meant the first.</li>
+ * </ul>
+ *
+ * <p>What genuinely does hold on its own merits, independent of either choice, is
+ * that the effect is <b>avoidable</b>: {@code TNT_PRIMED} carries 16 blocks --
+ * eight times the maximum spawn distance -- omnidirectionally, vanilla adds a
+ * per-tick smoke plume, {@code SafeSpawn} requires line of sight, and reaching the
+ * 8.0-block cull from the worst case (TNT at the player's feet) is 8 blocks,
+ * <b>1.85 s</b> walking at 4.3172 b/s, leaving <b>2.65 s of slack</b> after half a
+ * second of reaction. From the 2.0 maximum it is 1.39 s and 3.11 s of slack.
+ *
+ * <p>One consequence worth stating: at 0.0 the TNT can spawn <em>inside</em> the
+ * player's own block. It is placed by the same {@code SafeSpawn} ON_GROUND test as
+ * before, so it still lands on solid ground and never inside terrain -- but the
+ * band no longer keeps it at arm's length, and that is the point.
  *
  * <h2>Category</h2>
  *
@@ -190,19 +188,17 @@ public final class UnstableBehavior extends HookEffectBehavior {
 	public static final int FUSE_TICKS = 100;
 
 	/**
-	 * Closest the TNT may appear -- and it is pinned to
-	 * {@link #lethalThresholdDistance}, not chosen.
+	 * Closest the TNT may appear: <b>right on top of the player</b>.
 	 *
-	 * <p><b>4.29 blocks is where a fully-exposed blast exactly kills a full-health,
-	 * unarmoured player.</b> 4.5 is the nearest sensible value above it, and leaves
-	 * 1.39 HP for a player who ignores the TNT completely. Anything closer breaks
-	 * the counterplay rule outright: 4.0 blocks deals 22.0, 3.0 deals 29.4 and 2.0
-	 * deals 37.75 -- nearly twice a health bar.
+	 * <p>0.0 is deliberate and is a change of what this effect IS. Every previous
+	 * value was pinned to {@link #lethalThresholdDistance} so that ignoring the TNT
+	 * could never kill from full health; that constraint has been dropped, and with
+	 * it {@code counterplay}. See the class javadoc.
 	 */
-	public static final double MIN_DISTANCE = 4.5;
+	public static final double MIN_DISTANCE = 0.0;
 
-	/** Furthest it may appear. At 8.0 the blast is culled entirely; 6.5 still costs 3.6 hearts. */
-	public static final double MAX_DISTANCE = 6.5;
+	/** Furthest it may appear. Still deep inside the blast -- 37.75 damage at full exposure. */
+	public static final double MAX_DISTANCE = 2.0;
 
 	/**
 	 * Vanilla's TNT blast radius, restated here only so the damage table above can

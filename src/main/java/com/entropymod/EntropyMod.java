@@ -8,6 +8,7 @@ import com.entropymod.entropy.growth.BlightTouchedTrample;
 import com.entropymod.entropy.growth.DangerSenseGlow;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.entropy.growth.SlashedPocketsSweep;
+import com.entropymod.entropy.companion.CompanionService;
 import com.entropymod.entropy.spawn.CreeperMagnetSpawner;
 import com.entropymod.entropy.spawn.UnstableSpawner;
 import com.entropymod.network.ChoiceMadePayload;
@@ -184,6 +185,9 @@ public class EntropyMod implements ModInitializer {
 			// both return on a single hash lookup for a run that holds neither.
 			UnstableSpawner.tick(server);
 			CreeperMagnetSpawner.tick(server);
+			// Follow-and-defend for the companions vanilla will not do it for. Loyal
+			// Pack is deliberately absent -- wolves get both free from their own goals.
+			CompanionService.tick(server);
 		});
 
 		// Both services' state is transient, not part of the run, so neither is

@@ -1,5 +1,7 @@
 package com.entropymod.entropy;
 
+import com.entropymod.entropy.companion.CompanionRoster;
+
 import com.entropymod.EntropyMod;
 import com.entropymod.entropy.behavior.PhoenixChamberedHeartBehavior;
 import com.entropymod.entropy.behavior.SecondGuessBehavior;
@@ -91,7 +93,15 @@ public class EntropyManager extends SavedData {
 			Codec.STRING.optionalFieldOf("run_state").forGetter(m -> Optional.of(m.runState.name())),
 			Codec.unboundedMap(Codec.STRING, KeybindSnapshot.CODEC)
 					.optionalFieldOf("keybind_snapshots", Map.of())
-					.forGetter(m -> Map.copyOf(m.keybindSnapshots))
+					.forGetter(m -> Map.copyOf(m.keybindSnapshots)),
+			// Which entities each companion effect has already spawned, keyed
+			// "playerUuid/effectId". Persisted so the run knows what it created across
+			// a reload -- NOT so it can decide whether to spawn: that is
+			// EffectContext.isFreshPick()'s job, and CompanionRoster records why a
+			// liveness-based top-up would duplicate on every relog.
+			Codec.unboundedMap(Codec.STRING, Codec.STRING.listOf())
+					.optionalFieldOf("companions", Map.of())
+					.forGetter(m -> m.companions.asMap())
 	).apply(instance, EntropyManager::new));
 
 	private static final SavedDataType<EntropyManager> TYPE = new SavedDataType<>(
@@ -183,6 +193,14 @@ public class EntropyManager extends SavedData {
 	 */
 	private final Map<String, KeybindSnapshot> keybindSnapshots = new HashMap<>();
 
+	/**
+	 * Companion entities this run has spawned, keyed "playerUuid/effectId".
+	 *
+	 * <p>Read by {@code CompanionService} to find the escort. It is deliberately
+	 * NOT consulted to decide whether to spawn -- see {@link CompanionRoster}.
+	 */
+	private CompanionRoster companions = new CompanionRoster();
+
 	// Config, settable at world creation (wire up to a config screen later).
 	private int intervalTicks = DEFAULT_INTERVAL_TICKS;
 	private int entropyCap = DEFAULT_ENTROPY_CAP;
@@ -204,7 +222,9 @@ public class EntropyManager extends SavedData {
 	private EntropyManager(int entropy, int pickCount, boolean gameOver, int entropyCap, int intervalTicks,
 						   List<String> acquiredIds, List<PickRecord> history, boolean rerollUsed,
 						   String moveScramble, boolean phoenixHeartUsed, Optional<String> runState,
-						   Map<String, KeybindSnapshot> keybindSnapshots) {
+						   Map<String, KeybindSnapshot> keybindSnapshots,
+						   Map<String, List<String>> companions) {
+		this.companions = new CompanionRoster(companions);
 		this.entropy = entropy;
 		this.pickCount = pickCount;
 		this.gameOver = gameOver;
@@ -872,6 +892,27 @@ public class EntropyManager extends SavedData {
 	}
 
 	/** The run's acquired effects: active set, no-repeat set, and category source in one. */
+	/** The companion roster. Mutating it must be followed by {@link #setDirty()}. */
+	public CompanionRoster companions() {
+		return companions;
+	}
+
+	/**
+	 * Records companions a behavior has just spawned, and persists the fact.
+	 *
+	 * <p>The {@code setDirty()} here is the easy-to-miss half: without it the
+	 * roster is rebuilt empty on the next load and the follow service quietly stops
+	 * finding anyone.
+	 */
+	public void recordCompanions(net.minecraft.server.level.ServerPlayer owner,
+								 String effectId, java.util.List<String> entityUuids) {
+		if (entityUuids.isEmpty()) {
+			return;
+		}
+		companions.record(owner.getUUID().toString(), effectId, entityUuids);
+		setDirty();
+	}
+
 	public AcquiredEffects acquired() {
 		return acquired;
 	}

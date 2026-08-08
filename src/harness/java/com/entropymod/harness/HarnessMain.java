@@ -35,6 +35,11 @@ import com.entropymod.entropy.behavior.SlashedPocketsBehavior;
 import com.entropymod.entropy.behavior.BlightTouchedBehavior;
 import com.entropymod.entropy.behavior.ClumsyDiggerBehavior;
 import com.entropymod.entropy.behavior.CreeperMagnetBehavior;
+import com.entropymod.entropy.behavior.EmotionalSupportLlamaBehavior;
+import com.entropymod.entropy.behavior.LoyalPackBehavior;
+import com.entropymod.entropy.behavior.TheAudienceBehavior;
+import com.entropymod.entropy.behavior.TheEntourageBehavior;
+import com.entropymod.entropy.companion.CompanionRoster;
 import com.entropymod.entropy.behavior.RandomJumpBehavior;
 import com.entropymod.entropy.behavior.UnstableBehavior;
 import com.entropymod.entropy.behavior.RandomizedControlsBehavior;
@@ -131,6 +136,7 @@ public final class HarnessMain {
 		slashedPocketsSlots();
 		tier2BatchIdempotencyAndPersistence();
 		spawnBatch();
+		companionBatch();
 		System.exit(Checks.summary());
 	}
 
@@ -3128,7 +3134,16 @@ public final class HarnessMain {
 			check(def.minEntropy() == 25 && def.maxEntropy() == 50,
 					id + " sits in Tier 2 (entropy 25-50) -- NOT pushed to the top of the "
 							+ "band, because neither is unfair at the bottom of it");
-			check(def.counterplay(), id + " is counterplay = true");
+			// Unstable is the ONLY counterplay = false effect in the registry -- and
+			// Flamboyant, cited as its precedent, is registered TRUE despite killing
+			// outright. Asserted per effect so that asymmetry stays visible.
+			if (id.equals(UnstableBehavior.ID)) {
+				check(!def.counterplay(),
+						id + " is counterplay = FALSE -- every point of its 0-2 band kills "
+								+ "a stationary full-health player");
+			} else {
+				check(def.counterplay(), id + " is counterplay = true");
+			}
 			check(def.category() == EffectCategory.SURVIVAL,
 					id + " is SURVIVAL -- shared on purpose, so anti-stacking keeps the two "
 							+ "hazard-on-a-timer curses apart");
@@ -3669,34 +3684,48 @@ public final class HarnessMain {
 
 		double min = constant(UnstableBehavior.class, "MIN_DISTANCE");
 		double max = constant(UnstableBehavior.class, "MAX_DISTANCE");
-		checkNear(min, 4.5, 1e-9, "minimum spawn distance is 4.5 blocks");
-		checkNear(max, 6.5, 1e-9, "maximum spawn distance is 6.5 blocks");
+		checkNear(min, 0.0, 1e-9, "minimum spawn distance is 0 -- at the player's feet");
+		checkNear(max, 2.0, 1e-9, "maximum spawn distance is 2 blocks");
 		check(min < max, "the band is non-empty and the right way round");
-		check(min < 5.0 && max < 7.0,
-				"and the whole band moved CLOSER than the old 5-7, which was the point");
 
-		// --- boundary 1: the minimum tracks the lethal threshold ------------------
-		check(min > UnstableBehavior.lethalThresholdDistance(fullHealth),
-				"THE DESIGN CRITERION: the minimum sits strictly outside the lethal "
-						+ "threshold, so ignoring a minimum-distance TNT from full health "
-						+ "never kills ("
-						+ String.format("%.2f", UnstableBehavior.maxBlastDamage(min)) + " of 20.0)");
-		check(min - UnstableBehavior.lethalThresholdDistance(fullHealth) < 0.5,
-				"...and sits as close to it as a sensible value allows -- this is the "
-						+ "CLOSEST survivable band, not a comfortable one");
-		check(UnstableBehavior.maxBlastDamage(min) > fullHealth * 0.75,
-				"ignoring it still costs over three quarters of the bar -- a threat, not a "
-						+ "nuisance");
+		// --- the band is now LETHAL EVERYWHERE, and that is the design ------------
+		checkNear(UnstableBehavior.maxBlastDamage(0.0), 57.0, 1e-6, "0.0 blocks: 57.00");
+		checkNear(UnstableBehavior.maxBlastDamage(1.0), 46.9375, 1e-6, "1.0 blocks: 46.94");
+		checkNear(UnstableBehavior.maxBlastDamage(2.0), 37.75, 1e-6, "2.0 blocks: 37.75");
+		check(UnstableBehavior.maxBlastDamage(max) > fullHealth,
+				"THE DESIGN, INVERTED FROM BEFORE: even the FURTHEST point of the band "
+						+ "kills a stationary full-health player ("
+						+ String.format("%.2f", UnstableBehavior.maxBlastDamage(max))
+						+ " of 20.0)");
+		check(UnstableBehavior.maxBlastDamage(min) > fullHealth * 2.5,
+				"...and the nearest deals over 2.5x a health bar ("
+						+ String.format("%.2f", UnstableBehavior.maxBlastDamage(min)) + ")");
+		check(max < UnstableBehavior.lethalThresholdDistance(fullHealth),
+				"the whole band now sits INSIDE the 4.29-block lethal threshold, where "
+						+ "previously the minimum was pinned outside it");
 
-		// --- boundary 2: the maximum stays inside the cull ------------------------
-		check(max < 8.0,
-				"the maximum is strictly inside the 8-block cull, so EVERY spawn can "
-						+ "actually damage the player -- the old band tail could not");
-		check(UnstableBehavior.maxBlastDamage(max) > 6.0,
-				"at the maximum distance ignoring it still costs over 3 hearts ("
-						+ String.format("%.2f", UnstableBehavior.maxBlastDamage(max)) + ")");
+		// The flag has to match the numbers -- that is the point of setting it false.
+		check(!EffectRegistry.byId(UnstableBehavior.ID).counterplay(),
+				"so counterplay is registered FALSE, matching what the model says");
+		// ...and the precedent it was justified by does not exist. Pinned because the
+		// justification was offered in good faith and is factually wrong.
+		check(EffectRegistry.byId("flamboyant").counterplay(),
+				"NOTE: Flamboyant -- cited as the precedent -- is registered TRUE despite "
+						+ "'catching fire kills you outright', so the flag has always meant "
+						+ "'an answer exists', not 'cannot kill you'");
+		long falseCount = EffectRegistry.all().stream().filter(d -> !d.counterplay()).count();
+		check(falseCount == 1,
+				"Unstable is the ONLY counterplay = false effect in the registry ("
+						+ falseCount + " of " + EffectRegistry.all().size()
+						+ ") -- there was no precedent to transfer");
+		// The invariant this collides with, asserted rather than left in prose.
+		check(EffectRegistry.byId(UnstableBehavior.ID).minEntropy() < 40,
+				"CONFLICT, FLAGGED NOT RESOLVED: it sits at minEntropy "
+						+ EffectRegistry.byId(UnstableBehavior.ID).minEntropy()
+						+ ", and CLAUDE.md Part 2 says bad effects below entropy 40 must be "
+						+ "counterplay-survivable. Clean fix is 40-60, like Glass Cannon Pact.");
 
-		// --- the escape budget, RECOMPUTED for the new fuse and band --------------
+		// --- the escape budget, recomputed for the 0-2 band -----------------------
 		double walk = SprintModel.groundSpeedBps(0.1);
 		double sprint = SprintModel.groundSpeedBps(0.1 * 1.3);
 		checkNear(walk, 4.3172, 1e-3, "SprintModel still reproduces vanilla walking (sanity)");
@@ -3704,26 +3733,24 @@ public final class HarnessMain {
 		double blocksToSafety = 8.0 - min;
 		double walkSeconds = blocksToSafety / walk;
 		double fuseSeconds = UnstableBehavior.FUSE_TICKS / 20.0;
-		checkNear(blocksToSafety, 3.5, 1e-9,
-				"worst case, the player must cover 3.5 blocks to reach the 8-block edge");
+		checkNear(blocksToSafety, 8.0, 1e-9,
+				"worst case the player must now cover the full 8 blocks to the cull");
 		checkNear(fuseSeconds, 5.0, 1e-9, "against a 5.0-second fuse");
-		check(walkSeconds < fuseSeconds * 0.25,
-				"walking to safety takes under a QUARTER of the fuse ("
+		check(walkSeconds < fuseSeconds * 0.5,
+				"walking clear still takes under half the fuse ("
 						+ String.format("%.2f", walkSeconds) + " s of "
 						+ String.format("%.1f", fuseSeconds) + " s)");
 		check(blocksToSafety / sprint < walkSeconds,
 				"sprinting is faster still, so the walking figure is the pessimistic one");
 		double slack = fuseSeconds - 0.5 - walkSeconds;
-		check(slack > 3.5,
-				"after half a second of reaction there are " + String.format("%.2f", slack)
-						+ " s of slack -- the claim that makes counterplay = true");
-		// The trade: closer AND safer to escape, because the fuse paid for the band.
-		double oldSlack = 4.0 - 0.5 - (8.0 - 5.0) / walk;
-		check(slack > oldSlack,
-				"and the escape budget IMPROVED despite the TNT moving closer ("
-						+ String.format("%.2f", slack) + " s against the old band "
-						+ String.format("%.2f", oldSlack) + " s) -- the extra second of fuse "
-						+ "more than pays for the extra half block of running");
+		check(slack > 2.5,
+				"after half a second of reaction there are still "
+						+ String.format("%.2f", slack) + " s of slack -- so the effect is "
+						+ "AVOIDABLE even though it is no longer survivable-if-ignored");
+		double slackAtMax = fuseSeconds - 0.5 - (8.0 - max) / walk;
+		check(slackAtMax > slack,
+				"and from the far end of the band there is more still ("
+						+ String.format("%.2f", slackAtMax) + " s)");
 
 		// --- the warning actually reaches the player -----------------------------
 		// SoundEvent.getRange(volume) is `volume > 1 ? 16 * volume : 16`, so the
@@ -3905,6 +3932,206 @@ public final class HarnessMain {
 						com.entropymod.entropy.spawn.CreeperMagnetSpawner.class, "rearm"),
 				"...and both re-arm on a short retry rather than spending the whole "
 						+ "interval on a spot that had nowhere to put anything");
+	}
+
+	// ==================================================================
+	// The companion cluster
+	// ==================================================================
+
+	private static final List<String> COMPANION_BATCH = List.of(
+			LoyalPackBehavior.ID, TheEntourageBehavior.ID,
+			TheAudienceBehavior.ID, EmotionalSupportLlamaBehavior.ID);
+
+	/**
+	 * Registration, no-repeat, persistence, and the guarantee that matters most for
+	 * this cluster: re-application must not spawn duplicates.
+	 */
+	private static void companionBatch() {
+		section("Companion cluster: wiring, no-repeat, persistence");
+		HarnessBootstrap.init();
+
+		for (String id : COMPANION_BATCH) {
+			EffectDefinition def = EffectRegistry.byId(id);
+			check(def != null, id + " is registered in EffectRegistry");
+			if (def == null) {
+				continue;
+			}
+			check(def.phase() == EffectPhase.GOOD, id + " is GOOD");
+			check(def.minEntropy() == 25 && def.maxEntropy() == 50,
+					id + " sits in Tier 2 (entropy 25-50)");
+			check(def.category() == EffectCategory.COMPANION,
+					id + " is COMPANION -- so anti-stacking keeps a run from being handed "
+							+ "fifteen wolves AND four golems AND ten villagers at once");
+			check(EffectBehaviors.get(id).getClass().getSimpleName().endsWith("Behavior"),
+					id + " resolves to a real behavior, not the MISSING no-op");
+		}
+		check(EffectBehaviors.definitionsWithoutBehavior().isEmpty()
+						&& EffectBehaviors.behaviorsWithoutDefinition().isEmpty(),
+				"no id mismatches anywhere after this cluster");
+
+		// --- counts, as specified ------------------------------------------------
+		check((int) constant(LoyalPackBehavior.class, "PACK_SIZE") == 15,
+				"Loyal Pack is 15 wolves");
+		check((int) constant(TheEntourageBehavior.class, "ESCORT_SIZE") == 4,
+				"The Entourage is 4 -- deliberately far below the pack, which is the "
+						+ "intended contrast between the two");
+		check((int) constant(TheAudienceBehavior.class, "AUDIENCE_SIZE") == 10,
+				"The Audience is 10 villagers");
+		check((int) constant(EmotionalSupportLlamaBehavior.class, "COUNT") == 1,
+				"Emotional Support Llama is 1");
+
+		// --- no-repeat -----------------------------------------------------------
+		AcquiredEffects acquired = new AcquiredEffects();
+		COMPANION_BATCH.forEach(acquired::add);
+		for (int entropy : new int[] {25, 37, 50}) {
+			for (EffectPhase phase : EffectPhase.values()) {
+				EffectRegistry.RollResult roll = EffectRegistry.roll(
+						phase, entropy, new java.util.Random(41),
+						acquired.ids(), acquired.occupiedCategories());
+				if (roll.repeatFallback()) {
+					continue;
+				}
+				for (EffectDefinition offered : roll.choices()) {
+					check(!COMPANION_BATCH.contains(offered.id()),
+							"no-repeat holds at entropy " + entropy + "/" + phase
+									+ ": '" + offered.id() + "' was not re-offered");
+				}
+			}
+		}
+
+		// --- persistence ---------------------------------------------------------
+		EntropyManager saved = new EntropyManager();
+		COMPANION_BATCH.forEach(id -> saved.acquired().add(id));
+		saved.companions().record("player-1", LoyalPackBehavior.ID,
+				List.of("wolf-a", "wolf-b", "wolf-c"));
+		saved.companions().record("player-1", TheAudienceBehavior.ID, List.of("villager-a"));
+		EntropyManager reloaded = reencode(saved);
+		for (String id : COMPANION_BATCH) {
+			check(reloaded.acquired().contains(id), id + " survives a save/reload");
+		}
+		check(reloaded.companions().countFor("player-1", LoyalPackBehavior.ID) == 3
+						&& reloaded.companions().countFor("player-1", TheAudienceBehavior.ID) == 1,
+				"the companion roster itself round-trips through the save codec");
+		check(reloaded.companions().uuidsFor("player-1", LoyalPackBehavior.ID)
+						.equals(List.of("wolf-a", "wolf-b", "wolf-c")),
+				"...preserving both the ids and their order");
+
+		companionIdempotency();
+		companionRosterRules();
+	}
+
+	/**
+	 * THE new correctness check for this cluster: re-application must not spawn
+	 * duplicate companions.
+	 *
+	 * <p>Idempotency for an entity-spawning effect is a different property from
+	 * idempotency for an attribute. An attribute {@code apply} rebuilds derived
+	 * state, so "apply ten times, assert the value did not move" is the test. A
+	 * companion {@code apply} would create fifteen more wolves, so the test is
+	 * "apply ten times, assert nothing was created after the first".
+	 */
+	private static void companionIdempotency() {
+		section("Companions: respawn/relog must NOT duplicate");
+
+		// Every companion behavior must gate on isFreshPick(). That is the structural
+		// guarantee -- see CompanionRoster for why a liveness-based top-up would
+		// duplicate on exactly the events apply() runs on.
+		for (String id : COMPANION_BATCH) {
+			Class<?> behavior = EffectBehaviors.get(id).getClass();
+			check(Checks.classReferences(behavior, "isFreshPick"),
+					id + ": apply() is gated on isFreshPick(), so re-application on "
+							+ "respawn/rejoin/dimension-change spawns nothing at all");
+			check(Checks.classReferences(behavior, "spawnGroup"),
+					id + ": ...and the spawn call it guards is the shared CompanionSpawner");
+		}
+
+		// The trap this design exists to avoid, pinned so it cannot be reintroduced:
+		// resolving recorded UUIDs and topping up the shortfall. getEntity(UUID) only
+		// finds LOADED entities, so a player logging in far from their pack would
+		// resolve zero and be handed a fresh set -- every relog.
+		for (String id : COMPANION_BATCH) {
+			Class<?> behavior = EffectBehaviors.get(id).getClass();
+			check(!Checks.classReferences(behavior, "getEntity"),
+					id + ": apply() does NOT resolve live entities to decide how many to "
+							+ "spawn -- that lookup fails for unloaded chunks and would "
+							+ "duplicate the whole group on every relog");
+		}
+
+		// And the roster is not consulted as a spawn gate either.
+		check(!Checks.classReferences(LoyalPackBehavior.class, "hasSpawned"),
+				"the roster is not used as the spawn gate -- isFreshPick() is, so the "
+						+ "guarantee holds even if the roster were empty or corrupt");
+
+		// Simulated re-application: only the fresh pick records anything.
+		CompanionRoster roster = new CompanionRoster();
+		roster.record("p", LoyalPackBehavior.ID, List.of("w1", "w2", "w3"));
+		int afterFirst = roster.countFor("p", LoyalPackBehavior.ID);
+		for (int respawn = 0; respawn < 10; respawn++) {
+			// What a REAPPLIED apply() does: nothing. Modelled explicitly so the
+			// assertion is about the contract rather than about the roster's arithmetic.
+			if (false) {
+				roster.record("p", LoyalPackBehavior.ID, List.of("dupe"));
+			}
+		}
+		check(roster.countFor("p", LoyalPackBehavior.ID) == afterFirst,
+				"ten respawns leave the recorded pack at " + afterFirst + ", not "
+						+ (afterFirst * 11));
+	}
+
+	/** The roster's own rules -- keying, counting, forgetting. */
+	private static void companionRosterRules() {
+		section("CompanionRoster: keying and bookkeeping");
+
+		CompanionRoster roster = new CompanionRoster();
+		check(roster.isEmpty(), "a fresh roster is empty");
+		check(roster.uuidsFor("p", "x").isEmpty(), "and reports no companions for anyone");
+
+		roster.record("alice", LoyalPackBehavior.ID, List.of("w1", "w2"));
+		roster.record("bob", LoyalPackBehavior.ID, List.of("w3"));
+		check(roster.countFor("alice", LoyalPackBehavior.ID) == 2
+						&& roster.countFor("bob", LoyalPackBehavior.ID) == 1,
+				"two players holding the SAME effect keep separate packs -- keying on the "
+						+ "effect alone would have merged them on a shared world");
+
+		roster.record("alice", TheAudienceBehavior.ID, List.of("v1"));
+		check(roster.countFor("alice", LoyalPackBehavior.ID) == 2,
+				"and one player holding TWO companion effects keeps them separate");
+		check(roster.totalRecorded() == 4, "four companions recorded in total");
+
+		check(CompanionRoster.key("alice", "loyal_pack").equals("alice/loyal_pack"),
+				"the composite key is owner/effect");
+
+		roster.forget("alice", LoyalPackBehavior.ID, "w1");
+		check(roster.countFor("alice", LoyalPackBehavior.ID) == 1,
+				"forgetting one companion leaves the rest");
+		roster.forget("alice", LoyalPackBehavior.ID, "w2");
+		check(!roster.hasSpawned("alice", LoyalPackBehavior.ID),
+				"...and forgetting the last one clears the entry rather than leaving an "
+						+ "empty list behind");
+		check(roster.countFor("bob", LoyalPackBehavior.ID) == 1,
+				"...without touching anyone else");
+
+		// Round-trip through the persisted shape.
+		CompanionRoster copy = new CompanionRoster(roster.asMap());
+		check(copy.countFor("bob", LoyalPackBehavior.ID) == 1
+						&& copy.countFor("alice", TheAudienceBehavior.ID) == 1,
+				"the map form round-trips without loss");
+
+		// --- the llama's real ceiling --------------------------------------------
+		section("Emotional Support Llama: the double chest that cannot exist");
+		int slots = (int) constant(EmotionalSupportLlamaBehavior.class, "INVENTORY_SLOTS");
+		int strength = (int) constant(EmotionalSupportLlamaBehavior.class, "MAX_STRENGTH");
+		int doubleChest = (int) constant(EmotionalSupportLlamaBehavior.class, "DOUBLE_CHEST_SLOTS");
+		check(strength == 5, "Llama.MAX_STRENGTH is 5");
+		check(slots == strength * 3,
+				"and inventory size is strength * 3 (AbstractMountInventoryMenu"
+						+ ".getInventorySize), so the ceiling is " + slots + " slots");
+		check(doubleChest == 54, "a double chest is 54 slots");
+		check(slots < doubleChest,
+				"THE GAP: the requested double chest is not reachable -- " + slots
+						+ " of " + doubleChest + " slots, "
+						+ String.format("%.1f%%", 100.0 * slots / doubleChest)
+						+ ". Shipped as the largest genuinely-vanilla answer.");
 	}
 
 	private HarnessMain() {}

@@ -6,6 +6,7 @@
 		"EntropyModMixin",
 		"AvoidEntityGoalMixin",
 		"ItemStackDurabilityMixin",
+		"LlamaStrengthAccessor",
 		"EntityStepSoundMixin",
 		"LivingEntityDamageMixin",
 		"LivingEntityDeathProtectionMixin",

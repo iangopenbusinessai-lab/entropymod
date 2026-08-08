@@ -176,12 +176,38 @@ public final class EffectRegistry {
 		// Unstable's blast at its minimum distance is non-lethal from full health and
 		// costs a fifth of its fuse to escape, and Creeper Magnet is an ordinary
 		// creeper you can see coming. See the behavior classes for the derivations.
+		// counterplay = FALSE -- the ONLY false entry in this registry. The band is
+		// 0-2 blocks and every point in it kills a stationary full-health player.
+		//
+		// NOTE: Flamboyant was cited as the precedent for this and is NOT one -- it
+		// is registered `true` despite killing outright, because the flag has always
+		// meant "an in-game answer exists". So 25-50 here conflicts with CLAUDE.md
+		// Part 2 ("bad effects below entropy 40 must be counterplay-survivable") and
+		// cannot be justified by analogy. Flagged in UnstableBehavior; the clean fix
+		// is 40-60, like Glass Cannon Pact. Left at 25-50 as requested.
 		register("unstable", "Unstable",
-				"Primed TNT appears beside you every 30 seconds",
-				EffectCategory.SURVIVAL, EffectPhase.BAD, 25, 50, true);
+				"Primed TNT appears at your feet every 30 seconds -- move or die",
+				EffectCategory.SURVIVAL, EffectPhase.BAD, 25, 50, false);
 		register("creeper_magnet", "Creeper Magnet",
 				"A creeper blinks into existence nearby every 30 seconds to 2 minutes",
 				EffectCategory.SURVIVAL, EffectPhase.BAD, 25, 50, true);
+
+		// --- TIER 2 GOOD companions (entropy 25-50) ---
+		// All four are COMPANION, which anti-stacking then keeps apart: a run with
+		// fifteen wolves AND four iron golems AND ten villagers is a different game,
+		// and the category is the mechanism that stops the roll offering it.
+		register("loyal_pack", "Loyal Pack",
+				"Fifteen armoured wolves, tamed to you forever",
+				EffectCategory.COMPANION, EffectPhase.GOOD, 25, 50, true);
+		register("the_entourage", "The Entourage",
+				"Four iron golems escort you and attack anything that attacks you",
+				EffectCategory.COMPANION, EffectPhase.GOOD, 25, 50, true);
+		register("the_audience", "The Audience",
+				"Ten silent, invincible villagers follow you at a distance, watching",
+				EffectCategory.COMPANION, EffectPhase.GOOD, 25, 50, true);
+		register("emotional_support_llama", "Emotional Support Llama",
+				"An invincible llama follows you, carrying 15 slots of storage",
+				EffectCategory.COMPANION, EffectPhase.GOOD, 25, 50, true);
 
 		// TODO: Tiers 3-4 + odd/signature effects go here, same pattern.
 		// See entropy-modpack-effects.md for the full list to port over.
