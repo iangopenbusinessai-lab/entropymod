@@ -48,6 +48,7 @@ import com.entropymod.entropy.growth.CropSchedule;
 import com.entropymod.entropy.growth.GreenThumbGrowth;
 import com.entropymod.entropy.growth.TramplePath;
 import com.entropymod.entropy.spawn.CreeperMagnetSpawner;
+import com.entropymod.entropy.spawn.SafeSpawn;
 import com.entropymod.entropy.spawn.SpawnSchedule;
 import com.entropymod.entropy.spawn.UnstableSpawner;
 import com.entropymod.network.EntropyCodecs;
@@ -3181,6 +3182,7 @@ public final class HarnessMain {
 				"both ids are still defined after a reload -- no stale id");
 
 		spawnCadence();
+		spawnGeometry();
 		unstableCounterplay();
 		creeperMagnetAppearance();
 	}
@@ -3258,9 +3260,271 @@ public final class HarnessMain {
 		}
 		check(shared.remainingFor("a") == 300 && shared.remainingFor("b") == 0,
 				"timers are per player: 300 ticks of player a leaves player b untouched");
+
+		// --- the leaked-timer regression from the session before last ------------
+		// retainAll must be unconditional. The equal-sizes case (one player leaves as
+		// another joins) is the one a size guard gets wrong, so it is the one driven.
 		shared.retainAll(List.of("b"));
 		check(shared.remainingFor("a") == 0,
-				"a departed player's timer is dropped, so the map cannot grow without bound");
+				"REGRESSION: a departed player's timer is dropped even when the player "
+						+ "COUNT is unchanged -- the equal-sizes case a size guard misses");
+		SpawnSchedule<String> churn = new SpawnSchedule<>(600, 600, new java.util.Random(6));
+		for (int i = 0; i < 50; i++) {
+			churn.tick("player" + i);
+			churn.retainAll(List.of("player" + i));
+		}
+		check(churn.remainingFor("player49") > 0,
+				"...and the surviving player's own timer is untouched by the pruning");
+		int leaked = 0;
+		for (int i = 0; i < 49; i++) {
+			if (churn.remainingFor("player" + i) != 0) {
+				leaked++;
+			}
+		}
+		check(leaked == 0,
+				"...and 50 joins/leaves at constant population leak nothing (" + leaked + ")");
+
+		manyConsecutiveCycles();
+		retryRearm();
+	}
+
+	/**
+	 * Both schedules keep re-arming over MANY consecutive cycles, not just one.
+	 *
+	 * <p>Added after a bug report of "fired exactly once, then permanent silence".
+	 * <b>The re-arm was not the cause</b> -- the shipped log proves both cadences
+	 * were running correctly the whole time, and the pre-existing cadence check
+	 * already drove 200 consecutive Creeper Magnet gaps. This section exists
+	 * anyway, at a much larger scale and for both effects symmetrically, because
+	 * "the schedule stopped" is the first thing anyone will suspect the next time
+	 * and it should cost nothing to rule out.
+	 *
+	 * <p>The real gap was elsewhere and is covered by {@link #spawnGeometry()}:
+	 * nothing headless drove {@code SafeSpawn}'s geometry, because as first written
+	 * it needed a {@code ServerLevel} for every part of itself.
+	 */
+	private static void manyConsecutiveCycles() {
+		section("Spawn schedules re-arm indefinitely, not once");
+
+		// Unstable: 2000 consecutive fires = 1000 minutes of play at 30 s each.
+		SpawnSchedule<String> fixed = new SpawnSchedule<>(
+				UnstableBehavior.INTERVAL_TICKS, UnstableBehavior.INTERVAL_TICKS,
+				new java.util.Random(101));
+		List<Integer> fixedGaps = gapsFrom(fixed, "p", 2000);
+		long wrongFixed = fixedGaps.stream().filter(gap -> gap != 600).count();
+		check(wrongFixed == 0,
+				"Unstable fires 2000 consecutive times, every gap exactly 600 ticks "
+						+ "(that is 16h40m of play; " + wrongFixed + " bad gaps)");
+		check(fixed.remainingFor("p") > 0,
+				"...and the timer is still armed after the 2000th fire, not left at zero");
+
+		// Creeper Magnet: 2000 consecutive fires, every one re-rolled in range.
+		SpawnSchedule<String> rolled = new SpawnSchedule<>(
+				CreeperMagnetBehavior.MIN_INTERVAL_TICKS,
+				CreeperMagnetBehavior.MAX_INTERVAL_TICKS,
+				new java.util.Random(102));
+		List<Integer> gaps = gapsFrom(rolled, "p", 2000);
+		long outOfRange = gaps.stream().filter(g -> g < 600 || g > 2400).count();
+		check(outOfRange == 0,
+				"Creeper Magnet fires 2000 consecutive times, every gap inside "
+						+ "[600, 2400] (" + outOfRange + " out of range)");
+		check(rolled.remainingFor("p") > 0,
+				"...and its timer is still armed after the 2000th fire");
+		// The bound is the coupon-collector expectation, not a round number: drawing
+		// 2000 samples from 1801 possible values yields ~1208 distinct, so anything
+		// near 2000 would be unreachable and anything near 100 would pass for a
+		// schedule that had degenerated. +/-15% of the expectation is the real test.
+		long distinct = gaps.stream().distinct().count();
+		double expectedDistinct = 1801 * (1 - Math.exp(-2000.0 / 1801));
+		check(distinct > expectedDistinct * 0.85 && distinct < expectedDistinct * 1.15,
+				"...and it is still genuinely re-rolling that late in the run: " + distinct
+						+ " distinct gaps in 2000, against " + Math.round(expectedDistinct)
+						+ " expected for uniform draws over 1801 values");
+
+		// The late half must look like the early half -- a schedule that degraded
+		// after N fires would pass a "200 gaps" check and fail here.
+		double early = gaps.subList(0, 1000).stream().mapToInt(Integer::intValue).average().orElse(0);
+		double late = gaps.subList(1000, 2000).stream().mapToInt(Integer::intValue).average().orElse(0);
+		checkNear(late, early, 60.0,
+				"the last 1000 gaps average the same as the first 1000 -- no drift, no "
+						+ "degradation late in a long run");
+		checkNear(early, 1500.0, 60.0, "and the mean sits at the midpoint of the range");
+
+		// Two players in parallel, interleaved, for many cycles each.
+		SpawnSchedule<String> two = new SpawnSchedule<>(600, 600, new java.util.Random(103));
+		int firesA = 0;
+		int firesB = 0;
+		for (int t = 0; t < 600 * 50; t++) {
+			if (two.tick("a")) {
+				firesA++;
+			}
+			if (two.tick("b")) {
+				firesB++;
+			}
+		}
+		check(firesA == 50 && firesB == 50,
+				"two players each fire 50 times over 50 intervals, independently ("
+						+ firesA + "/" + firesB + ")");
+	}
+
+	/**
+	 * The short retry re-arm: a trigger that fires but finds nowhere to spawn must
+	 * not cost the whole interval.
+	 *
+	 * <p>This is the half of the fix that makes the reported symptom impossible
+	 * rather than merely rarer. Even if the position search fails, the worst case
+	 * is now "fires a bit late", not "silent for two minutes".
+	 */
+	private static void retryRearm() {
+		section("Failed placement re-arms on a short retry, not a whole interval");
+
+		check(UnstableSpawner.RETRY_TICKS == CreeperMagnetSpawner.RETRY_TICKS,
+				"both effects use the same retry delay");
+		check(UnstableSpawner.RETRY_TICKS > 0
+						&& UnstableSpawner.RETRY_TICKS < UnstableBehavior.INTERVAL_TICKS,
+				"the retry is shorter than the interval itself (" + UnstableSpawner.RETRY_TICKS
+						+ " vs " + UnstableBehavior.INTERVAL_TICKS + ") -- otherwise it would "
+						+ "be a slowdown rather than a retry");
+		check(UnstableSpawner.RETRY_TICKS >= 20,
+				"...and at least a second, so a permanently hopeless spot costs one "
+						+ "bounded search per " + UnstableSpawner.RETRY_TICKS
+						+ " ticks rather than one per tick");
+
+		SpawnSchedule<String> s = new SpawnSchedule<>(600, 600, new java.util.Random(7));
+		int toFire = 0;
+		while (!s.tick("p")) {
+			toFire++;
+		}
+		check(toFire + 1 == 600, "first fire lands on the interval");
+		check(s.remainingFor("p") == 600, "and re-arms to a full interval on success");
+
+		// Simulate a failed placement: the caller re-arms short.
+		s.rearm("p", UnstableSpawner.RETRY_TICKS);
+		check(s.remainingFor("p") == UnstableSpawner.RETRY_TICKS,
+				"a failed placement replaces the fresh interval with the short retry");
+		int toRetry = 0;
+		while (!s.tick("p")) {
+			toRetry++;
+		}
+		check(toRetry + 1 == UnstableSpawner.RETRY_TICKS,
+				"the retry fires after exactly the retry delay, not the full interval");
+		check(s.remainingFor("p") == 600,
+				"and a retry that succeeds returns to the normal cadence -- the retry "
+						+ "does not become the new interval");
+
+		// 100 consecutive failures must not wedge or drift the schedule.
+		int fires = 0;
+		for (int cycle = 0; cycle < 100; cycle++) {
+			while (!s.tick("p")) {
+				// spin to the next fire
+			}
+			fires++;
+			s.rearm("p", UnstableSpawner.RETRY_TICKS);
+		}
+		check(fires == 100,
+				"100 consecutive failed placements still produce 100 further attempts -- "
+						+ "a run standing somewhere hopeless keeps trying rather than "
+						+ "going silent");
+	}
+
+	/**
+	 * {@code SafeSpawn}'s geometry -- the part that was actually broken, and the
+	 * part nothing headless could reach before.
+	 *
+	 * <p>As first written, every line of {@code findNear} needed a
+	 * {@code ServerLevel}, so none of it was drivable by the harness and the band
+	 * and search-window rules shipped unverified. The three pure rules are now
+	 * static and Minecraft-free -- same discipline as {@code TramplePath} and
+	 * {@code CropSchedule} -- which is what lets them be asserted here.
+	 */
+	private static void spawnGeometry() {
+		section("SafeSpawn geometry: horizontal band, and the vertical search window");
+
+		// --- the band is HORIZONTAL, which is the bug this pins -------------------
+		// The shipped version drew a horizontal radius, let the vertical search move
+		// the candidate up to 4 blocks, then re-checked the 3D distance against the
+		// same band -- so finding valid ground could disqualify the candidate for
+		// having been found.
+		double min = 5.0;
+		double max = 7.0;
+		double minSqr = min * min;
+		double maxSqr = max * max;
+
+		check(SafeSpawn.withinBand(6.0 * 6.0, minSqr, maxSqr),
+				"a column 6.0 blocks out is inside the [5, 7] band");
+		check(SafeSpawn.withinBand(minSqr, minSqr, maxSqr)
+						&& SafeSpawn.withinBand(maxSqr, minSqr, maxSqr),
+				"both ends of the band are inclusive");
+		check(!SafeSpawn.withinBand(4.9 * 4.9, minSqr, maxSqr)
+						&& !SafeSpawn.withinBand(7.1 * 7.1, minSqr, maxSqr),
+				"and just outside either end is rejected -- the band does not leak");
+
+		// The regression itself: a column at a legal horizontal distance must stay
+		// legal however far the vertical search had to move to find its ground.
+		check(SafeSpawn.withinBand(7.0 * 7.0, minSqr, maxSqr),
+				"THE FIX: a column exactly 7.0 blocks out is accepted...");
+		double bogus3d = 7.0 * 7.0 + 8.0 * 8.0;   // same column, ground 8 blocks down
+		check(!SafeSpawn.withinBand(bogus3d, minSqr, maxSqr)
+						&& SafeSpawn.withinBand(7.0 * 7.0, minSqr, maxSqr),
+				"...and would have been REJECTED under the old 3D test once its ground "
+						+ "turned out to be 8 blocks below (" + Math.sqrt(bogus3d)
+						+ " blocks 3D) -- the vertical search disqualifying its own result");
+
+		// horizontalDistanceSqr must measure from the block CENTRE, not its corner.
+		checkNear(SafeSpawn.horizontalDistanceSqr(5, 0, 0.5, 0.5), 25.0, 1e-9,
+				"distance is measured from the block centre (5.5-0.5 = 5.0)");
+		checkNear(SafeSpawn.horizontalDistanceSqr(-6, 0, -0.5, 0.5), 25.0, 1e-9,
+				"...and is correct west of the origin too, where a cast would be off by one");
+
+		// --- the vertical search window ------------------------------------------
+		check((int) constant(SafeSpawn.class, "VERTICAL_SEARCH") == 8,
+				"VERTICAL_SEARCH is 8, raised from 4 after the in-game failure: decoding "
+						+ "the saved region file around the player's actual position "
+						+ "(-15, 112, -83) showed 34.4% of candidate columns had their "
+						+ "surface more than 4 blocks from the player's Y, against 7% at 8");
+		check((int) constant(SafeSpawn.class, "ATTEMPTS") >= 32,
+				"and ATTEMPTS is at least 32");
+
+		int search = (int) constant(SafeSpawn.class, "VERTICAL_SEARCH");
+		java.util.Set<Integer> seen = new java.util.HashSet<>();
+		int previousAbs = -1;
+		boolean nearestFirst = true;
+		for (int step = 0; step <= search * 2; step++) {
+			int dy = SafeSpawn.verticalOffset(step);
+			seen.add(dy);
+			if (Math.abs(dy) < previousAbs) {
+				nearestFirst = false;
+			}
+			previousAbs = Math.abs(dy);
+		}
+		check(seen.size() == search * 2 + 1,
+				"the search visits every offset in [-" + search + ", +" + search
+						+ "] exactly once (" + seen.size() + " distinct)");
+		check(seen.contains(-search) && seen.contains(search) && seen.contains(0),
+				"...including both extremes and the player's own level");
+		check(nearestFirst,
+				"...and in nearest-first order, so flat ground answers with the player's "
+						+ "own Y rather than whichever step the loop reached first");
+		check(SafeSpawn.verticalOffset(0) == 0, "step 0 is the player's own level");
+
+		// --- the aim points ------------------------------------------------------
+		check(SafeSpawn.AIM_FRACTIONS.length >= 2,
+				"line of sight is tested at more than one height up the entity's body");
+		double lowest = SafeSpawn.AIM_FRACTIONS[0];
+		for (double f : SafeSpawn.AIM_FRACTIONS) {
+			lowest = Math.min(lowest, f);
+		}
+		check(lowest >= 0.5,
+				"and the lowest aim point is at least half the entity's height -- aiming "
+						+ "at the feet block, as the first version did, made the ray graze "
+						+ "the terrain for its whole length and was the dominant rejection");
+		double highest = 0;
+		for (double f : SafeSpawn.AIM_FRACTIONS) {
+			highest = Math.max(highest, f);
+		}
+		check(highest <= 1.0,
+				"...and the highest is no more than the entity's height, so a candidate "
+						+ "only visible ABOVE the entity is not counted as visible");
 	}
 
 	/** Runs a schedule until it has fired {@code count} times, returning the gaps. */
@@ -3507,10 +3771,34 @@ public final class HarnessMain {
 						&& (int) constant(safeSpawn, "VERTICAL_SEARCH") > 0,
 				"the search is bounded in both dimensions rather than looping until it "
 						+ "succeeds");
-		check(Checks.classReferences(safeSpawn, "distanceToSqr"),
-				"the true distance is re-checked after the vertical search -- otherwise a "
-						+ "candidate 5 out and 4 down would be returned as '5 blocks away' "
-						+ "when it is really 6.4");
+		// This check used to assert the OPPOSITE, and asserting it is what let the bug
+		// ship: it pinned a 3D re-check of a horizontally-drawn radius as though that
+		// were the correct rule. It is not -- the band is horizontal, and coupling it
+		// to the vertical search let a valid surface disqualify its own column.
+		check(Checks.classReferences(safeSpawn, "horizontalDistanceSqr")
+						&& Checks.classReferences(safeSpawn, "withinBand"),
+				"the band is re-checked HORIZONTALLY after flooring to a block, which is "
+						+ "still required (flooring moves a candidate up to ~0.7 blocks "
+						+ "radially) -- see spawnGeometry for the rule itself");
+		// Asserted on the callers, not on SafeSpawn: the record declares the method,
+		// but the claim that matters is that the spawners actually LOG it. A search
+		// that can explain itself to nobody is the same as one that cannot explain
+		// itself at all -- which is precisely what happened.
+		check(Checks.hasMethod(SafeSpawn.Attempt.class, "rejectionSummary"),
+				"a failed search can report WHICH gate rejected");
+		check(Checks.classReferences(
+						com.entropymod.entropy.spawn.UnstableSpawner.class, "rejectionSummary")
+						&& Checks.classReferences(
+						com.entropymod.entropy.spawn.CreeperMagnetSpawner.class, "rejectionSummary"),
+				"...and BOTH spawners put that breakdown in the log -- the absence of this "
+						+ "is why the first bug report could not be diagnosed from the log "
+						+ "and had to be reconstructed from the world save");
+		check(Checks.classReferences(
+						com.entropymod.entropy.spawn.UnstableSpawner.class, "rearm")
+						&& Checks.classReferences(
+						com.entropymod.entropy.spawn.CreeperMagnetSpawner.class, "rearm"),
+				"...and both re-arm on a short retry rather than spending the whole "
+						+ "interval on a spot that had nowhere to put anything");
 	}
 
 	private HarnessMain() {}

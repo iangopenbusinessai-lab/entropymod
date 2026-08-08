@@ -450,6 +450,16 @@ Separately, `Attributes.FOLLOW_RANGE` defaults to 32.0 but
 from `DefaultAttributes.getSupplier(EntityType.X)`, never from the attribute.**
 Spawning anything also means reusing `SafeSpawn` — see `entropy-effects`.
 
+**1f. The component you can test is not the component that breaks.** Unstable and
+Creeper Magnet shipped with the cadence asserted over 200 consecutive cycles and
+failed in play as "fired once, then silence" — the schedules were perfect and
+`SafeSpawn` was returning null on three triggers in four, because every line of it
+needed a `ServerLevel` and none of it was harness-reachable. **Split a scheduled
+effect's pure decisions out as Minecraft-free statics so they can be driven, and
+make every failure path name its own cause in the log** — the diagnosis here
+needed the world save's heightmap only because the log said *that* it failed and
+not *why*. See `entropy-effects`.
+
 **2. A mixin's *shape* is part of its correctness when two sides share a target.**
 Slippery Grip's two mixins used to be `@ModifyVariable`s that both forced
 `setSprinting`'s argument false, which chained safely **only because both halves
@@ -569,7 +579,7 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 887 checks currently: the tuning constants as
+same numbers kept being re-derived. 925 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble

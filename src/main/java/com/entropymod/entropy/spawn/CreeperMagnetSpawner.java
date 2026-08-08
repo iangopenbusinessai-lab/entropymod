@@ -33,6 +33,9 @@ public final class CreeperMagnetSpawner {
 	private static final SpawnSchedule<UUID> SCHEDULE = new SpawnSchedule<>(
 			CreeperMagnetBehavior.MIN_INTERVAL_TICKS, CreeperMagnetBehavior.MAX_INTERVAL_TICKS);
 
+	/** How soon to try again when a trigger fired but found nowhere to spawn. See {@link UnstableSpawner#RETRY_TICKS}. */
+	public static final int RETRY_TICKS = 40;
+
 	private CreeperMagnetSpawner() {}
 
 	/** Whether the run's acquired set enables this at all. Harness-drivable gate. */
@@ -79,14 +82,19 @@ public final class CreeperMagnetSpawner {
 
 	private static void spawnCreeper(ServerPlayer player) {
 		ServerLevel level = player.level();
-		BlockPos pos = SafeSpawn.findNear(level, player, EntityType.CREEPER,
+		SafeSpawn.Attempt attempt = SafeSpawn.findNear(level, player, EntityType.CREEPER,
 				CreeperMagnetBehavior.MIN_DISTANCE, CreeperMagnetBehavior.MAX_DISTANCE,
 				level.getRandom());
-		if (pos == null) {
-			EntropyMod.LOGGER.debug("Creeper Magnet: no safe spawn position near {}",
-					player.getName().getString());
+		if (!attempt.found()) {
+			// Re-armed on a short retry rather than losing the whole interval, and the
+			// per-gate breakdown names which rule did the rejecting -- see
+			// UnstableSpawner for why both of those exist.
+			SCHEDULE.rearm(player.getUUID(), RETRY_TICKS);
+			EntropyMod.LOGGER.debug("Creeper Magnet: no safe spawn position near {} -- {}; retrying in {}t",
+					player.getName().getString(), attempt.rejectionSummary(), RETRY_TICKS);
 			return;
 		}
+		BlockPos pos = attempt.pos();
 
 		// EVENT, not NATURAL: this is a summon. checkSpawnRules is deliberately not
 		// consulted -- it is the light-level gate for natural spawning, and honouring

@@ -2867,3 +2867,130 @@ Creeper Magnet's is random for a matching reason: TNT is a threat you have to
 *escape*, where planning around the clock is part of the counterplay, while a
 creeper is a threat you have to *notice*, where unpredictability is the whole
 texture.
+
+#### "Fired once, then silence" — the schedule was innocent. Read this before suspecting one.
+Reported as: Unstable and Creeper Magnet held together, Creeper Magnet fired
+exactly once and then nothing for 5+ minutes, Unstable apparently never. The
+natural hypothesis — and the one that was put to this session — was that
+`SpawnSchedule` schedules once, fires once and never re-arms, since a shared
+mechanism failing identically for two effects with different intervals beats two
+coincidentally identical bugs. **That hypothesis was wrong, and `run/logs/debug.log`
+refuted it in one grep.**
+
+```
+[20:19:00] Creeper Magnet: no safe spawn position near Player215
+[20:19:53] Creeper Magnet: no safe spawn position near Player215     gap  53 s
+[20:20:34] Creeper Magnet: no safe spawn position near Player215     gap  41 s
+[20:21:47] Unstable: no safe spawn position near Player215           grant +30 s
+[20:22:17] Unstable: no safe spawn position near Player215           gap  30 s
+[20:22:20] Creeper Magnet: no safe spawn position near Player215     gap 106 s
+[20:23:40] Unstable: no safe spawn position near Player215           gap  83 s
+[20:24:10] Unstable: no safe spawn position near Player215           gap  30 s
+```
+
+Every Creeper Magnet gap is inside [30 s, 120 s]; every logged Unstable gap is a
+multiple of exactly 30 s. **Both schedules were firing perfectly, the entire
+time.** The gaps that are *missing* from the log are the successful ones — the
+spawners log only on failure — which is also how you can read off that Unstable
+did fire twice (20:22:47 and 20:23:17, silent) and Creeper Magnet once, matching
+the one creeper the player saw.
+
+**The real fault: `SafeSpawn.findNear` returned null on roughly three triggers in
+four**, and the trigger was consumed. "Fires reliably but usually finds nowhere"
+and "stopped firing" are the same thing from the player's seat.
+
+**The lesson worth keeping is about where to look, not about schedules.** The
+cadence was *already* covered — the shipped harness drove 200 consecutive Creeper
+Magnet gaps and asserted their spread. What was not covered was `SafeSpawn`, and
+it could not be: as first written every line of `findNear` needed a `ServerLevel`,
+so no part of its geometry was harness-reachable. **The tested component was the
+one that worked.**
+
+#### Diagnosing it needed the WORLD SAVE, because the log line did not say why
+`"no safe spawn position near X"` records *that* the search failed and not *which
+rule rejected*. With four gates (chunk loaded, vanilla's ON_GROUND test, the
+distance band, line of sight) that is four hypotheses and no way to choose. The
+root cause had to be reconstructed instead from `run/saves/<world>/`:
+
+- `players/data/<uuid>.dat` gave the player's real position — **(-15.3, 112.0,
+  -83.5), Survival, on ground, overworld**. Y=112 is a peak.
+- the region file's packed `MOTION_BLOCKING` heightmap gave the actual terrain:
+  ground falling away to **-10 and rising to +6** within twelve blocks.
+
+That is a genuinely useful technique and worth keeping — **`level.dat`, `players/data/*.dat`
+and the region heightmaps are readable with about 40 lines of Python, and they
+answer "what did the world actually look like where this happened"** in a way no
+log can. But it should not have been necessary. This is the same lesson CLAUDE.md
+already records for `/entropyhistory` — *diagnostic output that does not say why is
+indistinguishable from no diagnostic output* — and it was re-learned at the cost of
+a session. `SafeSpawn.Attempt` now carries per-gate rejection counts and both
+spawners log them.
+
+#### Three real defects in `SafeSpawn`, one of them measured against that terrain
+**1. `VERTICAL_SEARCH` was 4, and that is not enough for terrain people stand on.**
+Measured against the real heightmap around the player's actual position,
+**34.4% of candidate columns in both bands had their surface more than 4 blocks
+from the player's Y** — so for a third of the map the search looked at, no step in
+the window ever reached ground and the column was rejected without any of the
+later gates running. At 8 the same terrain admits **93%**. Now 8. Interesting
+terrain is exactly where players stand; a window that only works on flat ground is
+not a window.
+
+**2. The band was drawn horizontally and tested in 3D.** The radius was drawn as a
+horizontal distance, the vertical search then moved the candidate up to four
+blocks, and the resulting *3D* distance was re-checked against the same band — so
+**finding valid ground could disqualify a column for having been found.** The two
+rules were fighting each other, and on the test terrain this removed a further
+~9% on top of everything else. It is also the wrong reading of the design: "TNT
+appears 5 to 7 blocks away" means five to seven blocks *across the ground*; nobody
+counts the drop down a slope. The band is now horizontal
+(`SafeSpawn.withinBand`), the vertical offset is bounded separately, and the
+horizontal re-check after flooring is kept — flooring still moves a candidate up
+to ~0.7 blocks radially, so without it the band leaks at both ends.
+
+**3. Line of sight aimed at the ground, not at the entity.** The target was the
+centre of the *feet* block — half a block above the surface — so the ray grazed
+the terrain for its whole length and clipped on any rise or rounded slope. That is
+not what the question means: the player would have seen the creeper's head over
+the rise perfectly well. Aim points are now taken up the spawned entity's own
+height (`AIM_FRACTIONS = {0.5, 1.0}`) and the candidate passes if **any** is
+visible. In every model run, this was the single dominant rejection.
+
+Modelled against the exact terrain that produced the bug, the three together
+roughly double the per-candidate acceptance rate — Unstable **14.5% → 26.0%**,
+Creeper Magnet **31.6% → 48.7%**. **Stated honestly: that model under-predicts the
+real failure rate** (it predicted ~2% total failure for the shipped version
+against ~75% observed), because a heightmap proxy is much more forgiving than a
+real `ClipContext` traversal against actual collision shapes. The improvement
+direction is solid; the absolute numbers are not evidence, and the new per-gate
+log line is what will settle the remainder.
+
+#### The fix that makes the SYMPTOM impossible rather than rarer
+`SpawnSchedule.rearm(key, ticks)`, called by both spawners when a trigger fires
+but finds nowhere to put anything: **40 ticks instead of the whole interval.**
+Even if the position search still fails sometimes, the worst case becomes "fires a
+bit late" rather than "silent for two minutes" — and standing somewhere
+permanently hopeless costs one bounded search every two seconds, not one per tick.
+It cannot distort a working cadence, because it is only reachable on a failure;
+a successful trigger keeps the interval `tick` drew.
+
+#### PERMANENT TESTING REQUIREMENT for any scheduled or recurring effect
+1. **Drive MANY consecutive cycles, not one, and compare late behaviour to
+   early.** Both effects now run 2000 consecutive fires (16h40m of play at
+   Unstable's cadence), asserting the timer is still armed after the last one and
+   that the last 1000 gaps have the same mean as the first 1000. A schedule that
+   degraded after N fires would pass a single-cycle check and a 200-cycle check.
+2. **Assert what the trigger DOES, not only that it fires.** This bug lived
+   entirely in the half of the effect the harness could not reach. If a trigger's
+   action needs a `ServerLevel`, split its pure rules out as Minecraft-free
+   statics — as `withinBand`, `horizontalDistanceSqr` and `verticalOffset` now are
+   — so the parts that encode a *decision* are drivable. Same discipline as
+   `TramplePath` and `CropSchedule`, applied to the right component this time.
+3. **Every failure path must name its own cause in the log.** A recurring effect
+   that can silently decline to act needs to say which rule declined, or a bug
+   report about it is unanswerable.
+4. **Statistical thresholds must be derived, not rounded.** A first draft of the
+   re-roll check asserted ">1500 distinct gaps in 2000" and failed at 1182 — the
+   coupon-collector expectation for 2000 draws over 1801 values is **1208**, so
+   the assertion was impossible rather than the code wrong. The check now compares
+   against that expectation with a ±15% band.

@@ -42,6 +42,15 @@ public final class UnstableSpawner {
 	private static final SpawnSchedule<UUID> SCHEDULE = new SpawnSchedule<>(
 			UnstableBehavior.INTERVAL_TICKS, UnstableBehavior.INTERVAL_TICKS);
 
+	/**
+	 * How soon to try again when a trigger fired but found nowhere to spawn.
+	 *
+	 * <p>Two seconds. Short enough that a player crossing bad ground barely
+	 * notices a gap, long enough that standing somewhere permanently hopeless
+	 * costs one bounded search every 40 ticks rather than one per tick.
+	 */
+	public static final int RETRY_TICKS = 40;
+
 	private UnstableSpawner() {}
 
 	/**
@@ -96,19 +105,23 @@ public final class UnstableSpawner {
 
 	private static void spawnTnt(ServerPlayer player) {
 		ServerLevel level = player.level();
-		BlockPos pos = SafeSpawn.findNear(level, player, EntityType.TNT,
+		SafeSpawn.Attempt attempt = SafeSpawn.findNear(level, player, EntityType.TNT,
 				UnstableBehavior.MIN_DISTANCE, UnstableBehavior.MAX_DISTANCE,
 				level.getRandom());
-		if (pos == null) {
+		if (!attempt.found()) {
 			// A real outcome, not an error: a player sealed into a narrow shaft has
-			// nowhere valid and visible nearby. The trigger is spent and the next one
-			// is 30 seconds away. Logged because this effect is otherwise impossible
-			// to tell apart from "the timer isn't running" -- the same reason Clumsy
-			// Digger and Double Jump log.
-			EntropyMod.LOGGER.debug("Unstable: no safe spawn position near {}",
-					player.getName().getString());
+			// nowhere valid and visible nearby. Re-armed on a short retry rather than
+			// losing the whole interval -- the player moves, and a spot two seconds
+			// later is usually fine. The per-gate breakdown is the whole point of the
+			// line: "it failed" and "it failed because nothing was in line of sight"
+			// look identical otherwise, which is what made the first bug report
+			// unresolvable from the log.
+			SCHEDULE.rearm(player.getUUID(), RETRY_TICKS);
+			EntropyMod.LOGGER.debug("Unstable: no safe spawn position near {} -- {}; retrying in {}t",
+					player.getName().getString(), attempt.rejectionSummary(), RETRY_TICKS);
 			return;
 		}
+		BlockPos pos = attempt.pos();
 
 		Vec3 centre = Vec3.atBottomCenterOf(pos);
 

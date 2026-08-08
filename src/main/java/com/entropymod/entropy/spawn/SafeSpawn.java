@@ -32,8 +32,9 @@ import net.minecraft.world.phys.Vec3;
  *
  * <ol>
  *   <li>the position is inside the world border;</li>
- *   <li>{@code below.isValidSpawn(level, belowPos, type)} -- solid ground this
- *       entity type can stand on;</li>
+ *   <li>{@code below.isValidSpawn(level, belowPos, type)} -- whose default
+ *       predicate is {@code isFaceSturdy(UP) && getLightEmission() < 14}, i.e.
+ *       solid ground this entity type can stand on;</li>
  *   <li>{@code NaturalSpawner.isValidEmptySpawnBlock} at the feet, which requires
  *       a non-full collision shape, no fluid, not a signal source, not in
  *       {@code #prevent_mob_spawning_inside}, and not a block dangerous to this
@@ -50,80 +51,148 @@ import net.minecraft.world.phys.Vec3;
  * mob.</b> {@code SpawnPlacements.isSpawnPositionOk} would look up the entity
  * type's registered placement, and TNT -- having no natural spawn -- gets
  * {@code NO_RESTRICTIONS}, i.e. "anywhere", which is the one answer this class
- * must never give. Naming the placement type explicitly is what prevents that.
- * It is also the behaviour Unstable wants on its own merits: TNT dropped into
- * mid-air falls somewhere unpredictable, while TNT placed on the floor the player
- * is standing on is a threat they can judge.
+ * must never give.
  *
- * <h2>Line of sight is required, and it is the counterplay guarantee</h2>
+ * <h2>THE DISTANCE BAND IS HORIZONTAL. This was a real bug.</h2>
  *
- * <p>A hazard the player cannot see is a hazard they cannot answer. The check is
- * the same clip vanilla's own {@code LivingEntity.hasLineOfSight} performs --
- * {@code ClipContext.Block.COLLIDER}, {@code Fluid.NONE}, from the player's eye
- * to the candidate's centre, requiring {@link HitResult.Type#MISS}. Note this is
- * a visibility test, not a facing test: a creeper appearing behind an unturned
- * back still passes, which is intended. What it rules out is the wall.
+ * <p>The first version drew a <em>horizontal</em> radius, let the vertical search
+ * move the candidate up to four blocks up or down, and then re-checked the
+ * resulting <em>3D</em> distance against the same band. <b>Those two rules fight
+ * each other: finding a valid surface could disqualify the candidate for having
+ * been found.</b> On the terrain where this was first played, that alone rejected
+ * about one candidate in ten on top of everything else.
  *
- * <h2>The distance band is a spherical shell, checked twice</h2>
+ * <p>It is also the wrong reading of the design. "TNT appears 5 to 7 blocks away"
+ * means 5 to 7 blocks <em>across the ground</em>; nobody counts the drop down a
+ * slope as part of the distance. So the band is now tested horizontally, and the
+ * vertical offset is bounded separately by {@link #VERTICAL_SEARCH}. The
+ * horizontal re-check after flooring to a block is still required -- flooring can
+ * move a candidate up to ~0.7 blocks radially, and without the re-check the band
+ * would quietly leak at both ends.
  *
- * <p>The horizontal offset is drawn in the requested band, but the vertical
- * search then moves the candidate up or down, so the true distance is re-checked
- * against the band before the position is returned. Without that a candidate 5
- * blocks out and 4 blocks down would be handed back as "5 blocks away" when it is
- * really 6.4 -- the same box-versus-sphere leak Danger Sense and Ore Sense both
- * guard against, and just as invisible in play.
+ * <h2>Line of sight aims at the ENTITY, not at the ground under it</h2>
+ *
+ * <p>A hazard the player cannot see is a hazard they cannot answer, so the search
+ * requires an unobstructed clip -- the same one vanilla's own
+ * {@code LivingEntity.hasLineOfSight} performs ({@code ClipContext.Block.COLLIDER},
+ * {@code Fluid.NONE}, from the player's eye, requiring {@link HitResult.Type#MISS}).
+ * Note this is a visibility test, not a facing test: a creeper appearing behind an
+ * unturned back still passes. What it rules out is the wall.
+ *
+ * <p><b>But the first version aimed at the centre of the feet block -- half a
+ * block above the ground -- and that made the ray graze the terrain for its whole
+ * length.</b> Over any rise or rounded slope it clipped the ground short of the
+ * target, which is not what the question means: the player would have seen the
+ * creeper's head over the rise perfectly well. The aim points are now taken up
+ * the spawned entity's own height ({@link #AIM_FRACTIONS}), and the candidate
+ * passes if <em>any</em> of them is visible.
  *
  * <h2>Cost</h2>
  *
- * <p>At most {@link #ATTEMPTS} candidates, each costing up to
+ * <p>At most {@link #ATTEMPTS} candidate columns, each costing up to
  * {@code 2 * VERTICAL_SEARCH + 1} vertical steps of a handful of block-state
- * reads, and one clip only for a candidate that has already passed everything
- * else. That is bounded by a few hundred block reads in the worst case, once per
- * trigger -- i.e. once per 30 seconds per player, against Green Thumb's 4,913
- * reads every second. Returning {@code null} early on the first success is the
- * normal case in open terrain.
+ * reads, and clips only for a candidate that has already passed everything else.
+ * Bounded by a few hundred block reads in the worst case, and the first success
+ * returns immediately -- the normal case in open terrain.
  */
 public final class SafeSpawn {
 
 	/**
-	 * How many horizontal candidates to try before giving up.
+	 * How many horizontal candidate columns to try before giving up.
 	 *
-	 * <p>Generous, because failing has a real cost -- the trigger is consumed and
-	 * the player gets nothing for 30 seconds -- and cheap, because each attempt is
-	 * a few block-state reads.
+	 * <p>Failing has a real cost -- see {@link Attempt} -- and each attempt is a
+	 * few block-state reads, so this is deliberately generous.
 	 */
-	public static final int ATTEMPTS = 24;
+	public static final int ATTEMPTS = 32;
 
 	/**
 	 * How far up and down from the player's own feet the vertical search looks.
 	 *
-	 * <p>Four blocks each way covers ordinary terrain, staircases and the floor
-	 * below a ledge without letting a spawn appear on a completely different
-	 * storey of a build. Searched nearest-first, so a flat field always answers
-	 * with the player's own Y.
+	 * <p><b>Raised from 4 to 8 after the first in-game session, and the number is
+	 * measured rather than chosen.</b> The player was standing on a peak at Y=112;
+	 * decoding the saved region file's heightmap around that point showed
+	 * <b>34.4% of candidate columns in both bands had their surface more than four
+	 * blocks from the player's own Y</b>, so the search never reached ground at
+	 * all for a third of the map it looked at. At eight the same terrain admits
+	 * <b>93%</b>. Interesting terrain is exactly where players stand, so a window
+	 * that only works on flat ground is not a window.
 	 */
-	public static final int VERTICAL_SEARCH = 4;
+	public static final int VERTICAL_SEARCH = 8;
+
+	/**
+	 * Where up the spawned entity's body to aim the visibility ray, as fractions
+	 * of its height. Middle first, then the top.
+	 *
+	 * <p>Two points rather than one because the interesting case is a target
+	 * partly hidden by a rise: the creeper's head clears it while its feet do not,
+	 * and the player does see the creeper. Aiming only at the feet block -- the
+	 * first version -- rejected all of those.
+	 */
+	public static final double[] AIM_FRACTIONS = {0.5, 1.0};
 
 	private SafeSpawn() {}
 
 	/**
-	 * A standable, unobstructed, visible position in the given distance band
-	 * around the player, or {@code null} if none was found.
+	 * The outcome of a search: the position if one was found, and otherwise a
+	 * breakdown of which gate did the rejecting.
 	 *
-	 * <p>{@code null} is a real and expected outcome -- a player walled into a
-	 * 1x2 shaft has nowhere valid nearby, and the honest answer is that nothing
-	 * spawns. Callers must not retry in a loop; the next interval will ask again.
+	 * <p><b>The breakdown exists because its absence cost a session.</b> The first
+	 * version logged only "no safe spawn position near X", which says <em>that</em>
+	 * the search failed and not <em>why</em> -- so a bug report of "the effect
+	 * fired once and then never again" could not be told apart from "the schedule
+	 * stopped", and the real cause had to be reconstructed afterwards by decoding
+	 * the world save's heightmap. This is the same lesson CLAUDE.md already
+	 * records for {@code /entropyhistory}: <b>diagnostic output that does not say
+	 * why is indistinguishable from no diagnostic output.</b>
+	 *
+	 * @param pos      the position found, or {@code null}
+	 * @param unloaded columns rejected for an unloaded chunk or out-of-bounds Y
+	 * @param ground   columns rejected by vanilla's ON_GROUND placement test
+	 * @param band     candidates rejected for falling outside the horizontal band
+	 * @param sight    candidates rejected for having no line of sight
+	 */
+	public record Attempt(BlockPos pos, int unloaded, int ground, int band, int sight) {
+
+		public boolean found() {
+			return pos != null;
+		}
+
+		/** One-line summary for the DEBUG log. Names the gate that did the work. */
+		public String rejectionSummary() {
+			return "rejected " + (unloaded + ground + band + sight)
+					+ " candidate(s): unloaded=" + unloaded
+					+ " no-ground=" + ground
+					+ " out-of-band=" + band
+					+ " no-line-of-sight=" + sight;
+		}
+	}
+
+	/**
+	 * A standable, unobstructed, visible position in the given horizontal distance
+	 * band around the player.
+	 *
+	 * <p>A result with no position is a real and expected outcome -- a player
+	 * walled into a 1x2 shaft has nowhere valid nearby, and the honest answer is
+	 * that nothing spawns. Callers must not retry in a loop; they should log
+	 * {@link Attempt#rejectionSummary()} and re-arm on a short retry so the whole
+	 * interval is not lost to one bad spot.
 	 *
 	 * @param type        the entity type the position must be valid for
-	 * @param minDistance inclusive lower bound, in blocks, on the true distance
-	 * @param maxDistance inclusive upper bound, in blocks, on the true distance
+	 * @param minDistance inclusive lower bound, in blocks, on the HORIZONTAL distance
+	 * @param maxDistance inclusive upper bound, in blocks, on the HORIZONTAL distance
 	 */
-	public static BlockPos findNear(ServerLevel level, ServerPlayer player, EntityType<?> type,
-									double minDistance, double maxDistance, RandomSource random) {
+	public static Attempt findNear(ServerLevel level, ServerPlayer player, EntityType<?> type,
+								   double minDistance, double maxDistance, RandomSource random) {
 		Vec3 eye = player.getEyePosition();
 		double minSqr = minDistance * minDistance;
 		double maxSqr = maxDistance * maxDistance;
 		int baseY = player.blockPosition().getY();
+		double height = Math.max(type.getHeight(), 1.0f);
+
+		int unloaded = 0;
+		int ground = 0;
+		int band = 0;
+		int sight = 0;
 
 		for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
 			double angle = random.nextDouble() * (Math.PI * 2.0);
@@ -134,38 +203,88 @@ public final class SafeSpawn {
 			int x = Mth.floor(player.getX() + Math.cos(angle) * distance);
 			int z = Mth.floor(player.getZ() + Math.sin(angle) * distance);
 
-			// Nearest Y first: 0, -1, +1, -2, +2, ... so flat ground answers with the
-			// player's own level and a slope answers with the nearest surface rather
-			// than whichever one the loop happened to reach first.
-			for (int step = 0; step <= VERTICAL_SEARCH * 2; step++) {
-				int dy = (step % 2 == 0) ? -(step / 2) : (step + 1) / 2;
-				BlockPos candidate = new BlockPos(x, baseY + dy, z);
+			// The horizontal band is a property of the COLUMN, so it is checked once
+			// here rather than once per vertical step. This is also what stops the
+			// vertical search from disqualifying its own result -- see the class
+			// javadoc; testing the 3D distance here was a real bug.
+			if (!withinBand(horizontalDistanceSqr(x, z, player.getX(), player.getZ()),
+					minSqr, maxSqr)) {
+				band++;
+				continue;
+			}
+
+			BlockPos found = null;
+			for (int step = 0; step <= VERTICAL_SEARCH * 2 && found == null; step++) {
+				BlockPos candidate = new BlockPos(x, baseY + verticalOffset(step), z);
 
 				// Level.isLoaded, not hasChunkAt: it is isInValidBounds() AND a loaded
 				// chunk, so it rejects a candidate the vertical search pushed below the
 				// world floor or above its ceiling as well as one in an unloaded chunk.
-				// (hasChunkAt would have answered only the second question -- and its
-				// underlying hasChunk is deprecated in this version.) Never force a
-				// chunk to load or generate for this.
+				// Never force a chunk to load or generate for this.
 				if (!level.isLoaded(candidate)) {
+					unloaded++;
 					continue;
 				}
 				if (!SpawnPlacementTypes.ON_GROUND.isSpawnPositionOk(level, candidate, type)) {
+					ground++;
 					continue;
 				}
-
-				Vec3 centre = Vec3.atBottomCenterOf(candidate).add(0.0, 0.5, 0.0);
-				double actualSqr = centre.distanceToSqr(player.position());
-				if (actualSqr < minSqr || actualSqr > maxSqr) {
+				if (!canSee(level, player, eye, candidate, height)) {
+					sight++;
 					continue;
 				}
-				if (!hasLineOfSight(level, player, eye, centre)) {
-					continue;
-				}
-				return candidate;
+				found = candidate;
+			}
+			if (found != null) {
+				return new Attempt(found, unloaded, ground, band, sight);
 			}
 		}
-		return null;
+		return new Attempt(null, unloaded, ground, band, sight);
+	}
+
+	/**
+	 * The vertical offset for a search step: 0, +1, -1, +2, -2, ...
+	 *
+	 * <p>Nearest first, so flat ground answers with the player's own level and a
+	 * slope answers with the nearest surface rather than whichever the loop
+	 * happened to reach first. Free of Minecraft types so the harness can drive the
+	 * ordering directly.
+	 */
+	public static int verticalOffset(int step) {
+		return (step % 2 == 0) ? -(step / 2) : (step + 1) / 2;
+	}
+
+	/** Squared horizontal distance from a block's centre to a point. Minecraft-free. */
+	public static double horizontalDistanceSqr(int blockX, int blockZ, double px, double pz) {
+		double dx = (blockX + 0.5) - px;
+		double dz = (blockZ + 0.5) - pz;
+		return dx * dx + dz * dz;
+	}
+
+	/**
+	 * Whether a squared horizontal distance is inside the band.
+	 *
+	 * <p>Minecraft-free, and separated out because the band's <em>semantics</em>
+	 * -- horizontal, not 3D -- is the thing that was wrong and the thing a future
+	 * edit could most easily get wrong again.
+	 */
+	public static boolean withinBand(double horizontalSqr, double minSqr, double maxSqr) {
+		return horizontalSqr >= minSqr && horizontalSqr <= maxSqr;
+	}
+
+	/**
+	 * Whether the player can see an entity of this height standing at this
+	 * position, testing each of {@link #AIM_FRACTIONS} up its body.
+	 */
+	public static boolean canSee(ServerLevel level, ServerPlayer player, Vec3 eye,
+								 BlockPos pos, double height) {
+		Vec3 feet = Vec3.atBottomCenterOf(pos);
+		for (double fraction : AIM_FRACTIONS) {
+			if (hasLineOfSight(level, player, eye, feet.add(0.0, height * fraction, 0.0))) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

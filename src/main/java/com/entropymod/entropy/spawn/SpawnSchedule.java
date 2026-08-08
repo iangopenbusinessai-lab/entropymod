@@ -109,6 +109,27 @@ public final class SpawnSchedule<K> {
 	}
 
 	/**
+	 * Overrides this key's timer with a short delay, replacing whatever
+	 * {@link #tick} just drew.
+	 *
+	 * <p><b>For the case where a trigger fired but could not be acted on.</b> Both
+	 * spawn effects can fire and then find nowhere valid to put anything; without
+	 * this the trigger is spent and the player gets nothing for a whole interval,
+	 * which is exactly how "fires reliably but often finds nowhere" presented in
+	 * play as "stopped firing altogether".
+	 *
+	 * <p>This deliberately does <em>not</em> change the cadence when things are
+	 * working -- it is only reachable on a failed attempt, and a successful
+	 * trigger keeps the interval {@code tick} drew.
+	 */
+	public void rearm(K key, int ticks) {
+		if (ticks <= 0) {
+			throw new IllegalArgumentException("Retry delay must be positive: " + ticks);
+		}
+		remaining.put(key, ticks);
+	}
+
+	/**
 	 * Drops timers for keys no longer present, so the map cannot grow without
 	 * bound as players come and go.
 	 *
