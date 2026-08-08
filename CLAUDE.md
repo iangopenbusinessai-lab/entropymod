@@ -482,6 +482,14 @@ far from their pack gets a fresh set every relog. **Spawn only on
 `EffectContext.isFreshPick()`**, which makes "no duplicates" structural rather than
 dependent on a lookup succeeding. See `entropy-effects`.
 
+**1i. `moveTo(Entity, speed)` has NO stop distance -- it paths to the target's own
+block.** It is `createPath(entity, 1)`, so a "follow when further than 6" loop still
+delivers the follower to within a block of you; the threshold gates only *when a
+path is issued*, not where it ends, and nothing stops a path already running. Any
+standoff behaviour must navigate to a computed point on a ring and call
+`navigation.stop()` on arrival. See `entropy-effects` for the companion hold bands
+and the Audience state machine.
+
 **2. A mixin's *shape* is part of its correctness when two sides share a target.**
 Slippery Grip's two mixins used to be `@ModifyVariable`s that both forced
 `setSprinting`'s argument false, which chained safely **only because both halves
@@ -601,7 +609,7 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 1039 checks currently: the tuning constants as
+same numbers kept being re-derived. 1109 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble

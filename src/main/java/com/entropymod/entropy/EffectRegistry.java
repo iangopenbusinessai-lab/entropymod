@@ -176,18 +176,17 @@ public final class EffectRegistry {
 		// Unstable's blast at its minimum distance is non-lethal from full health and
 		// costs a fifth of its fuse to escape, and Creeper Magnet is an ordinary
 		// creeper you can see coming. See the behavior classes for the derivations.
-		// counterplay = FALSE -- the ONLY false entry in this registry. The band is
+		// counterplay = FALSE -- the only false entry in this registry. The band is
 		// 0-2 blocks and every point in it kills a stationary full-health player.
 		//
-		// NOTE: Flamboyant was cited as the precedent for this and is NOT one -- it
-		// is registered `true` despite killing outright, because the flag has always
-		// meant "an in-game answer exists". So 25-50 here conflicts with CLAUDE.md
-		// Part 2 ("bad effects below entropy 40 must be counterplay-survivable") and
-		// cannot be justified by analogy. Flagged in UnstableBehavior; the clean fix
-		// is 40-60, like Glass Cannon Pact. Left at 25-50 as requested.
+		// 40-60, NOT 25-50, and that is what resolves it: CLAUDE.md Part 2 requires
+		// bad effects below entropy 40 to be counterplay-survivable, and this one is
+		// not. Raising the floor to 40 honours the invariant exactly, with no change
+		// to the damage model or the distance band. Same shape as Glass Cannon Pact,
+		// which already sits above the rest of Tier 2 for its own reason.
 		register("unstable", "Unstable",
 				"Primed TNT appears at your feet every 30 seconds -- move or die",
-				EffectCategory.SURVIVAL, EffectPhase.BAD, 25, 50, false);
+				EffectCategory.SURVIVAL, EffectPhase.BAD, 40, 60, false);
 		register("creeper_magnet", "Creeper Magnet",
 				"A creeper blinks into existence nearby every 30 seconds to 2 minutes",
 				EffectCategory.SURVIVAL, EffectPhase.BAD, 25, 50, true);

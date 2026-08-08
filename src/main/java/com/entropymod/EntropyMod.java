@@ -203,6 +203,9 @@ public class EntropyMod implements ModInitializer {
 			// carrying it into the next world would be worse.
 			UnstableSpawner.reset();
 			CreeperMagnetSpawner.reset();
+			// Companion movement state -- stall windows and approach flags. Transient
+			// by design: it describes the last three seconds, not the run.
+			CompanionService.reset();
 		});
 
 		LOGGER.info("Entropy Mod ready. Default interval: {} ticks ({} min), cap: {}",

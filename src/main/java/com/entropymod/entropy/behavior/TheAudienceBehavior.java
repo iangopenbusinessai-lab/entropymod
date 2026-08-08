@@ -77,11 +77,56 @@ public final class TheAudienceBehavior implements EffectBehavior {
 
 	public static final int AUDIENCE_SIZE = 10;
 
-	/** They only close the gap once genuinely far off -- "from a distance". */
-	public static final double FOLLOW_START = 12.0;
+	/**
+	 * The point at which the audience decides it has lost the player and follows.
+	 *
+	 * <p><b>32 blocks, and it is the project's own established awareness number</b>
+	 * -- Danger Sense's radius. It is also about the range at which a villager is
+	 * still a resolvable figure rather than a speck, which matters for an effect
+	 * whose entire content is being seen. Against the golems' 3-5 hold band it is
+	 * <b>more than six times further</b>, which is the "noticeably farther" the
+	 * design calls for, and it sits comfortably inside the default 10-chunk
+	 * simulation distance so the villagers are still being ticked when it fires.
+	 */
+	public static final double LOST_TRACK_DISTANCE = 32.0;
 
-	/** Below a walk, so they trail rather than keep pace. */
-	public static final double FOLLOW_SPEED = 0.5;
+	/**
+	 * Approach stops here. <b>The audience never comes closer than this, ever</b>,
+	 * in any state -- including while frozen, which this rule outranks.
+	 *
+	 * <p>16 blocks is far enough that they read as background presence rather than
+	 * followers, and it is 3x the golems' outer hold so the two effects never
+	 * visually merge. It also leaves a 16-block corridor between it and
+	 * {@link #LOST_TRACK_DISTANCE}, so an approach is a real journey rather than a
+	 * twitch.
+	 */
+	public static final double MIN_DISTANCE = 16.0;
+
+	/**
+	 * An approach continues until the villager is inside this. Hysteresis.
+	 *
+	 * <p>Without a second threshold a villager sitting at exactly
+	 * {@link #LOST_TRACK_DISTANCE} would start approaching, immediately no longer
+	 * qualify, stop, drift out and start again -- a visible stutter on the boundary.
+	 * Entering at 32 and only leaving inside 20 gives the state a 12-block corridor
+	 * to cross, and 20 sits above {@link #MIN_DISTANCE} so the two rules never
+	 * contradict.
+	 */
+	public static final double RESUME_DISTANCE = 20.0;
+
+	/**
+	 * Navigation speed multiplier while moving. <b>1.0 is already fast for a
+	 * villager and no exotic value is needed.</b>
+	 *
+	 * <p>A mob's ground acceleration is its {@code MOVEMENT_SPEED} squared
+	 * (CLAUDE.md 1e), and a villager's is <b>0.5</b> -- double an iron golem's 0.25.
+	 * So at modifier 1.0 a villager accelerates at {@code 0.25} against the golem's
+	 * {@code 0.0625}, giving <b>~10.79 blocks/second</b>: 2.5x a walking player and
+	 * 1.9x a sprinting one. The previous 0.5 modifier produced 2.70 b/s -- slower
+	 * than walking -- which is why they never kept up. Going above 1.0 would be an
+	 * unusual speedModifier and would read as teleporting rather than as hurrying.
+	 */
+	public static final double FOLLOW_SPEED = 1.0;
 
 	@Override
 	public void apply(EffectContext ctx) {

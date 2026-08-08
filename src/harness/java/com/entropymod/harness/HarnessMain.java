@@ -39,6 +39,7 @@ import com.entropymod.entropy.behavior.EmotionalSupportLlamaBehavior;
 import com.entropymod.entropy.behavior.LoyalPackBehavior;
 import com.entropymod.entropy.behavior.TheAudienceBehavior;
 import com.entropymod.entropy.behavior.TheEntourageBehavior;
+import com.entropymod.entropy.companion.CompanionMotion;
 import com.entropymod.entropy.companion.CompanionRoster;
 import com.entropymod.entropy.behavior.RandomJumpBehavior;
 import com.entropymod.entropy.behavior.UnstableBehavior;
@@ -137,6 +138,7 @@ public final class HarnessMain {
 		tier2BatchIdempotencyAndPersistence();
 		spawnBatch();
 		companionBatch();
+		companionMotion();
 		System.exit(Checks.summary());
 	}
 
@@ -3131,9 +3133,18 @@ public final class HarnessMain {
 				continue;
 			}
 			check(def.phase() == EffectPhase.BAD, id + " is BAD");
-			check(def.minEntropy() == 25 && def.maxEntropy() == 50,
-					id + " sits in Tier 2 (entropy 25-50) -- NOT pushed to the top of the "
-							+ "band, because neither is unfair at the bottom of it");
+			// Creeper Magnet stays at the bottom of Tier 2; Unstable was moved up to
+			// 40-60 when it became counterplay = false, because CLAUDE.md Part 2
+			// forbids an unsurvivable curse below entropy 40.
+			if (id.equals(UnstableBehavior.ID)) {
+				check(def.minEntropy() == 40 && def.maxEntropy() == 60,
+						id + " sits at 40-60 -- raised out of the below-40 band precisely "
+								+ "because it is counterplay = false");
+			} else {
+				check(def.minEntropy() == 25 && def.maxEntropy() == 50,
+						id + " sits in Tier 2 (entropy 25-50) -- not pushed up, because it "
+								+ "is not unfair at the bottom of the band");
+			}
 			// Unstable is the ONLY counterplay = false effect in the registry -- and
 			// Flamboyant, cited as its precedent, is registered TRUE despite killing
 			// outright. Asserted per effect so that asymmetry stays visible.
@@ -3718,12 +3729,34 @@ public final class HarnessMain {
 				"Unstable is the ONLY counterplay = false effect in the registry ("
 						+ falseCount + " of " + EffectRegistry.all().size()
 						+ ") -- there was no precedent to transfer");
-		// The invariant this collides with, asserted rather than left in prose.
-		check(EffectRegistry.byId(UnstableBehavior.ID).minEntropy() < 40,
-				"CONFLICT, FLAGGED NOT RESOLVED: it sits at minEntropy "
-						+ EffectRegistry.byId(UnstableBehavior.ID).minEntropy()
-						+ ", and CLAUDE.md Part 2 says bad effects below entropy 40 must be "
-						+ "counterplay-survivable. Clean fix is 40-60, like Glass Cannon Pact.");
+		// The invariant, now SATISFIED rather than flagged.
+		EffectDefinition unstableDef = EffectRegistry.byId(UnstableBehavior.ID);
+		check(unstableDef.minEntropy() >= 40,
+				"RESOLVED: minEntropy is " + unstableDef.minEntropy()
+						+ ", so CLAUDE.md Part 2 ('bad effects below entropy 40 must be "
+						+ "counterplay-survivable') is satisfied -- the only counterplay = "
+						+ "false effect no longer appears below 40");
+		check(unstableDef.minEntropy() == 40 && unstableDef.maxEntropy() == 60,
+				"Unstable sits at 40-60, the same shape as Glass Cannon Pact");
+		// The move must have changed NOTHING else.
+		checkNear(constant(UnstableBehavior.class, "MIN_DISTANCE"), 0.0, 1e-9,
+				"...and the distance band is untouched by the range move (min)");
+		checkNear(constant(UnstableBehavior.class, "MAX_DISTANCE"), 2.0, 1e-9,
+				"...(max)");
+		check((int) constant(UnstableBehavior.class, "FUSE_TICKS") == 100,
+				"...and the fuse is untouched");
+		checkNear(UnstableBehavior.maxBlastDamage(0.0), 57.0, 1e-6,
+				"...and the damage model is untouched at 0 blocks");
+		checkNear(UnstableBehavior.maxBlastDamage(2.0), 37.75, 1e-6,
+				"...and at 2 blocks");
+		check(!unstableDef.counterplay(), "...and it is still counterplay = false");
+		for (EffectDefinition other : EffectRegistry.all()) {
+			if (!other.counterplay() && other.minEntropy() < 40) {
+				check(false, "no counterplay = false effect may sit below entropy 40, but "
+						+ other.id() + " does");
+			}
+		}
+		check(true, "no counterplay = false effect sits below entropy 40 anywhere");
 
 		// --- the escape budget, recomputed for the 0-2 band -----------------------
 		double walk = SprintModel.groundSpeedBps(0.1);
@@ -4132,6 +4165,277 @@ public final class HarnessMain {
 						+ " of " + doubleChest + " slots, "
 						+ String.format("%.1f%%", 100.0 * slots / doubleChest)
 						+ ". Shipped as the largest genuinely-vanilla answer.");
+	}
+
+	/**
+	 * The three companion movement systems: catch-up, the escort hold band, and the
+	 * Audience state machine.
+	 *
+	 * <p>All three live in {@code CompanionMotion}, free of Minecraft types, for the
+	 * reason the spawn cluster learned expensively: a distance rule that is subtly
+	 * wrong is invisible in play, and the component that broke last time was the one
+	 * that needed a {@code ServerLevel} for every line.
+	 */
+	private static void companionMotion() {
+		section("Companion catch-up: stall detection");
+
+		// The threshold is vanilla's own pet-teleport distance, not an invention.
+		checkNear(constant(CompanionMotion.class, "CATCH_UP_DISTANCE"), 12.0, 1e-9,
+				"catch-up fires at 12 blocks -- TamableAnimal.shouldTryTeleportToOwner is "
+						+ "distanceToSqr >= 144.0, so wolves, golems and the llama all use "
+						+ "the distance a player's pet intuition is already calibrated on");
+		check((int) constant(CompanionMotion.class, "STALL_SAMPLE_INTERVAL") == 20,
+				"distance is sampled once a second");
+		check((int) constant(CompanionMotion.class, "STALL_SAMPLES") == 3,
+				"and three consecutive failures are needed -- three seconds, so rounding a "
+						+ "tree does not teleport anyone");
+
+		// --- does NOT fire during normal following -------------------------------
+		CompanionMotion.StallTracker t = new CompanionMotion.StallTracker();
+		double d = 30.0;
+		boolean firedWhileClosing = false;
+		for (int i = 0; i < 25; i++) {
+			d -= 2.7;                       // a golem's real ~2.70 b/s, closing steadily
+			if (d < 1.0) {
+				d = 1.0;
+			}
+			firedWhileClosing |= t.sample("closing", d);
+		}
+		check(!firedWhileClosing,
+				"a companion genuinely walking toward the player at its real speed NEVER "
+						+ "triggers catch-up, over 25 seconds of approach");
+
+		// Even a slow, detouring approach clears the bar.
+		CompanionMotion.StallTracker slow = new CompanionMotion.StallTracker();
+		double sd = 30.0;
+		boolean firedWhileSlow = false;
+		for (int i = 0; i < 15; i++) {
+			sd -= 1.2;                      // ~45% pathing efficiency
+			firedWhileSlow |= slow.sample("slow", sd);
+		}
+		check(!firedWhileSlow,
+				"...nor does a slow, detouring approach at 1.2 blocks/second -- the bar is "
+						+ "1.0, about 37% of a golem's flat-out speed");
+
+		// --- DOES fire when stalled ----------------------------------------------
+		CompanionMotion.StallTracker stuck = new CompanionMotion.StallTracker();
+		check(!stuck.sample("stuck", 20.0), "first sample only starts the window");
+		check(!stuck.sample("stuck", 20.0), "one failed sample is not a stall");
+		check(!stuck.sample("stuck", 20.0), "two are not either");
+		check(stuck.sample("stuck", 20.0),
+				"THE TRIGGER: three consecutive seconds beyond 12 blocks without closing "
+						+ "1 block fires the catch-up");
+		check(stuck.failuresFor("stuck") == 0 && !stuck.isTracking("stuck"),
+				"...and the window is consumed, so it does not fire again while the "
+						+ "companion is still settling");
+
+		// The player outrunning the companion is a stall by design.
+		CompanionMotion.StallTracker outrun = new CompanionMotion.StallTracker();
+		double od = 13.0;
+		boolean firedOutrun = false;
+		for (int i = 0; i < 5; i++) {
+			od += 2.9;                      // sprinting player minus golem speed
+			firedOutrun |= outrun.sample("outrun", od);
+		}
+		check(firedOutrun,
+				"a player outrunning their escort IS treated as a stall -- the gap grows, "
+						+ "closure is negative, and this is the case the feature exists for");
+
+		// Near companions are never teleported however badly they mill about.
+		CompanionMotion.StallTracker near = new CompanionMotion.StallTracker();
+		boolean firedNear = false;
+		for (int i = 0; i < 20; i++) {
+			firedNear |= near.sample("near", 4.0);
+		}
+		check(!firedNear,
+				"a companion milling about at 4 blocks never triggers catch-up, however "
+						+ "many samples show no progress -- the distance gate is checked "
+						+ "first and independently");
+
+		// Teleport lands inside the requested 2-4 ring.
+		checkNear(constant(CompanionMotion.class, "TELEPORT_MIN_DISTANCE"), 2.0, 1e-9,
+				"the teleport puts them down 2-4 blocks away (min)");
+		checkNear(constant(CompanionMotion.class, "TELEPORT_MAX_DISTANCE"), 4.0, 1e-9,
+				"...(max)");
+		check(CompanionMotion.TELEPORT_MAX_DISTANCE < CompanionMotion.CATCH_UP_DISTANCE,
+				"...comfortably inside the catch-up threshold, so a teleport cannot land a "
+						+ "companion somewhere that immediately re-qualifies");
+
+		escortHoldBand();
+		audienceStateMachine();
+	}
+
+	/** The Entourage's 3-5 band: converges, and does not oscillate. */
+	private static void escortHoldBand() {
+		section("Entourage: distance-holding converges to the 3-5 band");
+
+		double min = constant(TheEntourageBehavior.class, "MIN_HOLD");
+		double max = constant(TheEntourageBehavior.class, "MAX_HOLD");
+		checkNear(min, 3.0, 1e-9, "the escort holds at no less than 3 blocks");
+		checkNear(max, 5.0, 1e-9, "and no more than 5");
+		check(!Checks.hasConstant(TheEntourageBehavior.class, "FOLLOW_START"),
+				"the old FOLLOW_START is GONE -- it gated only WHEN a path was issued, "
+						+ "while moveTo(Entity) always pathed to within 1 block of the "
+						+ "player, which is what caused the crowding");
+
+		double ideal = CompanionMotion.idealHoldDistance(min, max);
+		checkNear(ideal, 4.0, 1e-9,
+				"both approach and retreat aim for the MIDDLE of the band, not the edge "
+						+ "that was crossed -- which is the anti-jitter property");
+		check(ideal > min && ideal < max,
+				"...so arriving lands strictly inside the band and cannot immediately "
+						+ "re-trigger");
+
+		check(CompanionMotion.bandAction(1.0, min, max) == CompanionMotion.BandAction.RETREAT,
+				"1 block from the player: RETREAT");
+		check(CompanionMotion.bandAction(2.99, min, max) == CompanionMotion.BandAction.RETREAT,
+				"just inside the near edge: RETREAT");
+		check(CompanionMotion.bandAction(3.0, min, max) == CompanionMotion.BandAction.HOLD,
+				"exactly 3: HOLD -- the band is inclusive");
+		check(CompanionMotion.bandAction(4.0, min, max) == CompanionMotion.BandAction.HOLD,
+				"mid-band: HOLD");
+		check(CompanionMotion.bandAction(5.0, min, max) == CompanionMotion.BandAction.HOLD,
+				"exactly 5: HOLD");
+		check(CompanionMotion.bandAction(5.01, min, max) == CompanionMotion.BandAction.APPROACH,
+				"just outside the far edge: APPROACH");
+
+		// Convergence: from either side, aiming at the ring lands in band and stays.
+		for (double start : new double[] {0.5, 1.0, 2.9, 5.1, 8.0, 11.0}) {
+			double position = start;
+			int moves = 0;
+			while (CompanionMotion.bandAction(position, min, max) != CompanionMotion.BandAction.HOLD
+					&& moves < 50) {
+				position = ideal;           // one navigation to the ring
+				moves++;
+			}
+			check(CompanionMotion.bandAction(position, min, max) == CompanionMotion.BandAction.HOLD,
+					"from " + start + " blocks the escort settles in band");
+			check(moves <= 1,
+					"...in a single move, from " + start + " -- it aims at the ring, not at "
+							+ "the player, so there is no overshoot to correct");
+		}
+
+		// The oscillation check: once in band, nothing is issued at all.
+		int paths = 0;
+		double settled = ideal;
+		for (int tick = 0; tick < 200; tick++) {
+			if (CompanionMotion.bandAction(settled, min, max) != CompanionMotion.BandAction.HOLD) {
+				paths++;
+			}
+		}
+		check(paths == 0,
+				"a settled escort issues ZERO paths over 200 evaluations -- strictly less "
+						+ "work than the previous version, which re-pathed every 5 ticks");
+
+		check(Checks.classReferences(
+						com.entropymod.entropy.companion.CompanionService.class, "stop"),
+				"and the service actually calls navigation.stop() on arrival -- the line "
+						+ "whose absence let a path issued at 6 blocks run to completion at 1");
+	}
+
+	/** The Audience's four states, and the transitions between them. */
+	private static void audienceStateMachine() {
+		section("Audience: the approach / freeze / idle state machine");
+
+		double minD = constant(TheAudienceBehavior.class, "MIN_DISTANCE");
+		double resume = constant(TheAudienceBehavior.class, "RESUME_DISTANCE");
+		double lost = constant(TheAudienceBehavior.class, "LOST_TRACK_DISTANCE");
+		checkNear(minD, 16.0, 1e-9, "they never come closer than 16 blocks");
+		checkNear(resume, 20.0, 1e-9, "an approach continues until inside 20");
+		checkNear(lost, 32.0, 1e-9, "and starts beyond 32 -- Danger Sense's radius");
+		check(minD < resume && resume < lost,
+				"the three thresholds are strictly ordered, so no two rules can contradict");
+		check(lost > constant(TheEntourageBehavior.class, "MAX_HOLD") * 6,
+				"and the lost-track distance is more than 6x the golems' outer hold -- "
+						+ "'noticeably farther', as the design calls for");
+		check(constant(TheAudienceBehavior.class, "FOLLOW_SPEED") == 1.0,
+				"movement speed modifier is 1.0, which for a villager's 0.5 base attribute "
+						+ "is ~10.79 b/s -- 1.9x a sprinting player, because mob speed goes "
+						+ "as the square of the attribute");
+
+		// --- FROZEN outranks everything except the minimum-distance rule ---------
+		check(CompanionMotion.audienceState(40.0, true, false, minD, resume, lost)
+						== CompanionMotion.AudienceState.FROZEN,
+				"seen at 40 blocks -- beyond lost-track -- still FREEZES: being watched "
+						+ "outranks wanting to follow");
+		check(CompanionMotion.audienceState(25.0, true, true, minD, resume, lost)
+						== CompanionMotion.AudienceState.FROZEN,
+				"seen mid-approach: FREEZES, abandoning the approach");
+		check(CompanionMotion.audienceState(18.0, true, false, minD, resume, lost)
+						== CompanionMotion.AudienceState.FROZEN,
+				"seen at 18: FROZEN");
+
+		// --- the minimum-distance rule outranks the freeze ------------------------
+		check(CompanionMotion.audienceState(4.0, true, false, minD, resume, lost)
+						== CompanionMotion.AudienceState.BACK_OFF,
+				"THE ONE OVERRIDE: seen but at 4 blocks, it BACKS OFF rather than freezing "
+						+ "-- otherwise a villager the player walked into would freeze in "
+						+ "their face, which inverts the effect");
+		check(CompanionMotion.audienceState(4.0, false, false, minD, resume, lost)
+						== CompanionMotion.AudienceState.BACK_OFF,
+				"...and backs off unseen at 4 blocks too");
+		check(CompanionMotion.audienceState(15.99, false, false, minD, resume, lost)
+						== CompanionMotion.AudienceState.BACK_OFF,
+				"...from anywhere inside the 16-block minimum");
+
+		// --- approach ------------------------------------------------------------
+		check(CompanionMotion.audienceState(33.0, false, false, minD, resume, lost)
+						== CompanionMotion.AudienceState.APPROACHING,
+				"unseen beyond 32: APPROACHING");
+		check(CompanionMotion.audienceState(31.0, false, false, minD, resume, lost)
+						== CompanionMotion.AudienceState.IDLE,
+				"unseen at 31 having NOT been approaching: IDLE -- the entry threshold is "
+						+ "not met");
+
+		// --- hysteresis: the reason RESUME_DISTANCE exists ------------------------
+		check(CompanionMotion.audienceState(31.0, false, true, minD, resume, lost)
+						== CompanionMotion.AudienceState.APPROACHING,
+				"HYSTERESIS: at 31 while already approaching it KEEPS GOING -- without "
+						+ "this it would stop the instant it crossed 32 and stutter on the "
+						+ "boundary");
+		check(CompanionMotion.audienceState(21.0, false, true, minD, resume, lost)
+						== CompanionMotion.AudienceState.APPROACHING,
+				"...still approaching at 21");
+		check(CompanionMotion.audienceState(20.0, false, true, minD, resume, lost)
+						== CompanionMotion.AudienceState.IDLE,
+				"...and stops at 20, the resume ring");
+
+		// A full approach run: no flapping anywhere along it.
+		boolean approaching = false;
+		int flips = 0;
+		double dist = 34.0;
+		CompanionMotion.AudienceState previous = null;
+		for (int step = 0; step < 40 && dist > 17.0; step++) {
+			CompanionMotion.AudienceState state = CompanionMotion.audienceState(
+					dist, false, approaching, minD, resume, lost);
+			approaching = state == CompanionMotion.AudienceState.APPROACHING;
+			if (previous != null && state != previous) {
+				flips++;
+			}
+			previous = state;
+			dist -= 0.54;                   // ~10.79 b/s sampled 4x a second
+		}
+		check(flips <= 1,
+				"a full 34 -> 17 block approach changes state at most once (" + flips
+						+ ") -- no flapping at any point along it");
+
+		// --- LOS transitions ------------------------------------------------------
+		check(CompanionMotion.audienceState(25.0, false, false, minD, resume, lost)
+						== CompanionMotion.AudienceState.IDLE
+						&& CompanionMotion.audienceState(25.0, true, false, minD, resume, lost)
+						== CompanionMotion.AudienceState.FROZEN,
+				"breaking and re-establishing line of sight at 25 flips IDLE <-> FROZEN");
+		check(CompanionMotion.audienceState(33.0, true, true, minD, resume, lost)
+						== CompanionMotion.AudienceState.FROZEN
+						&& CompanionMotion.audienceState(33.0, false, true, minD, resume, lost)
+						== CompanionMotion.AudienceState.APPROACHING,
+				"...and at 33 flips FROZEN <-> APPROACHING, so stepping out of sight "
+						+ "resumes the approach");
+
+		check(Checks.classReferences(
+						com.entropymod.entropy.companion.CompanionService.class, "hasLineOfSight"),
+				"the service reuses SafeSpawn's existing clip rather than building a "
+						+ "second line-of-sight mechanism");
 	}
 
 	private HarnessMain() {}

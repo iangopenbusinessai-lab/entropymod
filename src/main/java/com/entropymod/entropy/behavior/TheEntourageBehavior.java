@@ -65,10 +65,28 @@ public final class TheEntourageBehavior implements EffectBehavior {
 	/** Small on purpose -- see the class javadoc. */
 	public static final int ESCORT_SIZE = 4;
 
-	/** Distance at which an escort starts closing the gap again, in blocks. */
-	public static final double FOLLOW_START = 6.0;
+	/**
+	 * Closest an escort will stand. Below this it backs away.
+	 *
+	 * <p>Three blocks is set by the golem's own size rather than by taste: an iron
+	 * golem is 1.4 blocks wide and 2.7 tall, so at 3 blocks four of them ring the
+	 * player without their bounding boxes overlapping each other or the player's,
+	 * and the player can still see past them. Any less and they occlude the view and
+	 * push each other, which is the crowding this replaced.
+	 */
+	public static final double MIN_HOLD = 3.0;
 
-	/** Navigation speed multiplier while following. Slightly above a walk, so they keep up. */
+	/**
+	 * Furthest an escort will drift before closing back in.
+	 *
+	 * <p>Five keeps them inside melee reach of anything attacking the player, which
+	 * is the whole point of an escort -- a golem holding at 8 would arrive after the
+	 * hit landed. The 2-block band between {@link #MIN_HOLD} and this is wide enough
+	 * that ordinary player movement does not constantly re-trigger pathing.
+	 */
+	public static final double MAX_HOLD = 5.0;
+
+	/** Navigation speed multiplier. 1.0 is a golem's flat-out ~2.70 blocks/second. */
 	public static final double FOLLOW_SPEED = 1.0;
 
 	@Override

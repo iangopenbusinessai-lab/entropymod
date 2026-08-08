@@ -89,7 +89,14 @@ public final class EmotionalSupportLlamaBehavior implements EffectBehavior {
 	/** For contrast in the harness: what was asked for and is not reachable. */
 	public static final int DOUBLE_CHEST_SLOTS = 54;
 
-	public static final double FOLLOW_START = 5.0;
+	/**
+	 * Closest the llama will stand. Smaller than the golems' because there is only
+	 * one of it and it is a pack animal the player will want to reach.
+	 */
+	public static final double MIN_HOLD = 2.0;
+
+	/** Furthest it drifts before closing in. */
+	public static final double MAX_HOLD = 4.0;
 
 	public static final double FOLLOW_SPEED = 1.0;
 

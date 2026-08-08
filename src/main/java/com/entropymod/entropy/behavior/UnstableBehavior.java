@@ -120,25 +120,26 @@ import com.entropymod.entropy.HookEffectBehavior;
  * But the justification is "this is a stricter label than the codebase has used
  * so far", not "Flamboyant already did this".
  *
- * <h2>The 25-50 range CONFLICTS with a written invariant. Flagged, not resolved.</h2>
+ * <h2>Entropy 40-60 -- the invariant conflict, RESOLVED</h2>
  *
  * <p>CLAUDE.md Part 2 states: <i>"Bad effects below entropy 40 must be
  * counterplay-survivable (no unavoidable-death effects until later tiers)."</i>
- * This effect is registered at 25-50, which spans below 40, and is now
- * {@code counterplay = false}. <b>There is no precedent to transfer, because no
- * other effect has ever been false -- so the range cannot be justified by analogy
- * and the invariant as written forbids it.</b>
+ * This effect shipped briefly at 25-50 with {@code counterplay = false}, which
+ * violated that outright -- and could not be excused by precedent, since it is the
+ * only {@code false} effect in the registry.
  *
- * <p>Two clean resolutions, both one line, neither taken unilaterally:
+ * <p><b>The floor is now 40, which honours the invariant exactly and changes
+ * nothing else.</b> The damage model, the 0-2 distance band, the 100-tick fuse and
+ * the spherical placement are all untouched; only the entropy window moved. This is
+ * the same shape as Glass Cannon Pact, which already sits above the rest of Tier 2
+ * because its cost compounds with a long run.
  *
- * <ul>
- *   <li><b>Move it to 40-60</b>, exactly as Glass Cannon Pact already sits above
- *       the rest of Tier 2 for its own reason. This honours the invariant with no
- *       change to the effect at all, and is the recommended option.</li>
- *   <li><b>Amend the invariant</b> to record a deliberate exception, on the
- *       grounds that "avoidable" and "survivable if ignored" are different
- *       properties and the rule only ever meant the first.</li>
- * </ul>
+ * <p>Note the flag itself remains stricter than the codebase's own convention:
+ * Flamboyant is registered {@code counterplay = true} despite "catching fire kills
+ * you outright", so {@code true} has historically meant "an in-game answer exists"
+ * rather than "cannot kill you". Unstable is labelled {@code false} because an
+ * effect that kills a stationary player at every point in its band should not
+ * advertise itself as survivable.
  *
  * <p>What genuinely does hold on its own merits, independent of either choice, is
  * that the effect is <b>avoidable</b>: {@code TNT_PRIMED} carries 16 blocks --

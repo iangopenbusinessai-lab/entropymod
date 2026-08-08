@@ -3298,3 +3298,130 @@ from the worst case (TNT at the feet) is 8 blocks, **1.85 s** walking, leaving
    forbids it as written.** Left at 25-50 as requested, with the conflict asserted
    in the harness so it cannot be forgotten. The clean fix is **40-60**, exactly as
    Glass Cannon Pact already sits above the rest of Tier 2 for its own reason.
+
+#### Companion movement: catch-up, hold bands, and the Audience state machine
+Three systems on top of the companion cluster, all decided in
+`CompanionMotion` — **Minecraft-import-free**, because the spawn cluster already
+proved that the component needing a `ServerLevel` for every line is the one that
+ships untested. `CompanionService` keeps only what genuinely needs the world:
+resolving entities, clipping line of sight, issuing navigation.
+
+#### The crowding bug: root cause CONFIRMED, and it was two things
+Reported as escorts standing on the player. Both causes read out of bytecode:
+
+1. **`moveTo(Entity, speed)` has no stop distance.** It is
+   `createPath(entity, 1)` → `createPath(Set.of(entity.blockPosition()), 1, …)`, so
+   **every path targets the player's own block with accuracy 1.** `FOLLOW_START`
+   gated only *when a new path was issued*; the path itself always aimed to within
+   a block of the player.
+2. **Nothing ever called `stop()`.** A path issued at 6.1 blocks ran to completion
+   at ~1 block. There was no stop-distance behaviour anywhere in the loop.
+
+**Fix: navigate to a computed point on a standoff *ring*, never to the player, and
+`stop()` on arrival in band.** `moveToRing` puts the target at
+`player + normalise(companion − player) × radius`, so **approach and retreat are
+the same instruction** — which is what stops the two cases drifting apart — and the
+ring is the *middle* of the band, so arriving lands strictly inside it and cannot
+re-trigger. A settled escort issues **zero** paths, strictly less work than the old
+re-path-every-5-ticks.
+
+#### Catch-up teleport: the threshold is vanilla's, the signal is closure rate
+**12 blocks, and it is not invented.** `TamableAnimal.shouldTryTeleportToOwner()`
+is `distanceToSqr(owner) >= 144.0` — so wolves (which self-teleport at exactly this
+distance via `FollowOwnerGoal`), golems and the llama all catch up at the range a
+player's pet intuition is already calibrated on, instead of at three different ones.
+
+**"Stuck" cannot be "hasn't moved"** — a companion pathing in circles round a fence
+moves constantly and gets nowhere. The signal is **is the gap actually shrinking**:
+sample distance every **20 ticks (1 s)** and require **1.0 block of closure**.
+
+The bar comes from real speeds. A mob's ground acceleration is its
+`MOVEMENT_SPEED` **squared** (CLAUDE.md 1e), so a golem or llama at modifier 1.0
+manages `0.25² = 0.0625` → **~2.70 b/s**, a wolf `0.3² = 0.09` → ~3.9 b/s. **1.0
+block/second is ~37% of a golem's flat-out speed** — trivially cleared by anything
+genuinely approaching even while detouring, far above the noise of shuffling in
+place. **3 consecutive failures** (3 seconds) are required, so rounding a tree or
+waiting on a door teleports nobody.
+
+Two deliberate properties, both asserted:
+- **A player outrunning their escort counts as a stall.** Sprinting at 5.6 b/s away
+  from a 2.7 b/s golem makes the gap grow, closure is negative, it fires. That is
+  the case the feature exists for.
+- **The distance gate is checked first and independently**, so a companion milling
+  about at 4 blocks can fail every progress check forever and is left alone.
+
+Landing spot is `SafeSpawn` at 2–4 blocks, comfortably inside the 12-block
+threshold so a teleport cannot land somewhere that immediately re-qualifies. The
+window is *consumed* on firing, so it does not re-trigger while the companion
+settles. **The Audience is excluded by design** — it is supposed to lose track and
+wander; teleporting it to heel would delete the effect.
+
+#### The Entourage's 3–5 hold band
+- **3 is set by the golem's own size**, not taste: 1.4 wide × 2.7 tall, so at 3
+  blocks four of them ring the player without overlapping each other or the player,
+  and the view past them stays clear.
+- **5 keeps them inside melee reach** of whatever is attacking the player — a golem
+  holding at 8 arrives after the hit lands.
+- The 2-block band is wide enough that ordinary player movement does not constantly
+  re-path, and the ring target of **4.0** is the anti-jitter property.
+
+`FOLLOW_START` is **deleted**, not repurposed — a constant that gated only path
+issuance, while the path ignored it, is exactly the kind of thing a later session
+re-wires believing it means something. The harness asserts its absence.
+
+#### THE AUDIENCE STATE MACHINE — the most novel AI in the project
+Villagers are brain-driven (zero `goalSelector` references), so this is tick-driven
+navigation override, not a `Goal` — a `Goal` would be silently overridden by
+`MoveToTargetSink` on the same tick.
+
+**Four states, in strict priority order:**
+
+| priority | state | condition | action |
+|---|---|---|---|
+| 1 | **BACK_OFF** | `d < 16` | walk out to the 16-ring — *even if seen* |
+| 2 | **FROZEN** | can be seen | `navigation.stop()`, at any distance |
+| 3 | **APPROACHING** | unseen and (`d > 32`, or already approaching and `d > 20`) | walk to the 16-ring at speed 1.0 |
+| 4 | **IDLE** | otherwise | `stop()`, brain left alone |
+
+**Priority 1 is the one design decision worth arguing.** The brief's freeze rule is
+"regardless of distance, *as long as it is not so close it violates the minimum*" —
+so the minimum-distance rule is the single thing that outranks a freeze. Without it
+a villager the player walked into would freeze in their face, which inverts the
+effect.
+
+**The three thresholds, strictly ordered `16 < 20 < 32` so no two rules contradict:**
+- **32 = lost-track.** The project's own established awareness number (Danger
+  Sense's radius); about the range at which a villager is still a resolvable figure
+  rather than a speck, which matters for an effect whose content is being seen;
+  **more than 6× the golems' outer hold**, which is the "noticeably farther" the
+  design calls for; and comfortably inside the default 10-chunk simulation distance,
+  so they are still being ticked when it fires.
+- **16 = never closer.** Far enough to read as background presence rather than
+  followers, 3× the golems' outer hold so the two effects never visually merge, and
+  leaving a 16-block corridor so an approach is a journey rather than a twitch.
+- **20 = resume.** Pure hysteresis. Without a second threshold a villager at exactly
+  32 would start approaching, immediately no longer qualify, stop, drift out and
+  start again — a visible stutter on the boundary. Asserted: a full 34 → 17 approach
+  changes state **at most once**.
+
+**Speed 1.0 is already fast and needs no exotic multiplier.** A villager's base
+`MOVEMENT_SPEED` is **0.5**, double the golem's 0.25, and mob speed goes as the
+square — so modifier 1.0 gives accel `0.25` → **~10.79 b/s: 2.5× a walking player,
+1.9× a sprinting one.** The previous 0.5 modifier produced 2.70 b/s, *slower than
+walking*, which is why they never kept up. Above 1.0 would be an unusual
+`speedModifier` and would read as teleporting rather than hurrying.
+
+**FROZEN is an active `stop()`, not merely "issue nothing"** — the brain would
+otherwise keep walking wherever it was already going, and the effect is that being
+looked at stops them dead. Line of sight reuses `SafeSpawn.hasLineOfSight`, aimed at
+the villager's eye so a head visible over a rise counts as seen — the same reason
+`SafeSpawn` aims up the entity's body.
+
+#### Unstable: entropy 40-60, and the invariant conflict is RESOLVED
+Raised from 25-50. CLAUDE.md Part 2 requires bad effects below entropy 40 to be
+counterplay-survivable, and this one is the registry's only `counterplay = false`
+entry — so it could not sit below 40 and could not be excused by precedent
+(Flamboyant is registered `true` despite killing outright). **Only the entropy
+window moved**: the 0-2 band, the 100-tick fuse, the spherical placement and the
+whole damage model are untouched, and the harness asserts each of those explicitly
+alongside a sweep that no `counterplay = false` effect sits below 40 anywhere.
