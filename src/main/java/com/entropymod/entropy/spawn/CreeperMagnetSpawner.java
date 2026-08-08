@@ -82,9 +82,12 @@ public final class CreeperMagnetSpawner {
 
 	private static void spawnCreeper(ServerPlayer player) {
 		ServerLevel level = player.level();
+		// HORIZONTAL, deliberately, and unchanged. A creeper walks to you, so the
+		// starting height difference is not part of what the band means -- unlike
+		// Unstable, whose damage is a function of the 3D distance. See DistanceMode.
 		SafeSpawn.Attempt attempt = SafeSpawn.findNear(level, player, EntityType.CREEPER,
 				CreeperMagnetBehavior.MIN_DISTANCE, CreeperMagnetBehavior.MAX_DISTANCE,
-				level.getRandom());
+				level.getRandom(), SafeSpawn.DistanceMode.HORIZONTAL);
 		if (!attempt.found()) {
 			// Re-armed on a short retry rather than losing the whole interval, and the
 			// per-gate breakdown names which rule did the rejecting -- see

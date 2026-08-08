@@ -105,9 +105,12 @@ public final class UnstableSpawner {
 
 	private static void spawnTnt(ServerPlayer player) {
 		ServerLevel level = player.level();
+		// SPHERICAL, not HORIZONTAL: explosion damage reads the 3D distance and
+		// hurtEntities discards anything past 2*radius, so a horizontal band let a
+		// "5-7 block" TNT sit 10.63 blocks away doing nothing. See DistanceMode.
 		SafeSpawn.Attempt attempt = SafeSpawn.findNear(level, player, EntityType.TNT,
 				UnstableBehavior.MIN_DISTANCE, UnstableBehavior.MAX_DISTANCE,
-				level.getRandom());
+				level.getRandom(), SafeSpawn.DistanceMode.SPHERICAL);
 		if (!attempt.found()) {
 			// A real outcome, not an error: a player sealed into a narrow shaft has
 			// nowhere valid and visible nearby. Re-armed on a short retry rather than
@@ -146,5 +149,25 @@ public final class UnstableSpawner {
 		level.playSound(null, centre.x, centre.y, centre.z,
 				SoundEvents.TNT_PRIMED, SoundSource.BLOCKS, 1.0f, 1.0f);
 		level.gameEvent(tnt, GameEvent.PRIME_FUSE, pos);
+
+		// Log the SUCCESS too, with the distance actually achieved and the damage it
+		// implies at full exposure.
+		//
+		// Its absence is what turned "the damage feels far too low" into a session:
+		// only failures were logged, so there was no record of where any TNT had
+		// landed and the 3D-versus-horizontal gap had to be reconstructed from the
+		// world save's heightmap afterwards. A tuned number that is never compared
+		// against the value actually delivered is a number nobody is checking --
+		// which is how a band that permitted 10.63 blocks passed for 5-7.
+		if (EntropyMod.LOGGER.isDebugEnabled()) {
+			double distance = Math.sqrt(SafeSpawn.spawnDistanceSqr(pos, player.position()));
+			EntropyMod.LOGGER.debug(
+					"Unstable: TNT at {} -- {} blocks from {} (band {}-{}), fuse {}t, "
+							+ "up to {} damage at full exposure",
+					pos, String.format("%.2f", distance), player.getName().getString(),
+					UnstableBehavior.MIN_DISTANCE, UnstableBehavior.MAX_DISTANCE,
+					UnstableBehavior.FUSE_TICKS,
+					String.format("%.1f", UnstableBehavior.maxBlastDamage(distance)));
+		}
 	}
 }

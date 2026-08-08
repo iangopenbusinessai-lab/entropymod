@@ -2994,3 +2994,119 @@ a successful trigger keeps the interval `tick` drew.
    coupon-collector expectation for 2000 draws over 1801 values is **1208**, so
    the assertion was impossible rather than the code wrong. The check now compares
    against that expectation with a ±15% band.
+
+#### "Half a heart from a TNT that should do 15" — a band measured in the wrong quantity
+Reported as: Unstable dealing about half a heart while standing still, against a
+table that said 15.44 at 5 blocks. An order of magnitude out. **Two compounding
+causes, and the dominant one was introduced by the fix to the previous bug.**
+
+**Cause 1, dominant: the spawn band was decoupled from the quantity the damage
+depends on.** The "fired once then silence" fix moved `SafeSpawn`'s band from 3D
+to horizontal and widened `VERTICAL_SEARCH` from 4 to 8. That is correct for
+Creeper Magnet — a creeper walks to you, so the starting height difference is not
+part of what the band means. It is **wrong for Unstable**, because vanilla's
+explosion damage reads the *3D* distance and `ServerExplosion.hurtEntities` does:
+
+```
+d = sqrt(entity.distanceToSqr(center)) / (2 * radius);
+if (d > 1.0) continue;          // past 8.0 blocks: skipped outright, no damage
+```
+
+A horizontal band of 5–7 with a vertical search of 8 permits a 3D distance of
+`sqrt(7² + 8²)` = **10.63 blocks** while still calling itself "5 to 7". Measured
+against the exact terrain it was played on (heightmap decoded from the region
+file, player at (-15.3, 112.0, -83.5)):
+
+| | old, horizontal [5,7] | new, spherical [4.5,6.5] |
+|---|---|---|
+| actually inside the band in 3D | **54.2%** | **100%** |
+| beyond the 8-block cull (zero damage) | **27.6%** | **0%** |
+| median 3D distance | 6.85 | 5.56 |
+| max 3D distance | **10.61** | 6.44 |
+| damage at full exposure, mean | **5.45** | **11.99** |
+| damage at full exposure, minimum | **0.00** | 7.52 |
+
+**Cause 2, and a real gap in the original derivation: exposure was assumed to be
+1.0.** `hurtEntities` computes `ServerExplosion.getSeenPercent(centre, entity)` —
+a grid of rays from the entity's bounding box to the explosion centre, returning
+the unobstructed fraction — and passes it as the third argument of
+`getEntityDamageAmount`, where it multiplies `impact` *before* the quadratic. The
+first derivation set it to 1.0 and presented the result as *the* damage rather
+than as its ceiling.
+
+**Both causes produce exactly the reported symptom**, which is why it was so
+specific: a blast at the cull edge and a fully-obstructed blast both drive
+`impact` to 0, and the formula's trailing `+ 1` is then the whole result — **1.0
+damage, half a heart.**
+
+#### The corrected model, and the naming that let the old one mislead
+```
+maxDist = 2 * radius                       // 8.0 for TNT
+if (distance > maxDist) return 0            // <-- the cull, missing before
+impact  = (1 - distance/maxDist) * exposure // <-- exposure, missing before
+damage  = (impact² + impact) / 2 * 7 * maxDist + 1
+```
+
+| distance | exp 1.00 | exp 0.75 | exp 0.50 | exp 0.25 |
+|---|---|---|---|---|
+| 2.0 | **37.75 — kills** | 25.61 | 15.44 | 7.23 |
+| 3.0 | **29.44 — kills** | 20.28 | 12.48 | 6.06 |
+| 4.0 | **22.00 — kills** | 15.44 | 9.75 | 4.94 |
+| **4.29** | **20.01 — the threshold** | 14.13 | 9.00 | 4.62 |
+| 4.5 *(min)* | 18.61 | 13.20 | 8.46 | 4.40 |
+| 5.5 | 12.48 | 9.10 | 6.06 | 3.36 |
+| 6.5 *(max)* | 7.23 | 5.49 | 3.87 | 2.37 |
+| 8.0 | 1.00 | 1.00 | 1.00 | 1.00 |
+| 8.5 | **0 — culled entirely** | 0 | 0 | 0 |
+
+**Only the exposure-1.00 column may be used for tuning**, because the counterplay
+rule is a worst-case rule. The other columns explain what play *feels* like, and
+they are why the same TNT can read as devastating in the open and trivial in a
+trench.
+
+**The old function was called `blastDamageAt(distance)` and that naming did real
+damage.** It returned an upper bound under a name that reads like the value, so a
+table of ceilings got tuned against as though it were expected damage. It is
+deleted, not kept returning the ceiling: the model is now `blastDamage(distance,
+exposure)` with `maxBlastDamage(distance)` as the explicitly-named worst case, and
+the harness asserts the old name is **absent**.
+
+#### Rule for any future blast effect
+1. **Measure the band in whatever quantity the effect's own mechanic depends on.**
+   `SafeSpawn.DistanceMode` now makes callers say which they mean. A blast wants
+   `SPHERICAL`; a mob that walks to you wants `HORIZONTAL`. A band measured in the
+   wrong quantity is not merely imprecise — over a quarter of its spawns did
+   *nothing*.
+2. **Never model explosion damage without `getSeenPercent`.** Exposure is a first-
+   class term, not a correction, and it ranges to 0 in ordinary terrain.
+3. **Never model it without the `d > 1.0` cull.** Past `2 * radius` the entity is
+   skipped, so the answer is 0 and not "a bit above the +1 floor".
+4. **Log the value actually delivered, not just the tuned intention.** Only
+   failures were logged, so there was no record of where any TNT had landed and
+   the whole 3D-versus-horizontal gap had to be reconstructed from the world save.
+   `UnstableSpawner` now logs each spawn's real distance and the damage it implies.
+   **A tuned number that is never compared against what shipped is a number nobody
+   is checking.**
+
+#### Unstable's retune: 100-tick fuse, 4.5–6.5 blocks, and the range that was refused
+**A 2–4 block band was requested and was not shipped**, because every point in it
+kills a stationary full-health unarmoured player: 22.0, 29.4 and 37.75 against a
+20 HP bar. The lethal threshold — solved from the quadratic in
+`lethalThresholdDistance`, not read off a table — is **4.29 blocks**, so **4.5 is
+the closest survivable minimum that exists**, and it leaves 1.39 HP. That is the
+tightest margin in the project and it is deliberate; it is the answer to "closest
+range that stays genuinely survivable".
+
+**The fuse went to 100 ticks (5.0 s), giving up the old "it is vanilla's own 80,
+so the player's TNT intuition transfers" argument on purpose.** The band moved
+closer, so the reaction budget moved up to pay for it, and the direction is the
+safe one: a player calibrated on vanilla now has a second *in hand* rather than a
+second short.
+
+**Escape budget, recomputed rather than carried over.** Reaching the 8.0-block
+cull from the 4.5-block minimum is 3.5 blocks: **0.81 s** walking at the project's
+measured 4.3172 b/s, 0.62 s sprinting. Against the 5.0 s fuse that is **3.69 s of
+slack** after half a second of reaction — *better* than the old band's 2.81 s,
+despite the TNT being closer, because the extra second of fuse more than pays for
+the extra half block of running. That is the trade the two changes make together,
+and it is why they were made together.

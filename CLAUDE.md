@@ -460,6 +460,18 @@ make every failure path name its own cause in the log** — the diagnosis here
 needed the world save's heightmap only because the log said *that* it failed and
 not *why*. See `entropy-effects`.
 
+**1g. Model a mechanic in the quantity the GAME uses, and log what shipped.**
+Unstable's spawn band was measured horizontally while vanilla's explosion damage
+reads the 3D distance and discards anything past `2 * radius` — so a "5-7 block"
+TNT could sit 10.63 blocks away, and 27.6% of spawns did literally nothing. Its
+damage table also assumed full exposure, when `ServerExplosion.getSeenPercent`
+multiplies `impact` by an occlusion fraction that reaches 0 in ordinary terrain.
+**Both drive `impact` to 0, and the formula's trailing `+1` then IS the result —
+1.0 damage, which is exactly what got reported.** Only failures were logged, so
+there was no record of the distance actually achieved; a tuned number never
+compared against what shipped is a number nobody is checking. See
+`entropy-effects`.
+
 **2. A mixin's *shape* is part of its correctness when two sides share a target.**
 Slippery Grip's two mixins used to be `@ModifyVariable`s that both forced
 `setSprinting`'s argument false, which chained safely **only because both halves
@@ -579,7 +591,7 @@ reconstructing what the real entry point does.
 **`./gradlew harness` — the harness is in the repo now** (`src/harness/java`,
 its own source set, not wired into `build`). Every previous session rebuilt an
 equivalent by hand in a scratch directory and threw it away, which is why the
-same numbers kept being re-derived. 925 checks currently: the tuning constants as
+same numbers kept being re-derived. 952 checks currently: the tuning constants as
 actually compiled, the vanilla crop-growth model, Green Thumb's active schedule
 and its per-crop intervals, Green Thumb's immunity to Blight Touched's rewrite,
 Blight Touched's path sweep and its off-by-default gate, Tier 2's movement-scramble

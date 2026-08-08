@@ -3476,6 +3476,53 @@ public final class HarnessMain {
 		checkNear(SafeSpawn.horizontalDistanceSqr(-6, 0, -0.5, 0.5), 25.0, 1e-9,
 				"...and is correct west of the origin too, where a cast would be off by one");
 
+		// --- SPHERICAL vs HORIZONTAL: the root cause of the low-damage report -----
+		// Unstable's damage is a function of 3D distance and hurtEntities culls past
+		// 8.0 blocks, so a horizontal-only band let a "5-7 block" TNT sit 10.63
+		// blocks away doing literally nothing. The two effects now name which
+		// quantity their band means.
+		check(SafeSpawn.DistanceMode.values().length == 2,
+				"SafeSpawn offers exactly two distance modes");
+		check(Checks.classReferences(com.entropymod.entropy.spawn.UnstableSpawner.class,
+						"SPHERICAL"),
+				"Unstable asks for SPHERICAL -- its band must mean the quantity the "
+						+ "explosion damage actually reads");
+		check(Checks.classReferences(com.entropymod.entropy.spawn.CreeperMagnetSpawner.class,
+						"HORIZONTAL"),
+				"Creeper Magnet stays HORIZONTAL -- a creeper walks to you, so the "
+						+ "starting height difference is not part of what the band means");
+
+		// The regression, in numbers: the exact geometry the old band permitted.
+		double worstOldHorizontal = 7.0;
+		double worstOldVertical = (int) constant(SafeSpawn.class, "VERTICAL_SEARCH");
+		double worst3d = Math.sqrt(worstOldHorizontal * worstOldHorizontal
+				+ worstOldVertical * worstOldVertical);
+		checkNear(worst3d, 10.6301, 1e-3,
+				"the OLD band permitted a 3D distance of 10.63 blocks (7 horizontal, 8 "
+						+ "vertical) while calling itself 5-7");
+		check(worst3d > UnstableBehavior.BLAST_REACH,
+				"...which is past the 8.0-block cull, i.e. ZERO damage -- the reported "
+						+ "symptom, not a rounding error");
+
+		// Under SPHERICAL the same geometry is rejected outright.
+		double newMax = constant(UnstableBehavior.class, "MAX_DISTANCE");
+		check(!SafeSpawn.withinBand(worst3d * worst3d, 0.0, newMax * newMax),
+				"THE FIX: SPHERICAL rejects that candidate, because the band is now "
+						+ "measured in the same quantity the damage model uses");
+		check(newMax < UnstableBehavior.BLAST_REACH,
+				"and since the band's far edge is inside the cull, EVERY Unstable spawn "
+						+ "can now actually damage the player");
+
+		// spawnDistanceSqr must measure exactly what Entity.distanceToSqr(center) does:
+		// spawn point (block bottom-centre) to the player's FEET.
+		checkNear(SafeSpawn.distanceSqr(0.5, 64.0, 0.5, 0.5, 60.0, 3.5),
+				4.0 * 4.0 + 3.0 * 3.0, 1e-9,
+				"3D distance combines the horizontal and vertical legs (3-4-5)");
+		check(SafeSpawn.distanceSqr(0.5, 64.0, 0.5, 0.5, 56.0, 0.5)
+						> SafeSpawn.horizontalDistanceSqr(0, 0, 0.5, 0.5),
+				"...and a purely vertical offset registers in 3D while being invisible "
+						+ "horizontally -- the whole difference between the two modes");
+
 		// --- the vertical search window ------------------------------------------
 		check((int) constant(SafeSpawn.class, "VERTICAL_SEARCH") == 8,
 				"VERTICAL_SEARCH is 8, raised from 4 after the in-game failure: decoding "
@@ -3552,54 +3599,104 @@ public final class HarnessMain {
 	private static void unstableCounterplay() {
 		section("Unstable: fuse, distance band, and the counterplay derivation");
 
-		// --- the fuse is vanilla's own -----------------------------------------
-		check((int) constant(UnstableBehavior.class, "FUSE_TICKS") == 80,
-				"the fuse is 80 ticks = 4.0 seconds, which is PrimedTnt's own default -- "
-						+ "so the player's trained TNT timing transfers unchanged");
+		// --- the fuse ------------------------------------------------------------
+		check((int) constant(UnstableBehavior.class, "FUSE_TICKS") == 100,
+				"the fuse is 100 ticks = 5.0 seconds -- vanilla own 80 plus one second, "
+						+ "traded deliberately for the closer band");
+		check(UnstableBehavior.FUSE_TICKS > 80,
+				"...and LONGER than vanilla, not shorter: a player calibrated on vanilla "
+						+ "TNT now has a second in hand rather than a second short");
 		checkNear(constant(UnstableBehavior.class, "BLAST_RADIUS"), 4.0, 1e-9,
-				"the blast radius is vanilla's 4.0 -- the effect does not touch "
+				"the blast radius is vanilla 4.0 -- the effect does not touch "
 						+ "PrimedTnt.explosionPower");
+		checkNear(constant(UnstableBehavior.class, "BLAST_REACH"), 8.0, 1e-9,
+				"and its reach is 2*radius = 8.0, the distance hurtEntities culls at");
 
-		// --- the damage model, restated and spot-checked -------------------------
-		// This mirrors ExplosionDamageCalculator.getEntityDamageAmount at full
-		// exposure. The five values are the table in UnstableBehavior's javadoc.
-		checkNear(UnstableBehavior.blastDamageAt(4.0), 22.0, 1e-6, "4.0 blocks: 22.00 damage");
-		checkNear(UnstableBehavior.blastDamageAt(5.0), 15.4375, 1e-6, "5.0 blocks: 15.44 damage");
-		checkNear(UnstableBehavior.blastDamageAt(6.0), 9.75, 1e-6, "6.0 blocks: 9.75 damage");
-		checkNear(UnstableBehavior.blastDamageAt(7.0), 4.9375, 1e-6, "7.0 blocks: 4.94 damage");
-		checkNear(UnstableBehavior.blastDamageAt(8.0), 1.0, 1e-6,
-				"8.0 blocks: 1.00 damage -- the formula's trailing +1 is all that is left");
+		// --- THE CORRECTED DAMAGE MODEL ------------------------------------------
+		// The first version had two defects, both of which reported far more damage
+		// than the game delivers. Both are pinned here.
+		check(!Checks.hasMethod(UnstableBehavior.class, "blastDamageAt"),
+				"the old single-argument blastDamageAt is GONE, not left returning an "
+						+ "upper bound under a name that reads like the real value -- that "
+						+ "naming is what let a table of ceilings be tuned against");
+
+		// Defect 1: no cull. hurtEntities does d = dist / (2*radius); if (d > 1) skip.
+		checkNear(UnstableBehavior.blastDamage(8.0, 1.0), 1.0, 1e-6,
+				"at exactly 8.0 blocks only the trailing +1 survives: 1.00 damage");
+		checkNear(UnstableBehavior.blastDamage(8.5, 1.0), 0.0, 1e-9,
+				"THE CULL: past 8.0 the entity is skipped outright -- ZERO damage, not a "
+						+ "small number. The old model returned a value here.");
+		checkNear(UnstableBehavior.blastDamage(10.63, 1.0), 0.0, 1e-9,
+				"...including at 10.63 blocks, which the old horizontal band genuinely "
+						+ "permitted (sqrt(7^2 + 8^2)) -- a TNT that did nothing at all");
+
+		// Defect 2: exposure. getSeenPercent multiplies impact before the quadratic.
+		checkNear(UnstableBehavior.blastDamage(5.0, 1.0), 15.4375, 1e-6,
+				"5.0 blocks at FULL exposure: 15.44 -- the old table number, and it is a "
+						+ "ceiling rather than an expectation");
+		checkNear(UnstableBehavior.blastDamage(5.0, 0.5), 7.234375, 1e-6,
+				"...but half-obstructed the same blast deals 7.23");
+		checkNear(UnstableBehavior.blastDamage(5.0, 0.0), 1.0, 1e-6,
+				"...and fully obstructed it deals 1.00 -- half a heart, which is EXACTLY "
+						+ "the symptom reported in play");
+		check(UnstableBehavior.blastDamage(5.0, 0.5) < UnstableBehavior.blastDamage(5.0, 1.0),
+				"exposure genuinely scales the result rather than being ignored");
+		checkNear(UnstableBehavior.maxBlastDamage(5.0), UnstableBehavior.blastDamage(5.0, 1.0),
+				1e-9, "maxBlastDamage is the full-exposure case, named so it cannot be "
+						+ "mistaken for the expected value");
+
+		// The corrected table in the javadoc, at full exposure.
+		checkNear(UnstableBehavior.maxBlastDamage(2.0), 37.75, 1e-6, "2.0 blocks: 37.75");
+		checkNear(UnstableBehavior.maxBlastDamage(3.0), 29.4375, 1e-6, "3.0 blocks: 29.44");
+		checkNear(UnstableBehavior.maxBlastDamage(4.0), 22.0, 1e-6, "4.0 blocks: 22.00");
+		checkNear(UnstableBehavior.maxBlastDamage(4.5), 18.609375, 1e-6,
+				"4.5 blocks: 18.61, leaving 1.39 HP -- the tightest margin in the band");
+		checkNear(UnstableBehavior.maxBlastDamage(6.5), 7.234375, 1e-6, "6.5 blocks: 7.23");
+
+		// --- the requested 2-4 band was LETHAL, and that is why it was not shipped -
+		final double fullHealth = 20.0;
+		checkNear(UnstableBehavior.lethalThresholdDistance(fullHealth), 4.2913, 1e-3,
+				"the fully-exposed blast exactly kills a full-health unarmoured player at "
+						+ "4.29 blocks -- solved from the quadratic, not read off a table");
+		for (double requested : new double[] {2.0, 3.0, 4.0}) {
+			check(UnstableBehavior.maxBlastDamage(requested) > fullHealth,
+					"a spawn at " + requested + " blocks KILLS a stationary full-health "
+							+ "player outright ("
+							+ String.format("%.2f", UnstableBehavior.maxBlastDamage(requested))
+							+ " of 20.0) -- which is why the requested 2-4 band could not be "
+							+ "shipped under counterplay = true");
+		}
 
 		double min = constant(UnstableBehavior.class, "MIN_DISTANCE");
 		double max = constant(UnstableBehavior.class, "MAX_DISTANCE");
-		checkNear(min, 5.0, 1e-9, "minimum spawn distance is 5 blocks");
-		checkNear(max, 7.0, 1e-9, "maximum spawn distance is 7 blocks");
+		checkNear(min, 4.5, 1e-9, "minimum spawn distance is 4.5 blocks");
+		checkNear(max, 6.5, 1e-9, "maximum spawn distance is 6.5 blocks");
 		check(min < max, "the band is non-empty and the right way round");
+		check(min < 5.0 && max < 7.0,
+				"and the whole band moved CLOSER than the old 5-7, which was the point");
 
-		// --- boundary 1: the minimum is where "ignore it" stops being lethal -----
-		final double fullHealth = 20.0;
-		check(UnstableBehavior.blastDamageAt(min) < fullHealth,
-				"THE DESIGN CRITERION: at the minimum distance, a stationary unarmoured "
-						+ "player at full health SURVIVES ("
-						+ String.format("%.2f", UnstableBehavior.blastDamageAt(min))
-						+ " of 20.0)");
-		check(UnstableBehavior.blastDamageAt(min - 1.0) > fullHealth,
-				"and one block closer they would NOT -- the boundary is a cliff at 4-5 "
-						+ "blocks, not a gradient, which is why 5.0 is the minimum");
-		check(UnstableBehavior.blastDamageAt(min) > fullHealth * 0.5,
-				"ignoring it still costs more than half the bar -- it is a threat, not a "
+		// --- boundary 1: the minimum tracks the lethal threshold ------------------
+		check(min > UnstableBehavior.lethalThresholdDistance(fullHealth),
+				"THE DESIGN CRITERION: the minimum sits strictly outside the lethal "
+						+ "threshold, so ignoring a minimum-distance TNT from full health "
+						+ "never kills ("
+						+ String.format("%.2f", UnstableBehavior.maxBlastDamage(min)) + " of 20.0)");
+		check(min - UnstableBehavior.lethalThresholdDistance(fullHealth) < 0.5,
+				"...and sits as close to it as a sensible value allows -- this is the "
+						+ "CLOSEST survivable band, not a comfortable one");
+		check(UnstableBehavior.maxBlastDamage(min) > fullHealth * 0.75,
+				"ignoring it still costs over three quarters of the bar -- a threat, not a "
 						+ "nuisance");
 
-		// --- boundary 2: the maximum is where the blast stops mattering ----------
-		check(UnstableBehavior.blastDamageAt(max) > 4.0,
-				"at the maximum distance ignoring it still costs ~2.5 hearts");
-		check(UnstableBehavior.blastDamageAt(max + 1.0) <= 1.0,
-				"one block further and the blast does nothing at all -- which is why the "
-						+ "band stops at 7.0 rather than 8.0");
+		// --- boundary 2: the maximum stays inside the cull ------------------------
+		check(max < 8.0,
+				"the maximum is strictly inside the 8-block cull, so EVERY spawn can "
+						+ "actually damage the player -- the old band tail could not");
+		check(UnstableBehavior.maxBlastDamage(max) > 6.0,
+				"at the maximum distance ignoring it still costs over 3 hearts ("
+						+ String.format("%.2f", UnstableBehavior.maxBlastDamage(max)) + ")");
 
-		// --- the escape budget ---------------------------------------------------
-		// Escaping means reaching 8.0 blocks, where damage is 1. Speeds come from the
-		// project's own SprintModel, validated against published vanilla figures.
+		// --- the escape budget, RECOMPUTED for the new fuse and band --------------
 		double walk = SprintModel.groundSpeedBps(0.1);
 		double sprint = SprintModel.groundSpeedBps(0.1 * 1.3);
 		checkNear(walk, 4.3172, 1e-3, "SprintModel still reproduces vanilla walking (sanity)");
@@ -3607,17 +3704,26 @@ public final class HarnessMain {
 		double blocksToSafety = 8.0 - min;
 		double walkSeconds = blocksToSafety / walk;
 		double fuseSeconds = UnstableBehavior.FUSE_TICKS / 20.0;
-		checkNear(blocksToSafety, 3.0, 1e-9,
-				"worst case, the player must cover 3 blocks to reach the 8-block edge");
+		checkNear(blocksToSafety, 3.5, 1e-9,
+				"worst case, the player must cover 3.5 blocks to reach the 8-block edge");
+		checkNear(fuseSeconds, 5.0, 1e-9, "against a 5.0-second fuse");
 		check(walkSeconds < fuseSeconds * 0.25,
 				"walking to safety takes under a QUARTER of the fuse ("
 						+ String.format("%.2f", walkSeconds) + " s of "
 						+ String.format("%.1f", fuseSeconds) + " s)");
 		check(blocksToSafety / sprint < walkSeconds,
 				"sprinting is faster still, so the walking figure is the pessimistic one");
-		check(fuseSeconds - 0.5 - walkSeconds > 2.5,
-				"even after half a second of reaction time there are over 2.5 seconds of "
-						+ "slack -- this is the claim that makes counterplay = true");
+		double slack = fuseSeconds - 0.5 - walkSeconds;
+		check(slack > 3.5,
+				"after half a second of reaction there are " + String.format("%.2f", slack)
+						+ " s of slack -- the claim that makes counterplay = true");
+		// The trade: closer AND safer to escape, because the fuse paid for the band.
+		double oldSlack = 4.0 - 0.5 - (8.0 - 5.0) / walk;
+		check(slack > oldSlack,
+				"and the escape budget IMPROVED despite the TNT moving closer ("
+						+ String.format("%.2f", slack) + " s against the old band "
+						+ String.format("%.2f", oldSlack) + " s) -- the extra second of fuse "
+						+ "more than pays for the extra half block of running");
 
 		// --- the warning actually reaches the player -----------------------------
 		// SoundEvent.getRange(volume) is `volume > 1 ? 16 * volume : 16`, so the

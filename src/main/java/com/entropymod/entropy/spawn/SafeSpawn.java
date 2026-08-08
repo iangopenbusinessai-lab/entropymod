@@ -130,6 +130,36 @@ public final class SafeSpawn {
 	 */
 	public static final double[] AIM_FRACTIONS = {0.5, 1.0};
 
+	/**
+	 * How a caller's distance band is measured.
+	 *
+	 * <p><b>The two shipped effects genuinely want different answers, and getting
+	 * this wrong cost a session.</b> The band used to be horizontal for everyone,
+	 * on the reasoning that "5 blocks away" means five blocks across the ground and
+	 * that coupling the band to the vertical search let a valid surface disqualify
+	 * its own column. That reasoning is still right -- for Creeper Magnet.
+	 *
+	 * <p>It is wrong for Unstable, because <b>vanilla's explosion damage is a
+	 * function of the THREE-DIMENSIONAL distance</b> from the player's feet to the
+	 * explosion centre, and {@code ServerExplosion.hurtEntities} skips an entity
+	 * outright once that exceeds {@code 2 * radius}. A horizontal band of 5-7 with
+	 * a vertical search of 8 permits a 3D distance of
+	 * {@code sqrt(7^2 + 8^2) = 10.63} blocks -- past the 8-block cull, where the
+	 * TNT does nothing at all. Measured against the terrain this was played on,
+	 * <b>25.9% of accepted spawns landed outside the blast entirely.</b>
+	 *
+	 * <p>Rule for any future effect: <b>measure the band in whatever quantity the
+	 * effect's own mechanic depends on.</b> If the effect is a blast, that is 3D
+	 * distance. If it is a mob that walks to you, the starting height difference is
+	 * irrelevant and horizontal is right.
+	 */
+	public enum DistanceMode {
+		/** Band applies to horizontal distance only; the vertical offset is free. */
+		HORIZONTAL,
+		/** Band applies to the true 3D distance -- what an explosion actually uses. */
+		SPHERICAL
+	}
+
 	private SafeSpawn() {}
 
 	/**
@@ -182,8 +212,10 @@ public final class SafeSpawn {
 	 * @param maxDistance inclusive upper bound, in blocks, on the HORIZONTAL distance
 	 */
 	public static Attempt findNear(ServerLevel level, ServerPlayer player, EntityType<?> type,
-								   double minDistance, double maxDistance, RandomSource random) {
+								   double minDistance, double maxDistance, RandomSource random,
+								   DistanceMode mode) {
 		Vec3 eye = player.getEyePosition();
+		Vec3 feet = player.position();
 		double minSqr = minDistance * minDistance;
 		double maxSqr = maxDistance * maxDistance;
 		int baseY = player.blockPosition().getY();
@@ -202,13 +234,21 @@ public final class SafeSpawn {
 			// north of the origin.
 			int x = Mth.floor(player.getX() + Math.cos(angle) * distance);
 			int z = Mth.floor(player.getZ() + Math.sin(angle) * distance);
+			double horizontalSqr = horizontalDistanceSqr(x, z, player.getX(), player.getZ());
 
-			// The horizontal band is a property of the COLUMN, so it is checked once
-			// here rather than once per vertical step. This is also what stops the
-			// vertical search from disqualifying its own result -- see the class
-			// javadoc; testing the 3D distance here was a real bug.
-			if (!withinBand(horizontalDistanceSqr(x, z, player.getX(), player.getZ()),
-					minSqr, maxSqr)) {
+			// Cheap column-level cull, valid for BOTH modes: horizontal distance can
+			// only ever be <= the 3D distance, so a column already past the far edge
+			// is hopeless at every height and is not worth a vertical search.
+			if (horizontalSqr > maxSqr) {
+				band++;
+				continue;
+			}
+			// HORIZONTAL: the band is fully decided by the column, so the near edge is
+			// checked here too and the vertical search cannot disqualify its own
+			// result. SPHERICAL cannot do that -- a column nearer than the minimum
+			// horizontally may still be inside the band once its height is known -- so
+			// its near-edge test lives in the vertical loop instead.
+			if (mode == DistanceMode.HORIZONTAL && horizontalSqr < minSqr) {
 				band++;
 				continue;
 			}
@@ -227,6 +267,16 @@ public final class SafeSpawn {
 				}
 				if (!SpawnPlacementTypes.ON_GROUND.isSpawnPositionOk(level, candidate, type)) {
 					ground++;
+					continue;
+				}
+				// SPHERICAL's real test: the 3D distance from the player's feet to the
+				// spawn point, which is exactly the quantity vanilla's explosion damage
+				// reads (Entity.distanceToSqr uses getX/getY/getZ, i.e. the feet).
+				// Measured here rather than at the column, because it is only knowable
+				// once the vertical search has found the ground.
+				if (mode == DistanceMode.SPHERICAL
+						&& !withinBand(spawnDistanceSqr(candidate, feet), minSqr, maxSqr)) {
+					band++;
 					continue;
 				}
 				if (!canSee(level, player, eye, candidate, height)) {
@@ -259,6 +309,29 @@ public final class SafeSpawn {
 		double dx = (blockX + 0.5) - px;
 		double dz = (blockZ + 0.5) - pz;
 		return dx * dx + dz * dz;
+	}
+
+	/**
+	 * Squared 3D distance from a spawn position to the player's feet.
+	 *
+	 * <p>Measured from {@code atBottomCenterOf(pos)} -- where the entity is
+	 * actually placed -- to {@code player.position()}, because that pair is exactly
+	 * what {@code Entity.distanceToSqr(center)} compares inside
+	 * {@code ServerExplosion.hurtEntities}. Any other reference point would make
+	 * the band and the damage model disagree, which is the bug this exists to stop.
+	 */
+	public static double spawnDistanceSqr(BlockPos pos, Vec3 playerFeet) {
+		return distanceSqr(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5,
+				playerFeet.x, playerFeet.y, playerFeet.z);
+	}
+
+	/** Plain squared 3D distance. Minecraft-free so the harness can drive the band. */
+	public static double distanceSqr(double ax, double ay, double az,
+									 double bx, double by, double bz) {
+		double dx = ax - bx;
+		double dy = ay - by;
+		double dz = az - bz;
+		return dx * dx + dy * dy + dz * dz;
 	}
 
 	/**
